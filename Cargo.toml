@@ -1,0 +1,12 @@
+[package]
+name = "crawlrs"
+version = "0.0.1"
+edition = "2024"
+description = "High-scale web crawler written in Rust."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/p4r4xor/crawlrs"
+readme = "README.md"
+keywords = ["crawler", "scraper", "web", "spider"]
+categories = ["web-programming", "command-line-utilities"]
+
+[dependencies]
