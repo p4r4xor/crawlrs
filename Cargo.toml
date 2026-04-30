@@ -10,3 +10,34 @@ keywords = ["crawler", "scraper", "web", "spider"]
 categories = ["web-programming", "command-line-utilities"]
 
 [dependencies]
+crawlrs-core = { path = "crates/crawlrs-core", version = "0.0.1" }
+
+[workspace]
+members = ["crates/*"]
+resolver = "3"
+
+[workspace.package]
+version    = "0.0.1"
+edition    = "2024"
+license    = "MIT OR Apache-2.0"
+repository = "https://github.com/p4r4xor/crawlrs"
+authors    = ["Aniketh <p4r4xor@gmail.com>"]
+
+[workspace.dependencies]
+async-trait = "0.1"
+bytes       = "1"
+chrono      = { version = "0.4", default-features = false, features = ["serde", "std", "clock"] }
+http        = "1"
+lol_html    = "2.8"
+serde       = { version = "1", features = ["derive"] }
+thiserror   = "2"
+tokio       = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+tracing     = "0.1"
+url         = { version = "2", features = ["serde"] }
+wreq        = { version = "=6.0.0-rc.28", features = ["gzip", "brotli", "zstd", "deflate", "socks"] }
+wreq-util   = "=3.0.0-rc.10"
+
+# Workspace-internal crates (referenced from sub-crates by name)
+crawlrs-core  = { path = "crates/crawlrs-core",  version = "0.0.1" }
+crawlrs-fetch = { path = "crates/crawlrs-fetch", version = "0.0.1" }
+crawlrs-parse = { path = "crates/crawlrs-parse", version = "0.0.1" }
