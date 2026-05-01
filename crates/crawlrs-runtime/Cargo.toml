@@ -1,0 +1,34 @@
+[package]
+name        = "crawlrs-runtime"
+description = "Pipeline orchestration for crawlrs: composes Frontier + Politeness + Fetcher + Parser + Store into a tokio worker pool."
+version.workspace    = true
+edition.workspace    = true
+license.workspace    = true
+repository.workspace = true
+authors.workspace    = true
+
+[dependencies]
+crawlrs-core.workspace = true
+
+async-trait.workspace = true
+bytes.workspace       = true
+thiserror.workspace   = true
+tokio.workspace       = true
+tracing.workspace     = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+
+# For integration tests against a real Redis frontier + real politeness.
+crawlrs-fetch.workspace          = true
+crawlrs-frontier-redis.workspace = true
+crawlrs-politeness.workspace     = true
+crawlrs-parse.workspace          = true
+
+bb8.workspace                    = true
+bb8-redis.workspace              = true
+chrono.workspace                 = true
+redis.workspace                  = true
+testcontainers.workspace         = true
+testcontainers-modules.workspace = true
+cuid2.workspace                   = true

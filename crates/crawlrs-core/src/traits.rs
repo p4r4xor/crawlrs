@@ -15,7 +15,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 
 use crate::error::Result;
-use crate::types::{FetchRequest, FetchResponse, ParsedDocument, UrlEntry};
+use crate::types::{FetchRequest, FetchResponse, ParsedDocument, UrlEntry, UrlMetadata};
 use crate::url::CanonicalUrl;
 
 #[async_trait]
@@ -63,6 +63,43 @@ pub trait Frontier: Send + Sync {
 
     /// Approximate queue depth, for metrics and shutdown checks.
     async fn len(&self) -> Result<usize>;
+
+    /// Confirm a previously-claimed URL has been fully processed.
+    ///
+    /// For implementations using at-least-once delivery (Redis Streams
+    /// consumer groups, SQS visibility timeouts, etc.) this commits the
+    /// claim so the URL is not re-delivered to a different worker.
+    /// Implementations without that semantic may no-op.
+    ///
+    /// Calling `ack` on a URL that was never claimed (or has already
+    /// been acked) must be a no-op, not an error. This makes the
+    /// runtime's pipeline idempotent under retries.
+    async fn ack(&self, url: &CanonicalUrl) -> Result<()>;
+
+    /// Release a previously-claimed URL back to the pending pool
+    /// without processing.
+    ///
+    /// Used when the runtime decides the URL should be re-claimed
+    /// later (e.g. transient politeness backoff, the worker is
+    /// shutting down). The next worker that claims this URL receives
+    /// it as if the previous claim never happened.
+    ///
+    /// Implementations whose delivery model doesn't distinguish ack
+    /// from nack may treat this identically to `ack` (the URL is
+    /// merely consumed) or may no-op.
+    async fn nack(&self, url: &CanonicalUrl) -> Result<()>;
+
+    /// Periodic maintenance hook. The runtime invokes this on a
+    /// configurable cadence (e.g. every 30s) and once during graceful
+    /// shutdown. Implementations use it for whatever bookkeeping
+    /// they need: Redis Streams uses it for `XAUTOCLAIM`-based reclaim
+    /// of stranded entries; an in-memory impl may have nothing to do.
+    ///
+    /// Returns the number of items affected (e.g. reclaimed) so the
+    /// runtime can log / metric. The default impl returns 0.
+    async fn tick(&self) -> Result<usize> {
+        Ok(0)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -158,8 +195,8 @@ fn fnv1a_64(bytes: &[u8]) -> u64 {
 pub enum PoliteDecision {
     /// Safe to fetch right now.
     Allow,
-    /// Wait at least this many milliseconds before fetching.
-    DelayMs(u64),
+    /// Wait at least this long before fetching.
+    Delay(std::time::Duration),
     /// Disallowed (robots.txt, host on a deny-list, etc.).
     Disallow,
 }
@@ -192,35 +229,107 @@ pub enum FailureKind {
 pub trait Politeness: Send + Sync {
     /// May this URL be fetched right now? Honors per-host wake-time,
     /// 429/503 backoff, robots.txt, and any per-domain overrides.
-    async fn check(&self, url: &CanonicalUrl) -> PoliteDecision;
+    ///
+    /// Errors are propagated from the backing store (e.g. Redis being
+    /// unreachable). The runtime should treat an error as "do not
+    /// fetch right now" and retry the check; silently dropping the
+    /// error would risk over-fetching when the backend recovers.
+    async fn check(&self, url: &CanonicalUrl) -> Result<PoliteDecision>;
 
     /// A successful fetch just completed. Implementations use this to
     /// update per-host last-fetched timestamps so the next `check` for
     /// this host applies the configured delay.
-    async fn record_fetch(&self, url: &CanonicalUrl);
+    ///
+    /// Returns `Result` because a backend write may fail; callers
+    /// should retry rather than swallow, otherwise the next check
+    /// after a transient outage would over-fetch the host.
+    async fn record_fetch(&self, url: &CanonicalUrl) -> Result<()>;
 
     /// A fetch failed. Implementations use this to apply per-host
     /// exponential backoff on rate-limit categories (429/503) and to
     /// open per-host circuits after repeated transport failures.
     /// Without this, the policy can't distinguish "host is fine, just
     /// slow" from "host is rate-limiting us."
-    async fn record_failure(&self, url: &CanonicalUrl, kind: FailureKind);
+    async fn record_failure(&self, url: &CanonicalUrl, kind: FailureKind) -> Result<()>;
 
     /// Soonest moment any host this instance tracks becomes claimable.
     /// Lets the runtime sleep precisely until then instead of
     /// busy-polling every host on every tick.
     ///
-    /// Returns `None` if the politeness layer has no scheduled work
+    /// Returns `Ok(None)` if the politeness layer has no scheduled work
     /// (every host is currently free, or no hosts are tracked yet).
     /// Implementations typically back this with a time-ordered
     /// structure keyed on host (sorted set, delay-queue, etc.) so the
     /// answer is O(log N) or better.
-    async fn next_ready_at(&self) -> Option<Instant>;
+    async fn next_ready_at(&self) -> Result<Option<Instant>>;
 
-    /// Whether robots.txt for this URL's host allows the given user
-    /// agent to fetch the URL. Implementations own the robots cache
-    /// internally; there is no separate `RobotsCache` trait.
-    async fn robots_allows(&self, url: &CanonicalUrl, user_agent: &str) -> bool;
+    // Note: there is intentionally no trait-level method for a
+    // robots-only decision. `check` already runs the robots gate as
+    // part of the full decision; impls that want to expose a
+    // robots-only debugging entry point can do so via inherent
+    // methods on their concrete type.
+}
+
+// ---------------------------------------------------------------------------
+// Metadata store (per ADR-0009)
+// ---------------------------------------------------------------------------
+
+/// Per-URL ledger across all crawl runs. Distinct from the data-plane
+/// `Store` (which writes the actual crawled content) and from the
+/// `Frontier`'s per-run seen-set (which is in-run dedup only).
+///
+/// Use cases the metadata store enables:
+///
+/// - **Cross-run dedup**: "did we already crawl this URL in any
+///   previous run?"
+/// - **Dead-letter enforcement**: "this URL has failed N times; stop
+///   re-trying."
+/// - **Reverse blob lookup**: "where in the data-plane store does
+///   this URL's body live?"
+/// - **Resume**: a fresh run can skip URLs already `Succeeded`.
+///
+/// See [ADR-0009](../../../docs/decisions/0009-metadata-store.md) for
+/// the design and the v1 Redis-Hash impl.
+#[async_trait]
+pub trait MetadataStore: Send + Sync {
+    /// Read the metadata ledger for `url`. `None` means "never seen."
+    async fn get(&self, url: &CanonicalUrl) -> Result<Option<UrlMetadata>>;
+
+    /// Mark the URL as in-flight. Creates the row if absent (with
+    /// `discovered_at = updated_at = now`); otherwise updates
+    /// `status -> InProgress`, `last_run_id`, `depth`, and
+    /// `updated_at`. `retry_count` is preserved across attempts and
+    /// only reset by `mark_succeeded`.
+    async fn mark_attempting(
+        &self,
+        url: &CanonicalUrl,
+        run_id: &str,
+        depth: u32,
+    ) -> Result<()>;
+
+    /// Successful fetch + persist. `status -> Succeeded`,
+    /// `retry_count` reset to 0, `blob_path` and `content_hash`
+    /// recorded, `updated_at` advanced.
+    async fn mark_succeeded(
+        &self,
+        url: &CanonicalUrl,
+        blob_path: &str,
+        content_hash: u64,
+    ) -> Result<()>;
+
+    /// Transient failure: `status -> FailedTransient`, `retry_count`
+    /// atomically incremented, `updated_at` advanced. Returns the new
+    /// retry count so the caller can decide whether to give up.
+    async fn mark_failed(&self, url: &CanonicalUrl, kind: FailureKind) -> Result<u32>;
+
+    /// Give-up. `status -> PermanentlyFailed`, the URL is recorded in
+    /// the dead-letter Stream with `reason` so operators can inspect
+    /// via `XRANGE`.
+    async fn mark_permanently_failed(
+        &self,
+        url: &CanonicalUrl,
+        reason: &str,
+    ) -> Result<()>;
 }
 
 #[cfg(test)]

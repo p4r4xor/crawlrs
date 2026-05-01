@@ -21,8 +21,10 @@ pub use error::{Error, Result};
 pub use outcome::{CrawlOutcome, FetchOutcome, ParseOutcome, StoreOutcome};
 pub use proxy::{ProxyOutcome, ProxyResolver, ProxySelection};
 pub use traits::{
-    FailureKind, Fetcher, Frontier, HostHashShardPolicy, Parser, PoliteDecision, Politeness,
-    ShardKey, ShardingPolicy, SingleShardPolicy, Store,
+    FailureKind, Fetcher, Frontier, HostHashShardPolicy, MetadataStore, Parser, PoliteDecision,
+    Politeness, ShardKey, ShardingPolicy, SingleShardPolicy, Store,
 };
-pub use types::{FetchRequest, FetchResponse, ParsedDocument, RedirectHop, UrlEntry};
+pub use types::{
+    FetchRequest, FetchResponse, ParsedDocument, RedirectHop, UrlEntry, UrlMetadata, UrlStatus,
+};
 pub use url::CanonicalUrl;

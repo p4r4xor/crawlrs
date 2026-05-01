@@ -24,6 +24,9 @@ pub enum Error {
     #[error("frontier error: {0}")]
     Frontier(String),
 
+    #[error("metadata error: {0}")]
+    Metadata(String),
+
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 

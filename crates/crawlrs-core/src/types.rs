@@ -4,9 +4,10 @@
 //! - `FetchRequest`: fetcher input (the URL plus per-request overrides).
 //! - `FetchResponse`: fetcher output (status, headers, body, timing).
 //! - `ParsedDocument`: parser output (text, links, metadata).
+//! - `UrlMetadata` / `UrlStatus`: per-URL ledger entry (cross-run state).
 
 use std::collections::HashMap;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
@@ -90,4 +91,56 @@ pub struct ParsedDocument {
     pub text: Option<String>,
     pub outbound_links: Vec<CanonicalUrl>,
     pub fetched_at: DateTime<Utc>,
+}
+
+/// Lifecycle status of a URL in the metadata ledger. See ADR-0009.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UrlStatus {
+    /// First-seen but not yet attempted.
+    Pending,
+    /// A worker has claimed this URL and is processing it.
+    InProgress,
+    /// Fetched and stored successfully.
+    Succeeded,
+    /// A retryable failure (429, 503, transport reset, etc.). The
+    /// `retry_count` on `UrlMetadata` carries how many failures so
+    /// far.
+    FailedTransient,
+    /// Retry budget exhausted, or the failure is non-retryable.
+    /// Also pushed to the dead-letter Stream for ops introspection.
+    PermanentlyFailed,
+    /// Skipped without an attempt (e.g. robots.txt disallowed,
+    /// manual exclude, depth limit, content-hash dupe).
+    Skipped,
+}
+
+/// Per-URL ledger entry. The `MetadataStore` trait stores one of
+/// these per URL across all crawl runs (cross-run shape per ADR-0009);
+/// concrete impls back this with whatever's appropriate (Redis Hash,
+/// Postgres row, etc.).
+///
+/// All time fields are `SystemTime` in the API surface; storage layers
+/// encode them as wall-clock millis at the wire boundary, the same
+/// convention used by politeness state.
+#[derive(Debug, Clone)]
+pub struct UrlMetadata {
+    pub url: CanonicalUrl,
+    pub status: UrlStatus,
+    pub retry_count: u32,
+    /// Where the body lives in the configured `Store` impl. `None`
+    /// until the URL has been successfully fetched + persisted.
+    pub blob_path: Option<String>,
+    /// xxhash64 of the response body, recorded at storage time. Used
+    /// for content-level dedup (v2) and change detection.
+    pub content_hash: Option<u64>,
+    /// Hop distance from the seed that introduced this URL.
+    pub depth: u32,
+    /// `run_id` of the run that most recently touched this row.
+    pub last_run_id: String,
+    /// When this URL was first added to the metadata ledger.
+    pub discovered_at: SystemTime,
+    /// Last modification of any field. On a fresh insert this equals
+    /// `discovered_at`.
+    pub updated_at: SystemTime,
 }
