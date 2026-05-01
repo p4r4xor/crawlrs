@@ -26,9 +26,50 @@ use crate::keys::KeyPrefix;
 /// matches the production baseline in ADR-0007.
 pub const DEFAULT_AUTOCLAIM_IDLE: Duration = Duration::from_secs(300);
 
-/// Atomic SADD-then-XADD on the shard's seen-set and queue. See
-/// `scripts/submit.lua` for semantics.
-const SUBMIT_LUA: &str = include_str!("scripts/submit.lua");
+/// Approximate per-shard `XADD MAXLEN ~ N` cap. `0` disables trimming.
+/// Default is uncapped to preserve current behavior; operators wiring
+/// a long-running crawl should set this to bound discovery growth.
+pub const DEFAULT_MAX_QUEUE_DEPTH: u64 = 0;
+
+/// Atomic SADD-then-XADD across many URLs on one shard. See
+/// `scripts/batch_submit.lua` for semantics. Used by both the
+/// singular `submit` path (chunk of 1) and `submit_batch`.
+const BATCH_SUBMIT_LUA: &str = include_str!("scripts/batch_submit.lua");
+
+/// Max URLs per `EVAL` of `batch_submit.lua`. Bounded so a single Lua
+/// script execution doesn't lock Redis's main thread for too long
+/// even on hot shards. At 1000 URLs the script runs ~1-5 ms; safe in
+/// shared environments and brings 1M-URL submit from ~17 minutes to
+/// ~1 second on localhost.
+const SUBMIT_BATCH_CHUNK: usize = 1000;
+
+/// Maximum retry attempts for transient Redis errors (LOADING, BUSY,
+/// TRYAGAIN, MASTERDOWN). After this many fails we surface the error
+/// to the caller and let the worker's outer error_backoff take over.
+const TRANSIENT_RETRY_ATTEMPTS: u32 = 3;
+
+/// Initial delay for the first transient-error retry; doubles each
+/// attempt. 50ms is short enough that a brief Redis stall is recovered
+/// within a worker iteration, long enough to avoid hammering a Redis
+/// that's mid-startup.
+const TRANSIENT_RETRY_INITIAL_DELAY: Duration = Duration::from_millis(50);
+
+/// Classify a redis-rs error for retry behavior. We use redis-rs's own
+/// `retry_method()` so the policy stays aligned with what the upstream
+/// crate considers transient.
+///
+/// - `WaitAndRetry`: Redis says "try later" (LOADING, BUSY, TRYAGAIN,
+///   MASTERDOWN). We back off and retry up to `TRANSIENT_RETRY_ATTEMPTS`.
+/// - `RetryImmediately`: rare, treated the same as WaitAndRetry but
+///   without the initial sleep (delay starts at 0).
+/// - Anything else (NoRetry, Reconnect, redirect kinds): not our
+///   problem to retry; bubble out so callers handle it.
+fn is_transient(err: &redis::RedisError) -> bool {
+    matches!(
+        err.retry_method(),
+        redis::RetryMethod::WaitAndRetry | redis::RetryMethod::RetryImmediately
+    )
+}
 
 /// Internal error type. All variants convert to [`crawlrs_core::Error`]
 /// via `From`, so the public trait surface stays in core's error type.
@@ -86,6 +127,13 @@ pub struct RedisFrontier {
     /// `DEFAULT_AUTOCLAIM_IDLE`; override via builder for tests
     /// that need to trigger reclaim instantly.
     autoclaim_idle: Duration,
+
+    /// `XADD MAXLEN ~ N` cap per shard. `0` disables trimming. When
+    /// trimming kicks in, OLDEST stream entries are dropped; the
+    /// seen-set still remembers their URLs so they won't be
+    /// re-enqueued, meaning dropped URLs are abandoned for this run.
+    /// Operator picks the cap balancing memory budget vs. coverage.
+    max_queue_depth: u64,
 
     /// Round-robin cursor for `claim` across owned shards.
     claim_cursor: AtomicUsize,
@@ -158,8 +206,18 @@ impl RedisFrontier {
             consumer_id,
             claims: Arc::new(PendingClaims::new()),
             autoclaim_idle: DEFAULT_AUTOCLAIM_IDLE,
+            max_queue_depth: DEFAULT_MAX_QUEUE_DEPTH,
             claim_cursor: AtomicUsize::new(0),
         })
+    }
+
+    /// Override the per-shard `XADD MAXLEN ~ N` cap. Pass `0` to
+    /// disable. Bounded queues prevent unbounded discovery growth from
+    /// OOMing Redis; the trade-off is that a flood of newly-discovered
+    /// URLs can push older ones out before they're claimed.
+    pub fn with_max_queue_depth(mut self, depth: u64) -> Self {
+        self.max_queue_depth = depth;
+        self
     }
 
     /// Override the `XAUTOCLAIM` minimum-idle-time. Tests use this to
@@ -280,37 +338,129 @@ impl RedisFrontier {
         order
     }
 
-    async fn submit_one(&self, entry: &UrlEntry) -> LocalResult<bool> {
-        let shard = self.sharding_policy.shard_key(&entry.url);
-        self.assert_owned(shard)?;
-
-        let body = codec::encode(entry).map_err(|e| RedisFrontierError::Codec(e.to_string()))?;
+    /// Run one `EVAL batch_submit.lua` for `chunk` on the given shard.
+    /// `chunk` is bounded by `SUBMIT_BATCH_CHUNK`. Returns the count of
+    /// URLs that were newly enqueued (SADD-returned-1) within the chunk.
+    /// Retries transient Redis errors (LOADING, BUSY, etc.) up to
+    /// `TRANSIENT_RETRY_ATTEMPTS` times with exponential backoff.
+    async fn submit_chunk(&self, shard: ShardKey, chunk: &[&UrlEntry]) -> LocalResult<usize> {
+        debug_assert!(chunk.len() <= SUBMIT_BATCH_CHUNK);
         let seen_key = self.keys.seen(shard);
         let queue_key = self.keys.queue(shard);
 
-        let mut conn = self.checkout().await?;
-
-        // EVAL keeps wire-overhead modest at this script size and
-        // sidesteps the NOSCRIPT recovery dance. If we ever measure
-        // EVAL as a bottleneck we'll switch to EVALSHA + reload-on-NOSCRIPT.
-        let result: i64 = redis::cmd("EVAL")
-            .arg(SUBMIT_LUA)
+        // Build the EVAL command once; reuse across retries since it's
+        // immutable after construction. `query_async(&mut *conn)`
+        // borrows the cmd by reference, so no clone is needed.
+        // ARGV[1] is the queue-depth cap (0 = uncapped); ARGV[2..] is
+        // the interleaved (url, body) pairs.
+        let mut cmd = redis::cmd("EVAL");
+        cmd.arg(BATCH_SUBMIT_LUA)
             .arg(2)
             .arg(&seen_key)
             .arg(&queue_key)
-            .arg(entry.url.as_str())
-            .arg(&body)
-            .query_async(&mut *conn)
-            .await
-            .map_err(RedisFrontierError::from)?;
+            .arg(self.max_queue_depth);
+        for entry in chunk {
+            let body =
+                codec::encode(entry).map_err(|e| RedisFrontierError::Codec(e.to_string()))?;
+            cmd.arg(entry.url.as_str()).arg(body);
+        }
 
-        debug!(
-            shard,
-            url = entry.url.as_str(),
-            newly = result == 1,
-            "submit"
-        );
-        Ok(result == 1)
+        let mut delay = TRANSIENT_RETRY_INITIAL_DELAY;
+        for attempt in 1..=TRANSIENT_RETRY_ATTEMPTS {
+            let mut conn = self.checkout().await?;
+            match cmd.query_async::<i64>(&mut *conn).await {
+                Ok(newly) => return Ok(newly as usize),
+                Err(err) if is_transient(&err) && attempt < TRANSIENT_RETRY_ATTEMPTS => {
+                    warn!(
+                        op = "submit_chunk",
+                        attempt,
+                        delay_ms = delay.as_millis() as u64,
+                        kind = ?err.kind(),
+                        "transient redis error; retrying",
+                    );
+                    drop(conn);
+                    tokio::time::sleep(delay).await;
+                    delay = delay.saturating_mul(2);
+                }
+                Err(err) => return Err(RedisFrontierError::from(err)),
+            }
+        }
+        unreachable!("loop returns or errors on every iteration")
+    }
+
+    /// Group entries by shard, validate ownership, run one chunked
+    /// `EVAL batch_submit.lua` per shard. Per-shard work runs
+    /// concurrently (each shard takes its own pool connection); chunks
+    /// within a shard stay sequential because they all hit the same
+    /// Redis-side seen-set and Stream. Returns the total count of
+    /// newly-enqueued URLs across all shards.
+    async fn submit_grouped(&self, entries: &[UrlEntry]) -> LocalResult<usize> {
+        if entries.is_empty() {
+            return Ok(0);
+        }
+
+        // Group by shard. `&UrlEntry` so we don't clone bodies; the
+        // Lua-arg encode happens inside `submit_chunk`.
+        let mut by_shard: HashMap<ShardKey, Vec<&UrlEntry>> = HashMap::new();
+        for entry in entries {
+            let shard = self.sharding_policy.shard_key(&entry.url);
+            self.assert_owned(shard)?;
+            by_shard.entry(shard).or_default().push(entry);
+        }
+
+        // One async task per shard; chunks inside the task stay
+        // sequential. `try_join_all` short-circuits on the first error.
+        let per_shard = by_shard
+            .into_iter()
+            .map(|(shard, shard_entries)| async move {
+                let mut shard_newly = 0usize;
+                for chunk in shard_entries.chunks(SUBMIT_BATCH_CHUNK) {
+                    let newly = self.submit_chunk(shard, chunk).await?;
+                    shard_newly += newly;
+                    debug!(shard, chunk_size = chunk.len(), newly, "submit_chunk");
+                }
+                Ok::<usize, RedisFrontierError>(shard_newly)
+            });
+
+        let totals = futures::future::try_join_all(per_shard).await?;
+        Ok(totals.into_iter().sum())
+    }
+
+    /// `XREADGROUP` against `id`, retrying transient redis errors.
+    /// Both PEL re-read (id `0`) and new-read (id `>`) go through
+    /// here; both are safe to retry (no side effect on transient
+    /// error since the consumer-group cursor advances only on
+    /// successful read).
+    async fn xread_with_retry(
+        &self,
+        queue_key: &str,
+        group: &str,
+        id: &str,
+    ) -> LocalResult<StreamReadReply> {
+        let opts = StreamReadOptions::default()
+            .group(group, &self.consumer_id)
+            .count(1);
+        let mut delay = TRANSIENT_RETRY_INITIAL_DELAY;
+        for attempt in 1..=TRANSIENT_RETRY_ATTEMPTS {
+            let mut conn = self.checkout().await?;
+            match conn.xread_options(&[queue_key], &[id], &opts).await {
+                Ok(reply) => return Ok(reply),
+                Err(err) if is_transient(&err) && attempt < TRANSIENT_RETRY_ATTEMPTS => {
+                    warn!(
+                        op = "xread_options",
+                        attempt,
+                        delay_ms = delay.as_millis() as u64,
+                        kind = ?err.kind(),
+                        "transient redis error; retrying",
+                    );
+                    drop(conn);
+                    tokio::time::sleep(delay).await;
+                    delay = delay.saturating_mul(2);
+                }
+                Err(err) => return Err(RedisFrontierError::from(err)),
+            }
+        }
+        unreachable!("loop returns or errors on every iteration")
     }
 
     async fn claim_pel_then_new(
@@ -319,33 +469,18 @@ impl RedisFrontier {
     ) -> LocalResult<Option<(UrlEntry, StreamEntryId)>> {
         let queue_key = self.keys.queue(shard);
         let group = self.keys.consumer_group();
-        let mut conn = self.checkout().await?;
 
         // Step 1: read this consumer's PEL (id "0"). Picks up entries
         // that XAUTOCLAIM moved into our PEL or that we previously
         // claimed but haven't acked (e.g. after a process restart).
-        let pel_opts = StreamReadOptions::default()
-            .group(group, &self.consumer_id)
-            .count(1);
-        let pel: StreamReadReply = conn
-            .xread_options(&[&queue_key], &["0"], &pel_opts)
-            .await
-            .map_err(RedisFrontierError::from)?;
-
+        let pel = self.xread_with_retry(&queue_key, group, "0").await?;
         if let Some((entry, id)) = first_entry(&pel)? {
             return Ok(Some((entry, id)));
         }
 
         // Step 2: PEL empty, read new entries (id ">"). Non-blocking
         // so the caller can round-robin to the next shard.
-        let new_opts = StreamReadOptions::default()
-            .group(group, &self.consumer_id)
-            .count(1);
-        let new: StreamReadReply = conn
-            .xread_options(&[&queue_key], &[">"], &new_opts)
-            .await
-            .map_err(RedisFrontierError::from)?;
-
+        let new = self.xread_with_retry(&queue_key, group, ">").await?;
         first_entry(&new)
     }
 }
@@ -354,21 +489,16 @@ impl RedisFrontier {
 impl Frontier for RedisFrontier {
     #[tracing::instrument(skip(self, entry), fields(url = %entry.url))]
     async fn submit(&self, entry: UrlEntry) -> Result<bool> {
-        Ok(self.submit_one(&entry).await?)
+        // One-element batch: same Lua script, chunk size 1. The
+        // overhead is one Lua loop iteration; not worth a separate
+        // code path.
+        let newly = self.submit_grouped(std::slice::from_ref(&entry)).await?;
+        Ok(newly == 1)
     }
 
     #[tracing::instrument(skip(self, entries), fields(n = entries.len()))]
     async fn submit_batch(&self, entries: Vec<UrlEntry>) -> Result<usize> {
-        // v1: loop. Bulk-submit-per-shard via pipelining is a perf
-        // optimisation we'll add when measured; correctness-wise this
-        // is identical to the pipelined version.
-        let mut newly = 0;
-        for entry in &entries {
-            if self.submit_one(entry).await? {
-                newly += 1;
-            }
-        }
-        Ok(newly)
+        Ok(self.submit_grouped(&entries).await?)
     }
 
     #[tracing::instrument(skip(self))]

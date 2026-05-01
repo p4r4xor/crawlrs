@@ -13,6 +13,7 @@ crawlrs-core.workspace = true
 async-trait.workspace = true
 bb8.workspace         = true
 bb8-redis.workspace   = true
+futures.workspace     = true
 postcard.workspace    = true
 redis.workspace       = true
 serde.workspace       = true

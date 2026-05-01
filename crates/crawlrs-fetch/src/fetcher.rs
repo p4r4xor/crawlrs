@@ -4,9 +4,11 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use async_trait::async_trait;
+use bytes::{Bytes, BytesMut};
 use crawlrs_core::{
     CanonicalUrl, Error, FetchRequest, FetchResponse, Fetcher, ProxyOutcome, RedirectHop, Result,
 };
+use futures::StreamExt;
 use wreq::{Client, redirect};
 
 use crate::config::WreqFetcherConfig;
@@ -90,10 +92,21 @@ impl Fetcher for WreqFetcher {
                     })
                     .collect::<HashMap<_, _>>();
                 let redirect_history = response.extensions().get::<redirect::History>().cloned();
-                let response_body = response
-                    .bytes()
-                    .await
-                    .map_err(|err| Error::Fetch(format!("body read failed: {err}")))?;
+
+                // Pre-check Content-Length when the server provided it.
+                // Cheap reject for adversarial servers that advertise a
+                // huge body. For unknown-length / chunked responses we
+                // still rely on the streaming guard below.
+                if let Some(advertised_len) = response.content_length()
+                    && advertised_len > self.config.max_body_bytes
+                {
+                    return Err(Error::Fetch(format!(
+                        "response body content-length {advertised_len} exceeds cap {}",
+                        self.config.max_body_bytes
+                    )));
+                }
+
+                let response_body = read_capped_body(response, self.config.max_body_bytes).await?;
 
                 let final_url =
                     CanonicalUrl::parse(&final_uri_string).unwrap_or_else(|_| request.url.clone());
@@ -147,4 +160,23 @@ fn classify_proxy_outcome_from_status(status: u16) -> ProxyOutcome {
         403 | 429 => ProxyOutcome::Banned,
         _ => ProxyOutcome::Success,
     }
+}
+
+/// Read the response body via `bytes_stream`, aborting once cumulative
+/// bytes cross `cap`. Bounded memory regardless of whether the server
+/// advertised a Content-Length, because chunked-transfer responses can
+/// otherwise stream forever.
+async fn read_capped_body(response: wreq::Response, cap: u64) -> Result<Bytes> {
+    let mut stream = response.bytes_stream();
+    let mut buf = BytesMut::new();
+    while let Some(chunk_result) = stream.next().await {
+        let chunk = chunk_result.map_err(|err| Error::Fetch(format!("body read failed: {err}")))?;
+        if (buf.len() as u64).saturating_add(chunk.len() as u64) > cap {
+            return Err(Error::Fetch(format!(
+                "response body exceeds cap of {cap} bytes during streaming"
+            )));
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    Ok(buf.freeze())
 }

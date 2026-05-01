@@ -32,6 +32,14 @@ pub struct WreqFetcherConfig {
     /// Idle connections held in the pool per host.
     pub pool_max_idle_per_host: usize,
 
+    /// Maximum response body size, in bytes. Bounds memory per fetch
+    /// against adversarial servers that advertise (or stream) very
+    /// large bodies. The fetcher checks `Content-Length` upfront when
+    /// the server provides it and streams chunks otherwise, aborting
+    /// once cumulative bytes cross the cap. Default 32 MiB; raise for
+    /// large-document corpora, lower if memory is tight.
+    pub max_body_bytes: u64,
+
     /// Proxy resolution strategy. Defaults to [`NoProxyResolver`] (direct).
     pub proxy: Arc<dyn ProxyResolver>,
 }
@@ -45,6 +53,7 @@ impl Default for WreqFetcherConfig {
             connect_timeout: Duration::from_secs(10),
             max_redirects: 5,
             pool_max_idle_per_host: 8,
+            max_body_bytes: 32 * 1024 * 1024,
             proxy: Arc::new(NoProxyResolver),
         }
     }

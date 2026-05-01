@@ -11,6 +11,7 @@
 //! `Fetcher::fetch` directly. Otherwise the politeness gate would
 //! block its own dependencies.
 
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -30,6 +31,30 @@ const ROBOTS_FIELD_BODY: &str = "body";
 const ROBOTS_FIELD_STATUS: &str = "status";
 const ROBOTS_STATUS_OK: &str = "ok";
 const ROBOTS_STATUS_ABSENT: &str = "absent";
+
+/// TTL jitter half-band, percent. Each host's effective TTL is
+/// `base_ttl * (100 + jitter)/100` where jitter is in `[-PCT, +PCT]`,
+/// chosen deterministically from the host string so retries don't
+/// thrash the cache. Spreads the refresh wave when 1M+ hosts were all
+/// cached in the same first-contact burst.
+const TTL_JITTER_PCT: i64 = 20;
+
+/// Compute the effective TTL for a host's robots cache entry. The
+/// jitter is host-stable so a single host doesn't randomly shorten its
+/// own TTL on each rewrite, but is spread across hosts so the
+/// expiration moments fan out across `[0.8 * ttl, 1.2 * ttl]`.
+fn jittered_ttl(base: Duration, host: &str) -> Duration {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    host.hash(&mut h);
+    // Map the 64-bit hash to `[-TTL_JITTER_PCT, +TTL_JITTER_PCT]`
+    // (inclusive); 2N+1 buckets total.
+    let band = (TTL_JITTER_PCT as u64 * 2) + 1;
+    let bucket = (h.finish() % band) as i64;
+    let jitter_pct = bucket - TTL_JITTER_PCT;
+    let secs = base.as_secs() as i64;
+    let scaled = (secs * (100 + jitter_pct)) / 100;
+    Duration::from_secs(scaled.max(1) as u64)
+}
 
 /// In-process LRU capacity. 1024 hosts at typical robots.txt size
 /// (~5 KB each) is ~5 MB, well within budget. If a workload sees
@@ -238,12 +263,13 @@ impl RobotsCache {
             .await
             .map_err(|e| RedisPolitenessError::Pool(format!("{e:?}")))?;
 
+        let ttl_secs = jittered_ttl(self.ttl, host).as_secs() as i64;
         match body {
             Some(b) => {
                 let _: () = redis::pipe()
                     .hset(&key, ROBOTS_FIELD_STATUS, ROBOTS_STATUS_OK)
                     .hset(&key, ROBOTS_FIELD_BODY, b)
-                    .expire(&key, self.ttl.as_secs() as i64)
+                    .expire(&key, ttl_secs)
                     .query_async(&mut *conn)
                     .await
                     .map_err(RedisPolitenessError::from)?;
@@ -252,7 +278,7 @@ impl RobotsCache {
                 let _: () = redis::pipe()
                     .hset(&key, ROBOTS_FIELD_STATUS, ROBOTS_STATUS_ABSENT)
                     .hdel(&key, ROBOTS_FIELD_BODY)
-                    .expire(&key, self.ttl.as_secs() as i64)
+                    .expire(&key, ttl_secs)
                     .query_async(&mut *conn)
                     .await
                     .map_err(RedisPolitenessError::from)?;
@@ -313,6 +339,40 @@ mod tests {
     #[test]
     fn empty_body_allows_everything() {
         assert!(evaluate_rules(b"", "any-bot", "/foo"));
+    }
+
+    #[test]
+    fn jittered_ttl_stays_in_band() {
+        let base = Duration::from_secs(3600);
+        for h in &["a.com", "b.com", "c.com", "very.long.host.example.test"] {
+            let t = jittered_ttl(base, h);
+            assert!(t.as_secs() >= 2880, "{h} below band: {t:?}"); // 0.8 * 3600
+            assert!(t.as_secs() <= 4320, "{h} above band: {t:?}"); // 1.2 * 3600
+        }
+    }
+
+    #[test]
+    fn jittered_ttl_is_host_stable() {
+        let base = Duration::from_secs(600);
+        let a = jittered_ttl(base, "stable.test");
+        let b = jittered_ttl(base, "stable.test");
+        assert_eq!(a, b, "same host must always yield the same TTL");
+    }
+
+    #[test]
+    fn jittered_ttl_spreads_across_hosts() {
+        let base = Duration::from_secs(1000);
+        let mut seen = std::collections::HashSet::new();
+        for i in 0..50 {
+            seen.insert(jittered_ttl(base, &format!("host-{i}.test")).as_secs());
+        }
+        // 41 distinct buckets are possible; with 50 hosts we should see
+        // many of them. Strict-greater-than is safer than equality.
+        assert!(
+            seen.len() >= 10,
+            "low jitter spread: {} unique TTLs",
+            seen.len()
+        );
     }
 
     #[test]

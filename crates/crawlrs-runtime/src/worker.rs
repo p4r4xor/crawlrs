@@ -43,6 +43,10 @@ pub async fn worker_loop(
     mut shutdown: watch::Receiver<bool>,
 ) {
     debug!(worker_id, "worker_loop started");
+    // Successive empty-claim attempts back off exponentially up to
+    // `max_idle_sleep`. Resets on any successful claim. Without this
+    // a 100-worker idle pool burns ~200 RPS on Redis just polling.
+    let mut empty_backoff = deps.config.empty_queue_poll;
     while !*shutdown.borrow() {
         sleep_until_ready(&deps, &mut shutdown).await;
         if *shutdown.borrow() {
@@ -50,15 +54,16 @@ pub async fn worker_loop(
         }
 
         let entry = match deps.frontier.claim().await {
-            Ok(Some(e)) => e,
+            Ok(Some(e)) => {
+                empty_backoff = deps.config.empty_queue_poll;
+                e
+            }
             Ok(None) => {
-                // Empty queue. Either nothing's ready or the politeness
-                // layer didn't yet have a wake-time for us. Brief sleep
-                // and retry.
                 tokio::select! {
-                    _ = tokio::time::sleep(deps.config.empty_queue_poll) => {}
+                    _ = tokio::time::sleep(empty_backoff) => {}
                     _ = shutdown.changed() => break,
                 }
+                empty_backoff = (empty_backoff * 2).min(deps.config.max_idle_sleep);
                 continue;
             }
             Err(e) => {

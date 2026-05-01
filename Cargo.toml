@@ -23,6 +23,7 @@ authors     = ["Aniketh <p4r4xor@gmail.com>"]
 [workspace.dependencies]
 async-trait = "0.1"
 bb8         = "0.9"
+futures     = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 bb8-redis   = "0.26"
 bytes       = "1"
 chrono      = { version = "0.4", default-features = false, features = ["serde", "std", "clock"] }
@@ -41,7 +42,7 @@ thiserror   = "2"
 tokio       = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
 tracing     = "0.1"
 url         = { version = "2", features = ["serde"] }
-wreq        = { version = "=6.0.0-rc.28", features = ["gzip", "brotli", "zstd", "deflate", "socks"] }
+wreq        = { version = "=6.0.0-rc.28", features = ["gzip", "brotli", "zstd", "deflate", "socks", "stream"] }
 wreq-util   = "=3.0.0-rc.10"
 
 # Test-only.

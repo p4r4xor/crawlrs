@@ -22,23 +22,61 @@
 //! parser, the frontier) gate on `is_http()`.
 
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+/// Maximum accepted URL length, in bytes. Defends against adversarial
+/// inputs that would otherwise inflate the seen-set, the queue body
+/// payload, and per-row metadata storage. 2 KiB matches industry
+/// practice (Heritrix, common search engines) and is comfortably above
+/// the 99.99th percentile of URLs in the wild.
+pub const MAX_URL_LEN: usize = 2048;
+
+/// Error type for [`CanonicalUrl::parse`] / [`CanonicalUrl::parse_relative`].
+/// Wraps the underlying `url::ParseError` and adds a length-rejected
+/// variant that the upstream crate doesn't model.
+#[derive(Debug, Error)]
+pub enum UrlError {
+    #[error("url length {len} exceeds cap of {cap} bytes")]
+    TooLong { len: usize, cap: usize },
+
+    #[error("invalid url: {0}")]
+    Parse(#[from] ::url::ParseError),
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct CanonicalUrl(::url::Url);
 
 impl CanonicalUrl {
-    /// Parse an absolute URL string and apply canonicalization.
-    pub fn parse(input: &str) -> Result<Self, ::url::ParseError> {
+    /// Parse an absolute URL string and apply canonicalization. Rejects
+    /// inputs longer than [`MAX_URL_LEN`] before parsing.
+    pub fn parse(input: &str) -> Result<Self, UrlError> {
+        if input.len() > MAX_URL_LEN {
+            return Err(UrlError::TooLong {
+                len: input.len(),
+                cap: MAX_URL_LEN,
+            });
+        }
         let parsed = ::url::Url::parse(input)?;
         Ok(Self(canonicalize(parsed)))
     }
 
     /// Resolve `href` (which may be relative) against `base`, then
     /// canonicalize. This is what the parser uses on `<a href>` values.
-    pub fn parse_relative(base: &Self, href: &str) -> Result<Self, ::url::ParseError> {
+    /// The resolved absolute URL is checked against [`MAX_URL_LEN`]
+    /// post-resolution, since `href` alone is often shorter than the
+    /// final absolute URL.
+    pub fn parse_relative(base: &Self, href: &str) -> Result<Self, UrlError> {
         let resolved = base.0.join(href)?;
-        Ok(Self(canonicalize(resolved)))
+        let canonicalized = canonicalize(resolved);
+        let serialized_len = canonicalized.as_str().len();
+        if serialized_len > MAX_URL_LEN {
+            return Err(UrlError::TooLong {
+                len: serialized_len,
+                cap: MAX_URL_LEN,
+            });
+        }
+        Ok(Self(canonicalized))
     }
 
     /// True if the scheme is `http` or `https`, i.e. crawlable.
@@ -130,6 +168,22 @@ mod tests {
     #[test]
     fn rejects_garbage() {
         assert!(CanonicalUrl::parse("not a url").is_err());
+    }
+
+    #[test]
+    fn rejects_overlong_url() {
+        let long_path = "a".repeat(MAX_URL_LEN);
+        let url = format!("https://example.com/{long_path}");
+        let err = CanonicalUrl::parse(&url).unwrap_err();
+        assert!(matches!(err, UrlError::TooLong { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn rejects_overlong_relative_resolution() {
+        let base = CanonicalUrl::parse("https://example.com/").unwrap();
+        let long_href = "a".repeat(MAX_URL_LEN);
+        let err = CanonicalUrl::parse_relative(&base, &long_href).unwrap_err();
+        assert!(matches!(err, UrlError::TooLong { .. }), "got {err:?}");
     }
 
     #[test]

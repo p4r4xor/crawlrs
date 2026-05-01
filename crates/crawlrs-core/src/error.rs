@@ -10,7 +10,7 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("invalid url: {0}")]
-    InvalidUrl(#[from] ::url::ParseError),
+    InvalidUrl(#[from] crate::url::UrlError),
 
     #[error("fetch error: {0}")]
     Fetch(String),

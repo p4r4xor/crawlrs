@@ -306,3 +306,105 @@ async fn shard_depths_reports_per_shard_xlen() {
     assert_eq!(depths.len(), 4, "one entry per owned shard");
     assert_eq!(depths.values().sum::<usize>(), 5, "five total submissions");
 }
+
+#[tokio::test]
+async fn submit_batch_fans_out_one_eval_per_shard() {
+    // submit_batch groups by shard and runs one EVAL per shard chunk.
+    // Build a batch whose URLs deliberately span all 4 shards, submit
+    // it in one call, verify each shard ended up with the right URLs.
+    let fx = fixture().await;
+    let policy: Arc<dyn ShardingPolicy> = Arc::new(HostHashShardPolicy::new(4));
+    let rid = run_id();
+
+    let frontier = RedisFrontier::new(fx.pool.clone(), policy.clone(), vec![0, 1, 2, 3], rid)
+        .await
+        .unwrap();
+
+    // 12 distinct hosts: FNV-1a should distribute them across all 4
+    // shards. (The test asserts the total, not the per-shard split,
+    // because the exact distribution is hash-dependent.)
+    let hosts = [
+        "alpha.test",
+        "bravo.test",
+        "charlie.test",
+        "delta.test",
+        "echo.test",
+        "foxtrot.test",
+        "golf.test",
+        "hotel.test",
+        "india.test",
+        "juliet.test",
+        "kilo.test",
+        "lima.test",
+    ];
+    let entries: Vec<UrlEntry> = hosts
+        .iter()
+        .map(|h| entry(&format!("https://{h}/")))
+        .collect();
+
+    let newly = frontier.submit_batch(entries).await.unwrap();
+    assert_eq!(newly, hosts.len(), "all 12 hosts are new");
+
+    let depths = frontier.shard_depths().await.unwrap();
+    assert_eq!(
+        depths.values().sum::<usize>(),
+        hosts.len(),
+        "every entry landed on exactly one shard",
+    );
+    assert!(
+        depths.values().filter(|&&d| d > 0).count() >= 2,
+        "FNV-1a should put 12 hosts across at least 2 of 4 shards",
+    );
+}
+
+#[tokio::test]
+async fn max_queue_depth_trims_oldest_entries() {
+    // With max_queue_depth set, XADD MAXLEN ~ kicks in; the queue
+    // should never grow much beyond the cap. (Approximate trim means
+    // depth can transiently exceed the cap; we just assert it stays
+    // within a reasonable factor.)
+    let fx = fixture().await;
+    let policy: Arc<dyn ShardingPolicy> = Arc::new(SingleShardPolicy);
+    let frontier = RedisFrontier::new(fx.pool.clone(), policy, vec![0], run_id())
+        .await
+        .unwrap()
+        .with_max_queue_depth(50);
+
+    // Submit 200 distinct URLs in one batch. 4x the cap: easy to detect
+    // if the trim isn't happening.
+    let entries: Vec<UrlEntry> = (0..200)
+        .map(|i| entry(&format!("https://example.test/{i}")))
+        .collect();
+    let newly = frontier.submit_batch(entries).await.unwrap();
+    assert_eq!(newly, 200, "all 200 URLs are new in seen-set");
+
+    // Depth should be capped near 50. Approximate trim allows some
+    // overshoot; assert the cap is broadly respected, not exact.
+    let depth = frontier.len().await.unwrap();
+    assert!(
+        depth <= 150,
+        "approximate MAXLEN should keep depth below ~3x cap; got {depth}",
+    );
+}
+
+#[tokio::test]
+async fn submit_batch_with_duplicates_only_counts_new() {
+    // Within one batch, duplicate URLs must be deduped exactly the same
+    // as if submitted singly. Send the same host twice in one batch and
+    // verify newly-count is 1 (the SADD inside the Lua loop dedups).
+    let fx = fixture().await;
+    let policy: Arc<dyn ShardingPolicy> = Arc::new(HostHashShardPolicy::new(2));
+    let rid = run_id();
+    let frontier = RedisFrontier::new(fx.pool.clone(), policy.clone(), vec![0, 1], rid)
+        .await
+        .unwrap();
+
+    let entries = vec![
+        entry("https://twin.test/foo"),
+        entry("https://twin.test/foo"), // duplicate
+        entry("https://other.test/bar"),
+    ];
+    let newly = frontier.submit_batch(entries).await.unwrap();
+    assert_eq!(newly, 2, "duplicate within the batch is dropped");
+    assert_eq!(frontier.len().await.unwrap(), 2);
+}

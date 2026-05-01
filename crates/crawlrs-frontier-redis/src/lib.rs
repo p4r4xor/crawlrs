@@ -16,10 +16,12 @@ pub mod claims;
 pub mod codec;
 pub mod frontier;
 pub mod keys;
+pub mod pool;
 
 pub use claims::PendingClaims;
 pub use frontier::{RedisFrontier, RedisFrontierError};
 pub use keys::KeyPrefix;
+pub use pool::{PoolSizeError, validate_pool_size};
 
 /// Re-export the bb8/redis types callers need to construct the pool.
 pub use bb8;
