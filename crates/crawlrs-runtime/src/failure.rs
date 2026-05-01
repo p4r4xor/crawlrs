@@ -55,7 +55,11 @@ mod tests {
     #[test]
     fn success_codes_are_not_failures() {
         for code in [200, 201, 204, 301, 302, 304] {
-            assert_eq!(classify_status(code), None, "status {code} should not be a failure");
+            assert_eq!(
+                classify_status(code),
+                None,
+                "status {code} should not be a failure"
+            );
         }
     }
 

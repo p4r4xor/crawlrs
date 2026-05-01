@@ -1,0 +1,55 @@
+# Run `pre-commit install` once after cloning to enable.
+# Hooks at `pre-push` stage need the extra: `pre-commit install --hook-type pre-push`.
+# Run all hooks across the codebase: `pre-commit run --all-files`.
+
+repos:
+  # Whitespace + structural hygiene. Fast; safe to keep at commit stage.
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-merge-conflict
+      - id: check-toml
+      - id: check-yaml
+      - id: mixed-line-ending
+        args: [--fix=lf]
+
+  # ASCII dash policy (per CLAUDE.md): no em or en dashes anywhere.
+  - repo: local
+    hooks:
+      - id: no-em-or-en-dash
+        name: forbid em (U+2014) and en (U+2013) dashes
+        language: pygrep
+        entry: '[–—]'
+        types_or: [rust, markdown, toml, sql, yaml, shell]
+
+  # Cargo fmt (commit stage; fast). Re-formats staged Rust files in place.
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt
+        language: system
+        entry: cargo fmt --all --
+        types: [rust]
+        pass_filenames: false
+
+  # Cargo clippy (push stage). Runs the full workspace lint, which is too
+  # slow for every commit but cheap once per push. Skip with
+  # `SKIP=cargo-clippy git push` if you genuinely need to.
+  - repo: local
+    hooks:
+      - id: cargo-clippy
+        name: cargo clippy
+        language: system
+        entry: cargo clippy --workspace --all-targets --all-features -- -D warnings
+        types: [rust]
+        pass_filenames: false
+        stages: [pre-push]
+
+  # typos (push stage). Catches common misspellings in code and docs.
+  - repo: https://github.com/crate-ci/typos
+    rev: v1.30.0
+    hooks:
+      - id: typos
+        stages: [pre-push]

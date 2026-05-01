@@ -47,7 +47,10 @@ async fn fixture() -> RedisFixture {
     let url = format!("redis://{host}:{port}");
     let manager = RedisConnectionManager::new(url).unwrap();
     let pool = Pool::builder().max_size(8).build(manager).await.unwrap();
-    RedisFixture { _container: container, pool }
+    RedisFixture {
+        _container: container,
+        pool,
+    }
 }
 
 fn run_id() -> String {
@@ -81,7 +84,11 @@ async fn submit_then_claim_yields_same_url() {
     let was_new = frontier.submit(entry("https://a.test/")).await.unwrap();
     assert!(was_new, "first submit should be newly enqueued");
 
-    let claimed = frontier.claim().await.unwrap().expect("queue should yield the entry");
+    let claimed = frontier
+        .claim()
+        .await
+        .unwrap()
+        .expect("queue should yield the entry");
     assert_eq!(claimed.url.as_str(), "https://a.test/");
 }
 
@@ -109,10 +116,10 @@ async fn submit_batch_counts_only_new_entries() {
     frontier.submit(entry("https://a.test/")).await.unwrap();
 
     let mixed = vec![
-        entry("https://a.test/"),    // dupe
-        entry("https://b.test/"),    // new
-        entry("https://c.test/"),    // new
-        entry("https://b.test/"),    // dupe within the same batch
+        entry("https://a.test/"), // dupe
+        entry("https://b.test/"), // new
+        entry("https://c.test/"), // new
+        entry("https://b.test/"), // dupe within the same batch
     ];
     let newly = frontier.submit_batch(mixed).await.unwrap();
     assert_eq!(newly, 2, "only b.test and c.test are newly enqueued");
@@ -162,14 +169,29 @@ async fn host_hash_policy_routes_same_host_to_same_shard() {
     let target_shard = policy.shard_key(&url("https://reddit.test/"));
 
     // Owner of that shard.
-    let owner = RedisFrontier::new(fx.pool.clone(), policy.clone(), vec![target_shard], rid.clone())
-        .await
-        .unwrap();
+    let owner = RedisFrontier::new(
+        fx.pool.clone(),
+        policy.clone(),
+        vec![target_shard],
+        rid.clone(),
+    )
+    .await
+    .unwrap();
 
     // Submit two URLs from the same host: both route to `target_shard`,
     // both accepted by the owner.
-    assert!(owner.submit(entry("https://reddit.test/foo")).await.unwrap());
-    assert!(owner.submit(entry("https://reddit.test/bar")).await.unwrap());
+    assert!(
+        owner
+            .submit(entry("https://reddit.test/foo"))
+            .await
+            .unwrap()
+    );
+    assert!(
+        owner
+            .submit(entry("https://reddit.test/bar"))
+            .await
+            .unwrap()
+    );
 
     let depth = owner.len().await.unwrap();
     assert_eq!(depth, 2);
@@ -201,11 +223,10 @@ async fn xautoclaim_reclaims_stranded_entries_to_a_second_consumer() {
     let rid = run_id();
 
     // Worker A submits + claims, never acks.
-    let worker_a =
-        RedisFrontier::new(fx.pool.clone(), policy.clone(), vec![0], rid.clone())
-            .await
-            .unwrap()
-            .with_autoclaim_idle(Duration::ZERO);
+    let worker_a = RedisFrontier::new(fx.pool.clone(), policy.clone(), vec![0], rid.clone())
+        .await
+        .unwrap()
+        .with_autoclaim_idle(Duration::ZERO);
     worker_a.submit(entry("https://a.test/")).await.unwrap();
     let _claim_a = worker_a.claim().await.unwrap().unwrap();
     assert_eq!(worker_a.pending_claims_count(), 1);
@@ -263,14 +284,22 @@ async fn shard_depths_reports_per_shard_xlen() {
     let policy: Arc<dyn ShardingPolicy> = Arc::new(HostHashShardPolicy::new(4));
     let rid = run_id();
 
-    let frontier =
-        RedisFrontier::new(fx.pool.clone(), policy.clone(), vec![0, 1, 2, 3], rid)
-            .await
-            .unwrap();
+    let frontier = RedisFrontier::new(fx.pool.clone(), policy.clone(), vec![0, 1, 2, 3], rid)
+        .await
+        .unwrap();
 
     // Submit a handful of distinct hosts; they spread across shards.
-    for host in ["alpha.test", "bravo.test", "charlie.test", "delta.test", "echo.test"] {
-        frontier.submit(entry(&format!("https://{host}/"))).await.unwrap();
+    for host in [
+        "alpha.test",
+        "bravo.test",
+        "charlie.test",
+        "delta.test",
+        "echo.test",
+    ] {
+        frontier
+            .submit(entry(&format!("https://{host}/")))
+            .await
+            .unwrap();
     }
 
     let depths = frontier.shard_depths().await.unwrap();

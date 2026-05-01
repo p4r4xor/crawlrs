@@ -49,19 +49,28 @@ impl PendingClaims {
     /// the original consumer is silent).
     pub fn record(&self, url: CanonicalUrl, shard: ShardKey, entry_id: StreamEntryId) {
         let record = ClaimRecord { shard, entry_id };
-        self.inner.lock().expect("PendingClaims mutex poisoned").insert(url, record);
+        self.inner
+            .lock()
+            .expect("PendingClaims mutex poisoned")
+            .insert(url, record);
     }
 
     /// Remove and return the claim record for `url`, if any.
     /// `None` means the URL was not in-flight on this frontier instance.
     pub fn take(&self, url: &CanonicalUrl) -> Option<ClaimRecord> {
-        self.inner.lock().expect("PendingClaims mutex poisoned").remove(url)
+        self.inner
+            .lock()
+            .expect("PendingClaims mutex poisoned")
+            .remove(url)
     }
 
     /// Number of URLs currently in-flight. Useful as a metric and for
     /// shutdown checks ("are we drained yet?").
     pub fn len(&self) -> usize {
-        self.inner.lock().expect("PendingClaims mutex poisoned").len()
+        self.inner
+            .lock()
+            .expect("PendingClaims mutex poisoned")
+            .len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -95,7 +104,10 @@ mod tests {
         claims.record(u.clone(), 0, "1-0".into());
         claims.record(u.clone(), 0, "2-0".into());
         let rec = claims.take(&u).unwrap();
-        assert_eq!(rec.entry_id, "2-0", "later record should overwrite earlier one");
+        assert_eq!(
+            rec.entry_id, "2-0",
+            "later record should overwrite earlier one"
+        );
     }
 
     #[test]

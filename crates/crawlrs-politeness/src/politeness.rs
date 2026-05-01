@@ -116,7 +116,14 @@ impl RedisPoliteness {
             "RedisPoliteness ready",
         );
 
-        Ok(Self { pool, keys, sharding_policy, owned_shards, config, robots })
+        Ok(Self {
+            pool,
+            keys,
+            sharding_policy,
+            owned_shards,
+            config,
+            robots,
+        })
     }
 
     pub fn config(&self) -> &PolitenessConfig {
@@ -147,10 +154,11 @@ impl RedisPoliteness {
 
     // --- internals -----------------------------------------------------
 
-    async fn checkout(
-        &self,
-    ) -> LocalResult<bb8::PooledConnection<'_, RedisConnectionManager>> {
-        self.pool.get().await.map_err(|e| RedisPolitenessError::Pool(format!("{e:?}")))
+    async fn checkout(&self) -> LocalResult<bb8::PooledConnection<'_, RedisConnectionManager>> {
+        self.pool
+            .get()
+            .await
+            .map_err(|e| RedisPolitenessError::Pool(format!("{e:?}")))
     }
 
     fn host_of<'u>(&self, url: &'u CanonicalUrl) -> LocalResult<&'u str> {
@@ -310,7 +318,11 @@ impl Politeness for RedisPoliteness {
         let until_score = wall_to_score(until);
 
         let _: () = redis::pipe()
-            .hset(&state_key, HOSTSTATE_FIELD_BACKOFF_UNTIL, until_score as u64)
+            .hset(
+                &state_key,
+                HOSTSTATE_FIELD_BACKOFF_UNTIL,
+                until_score as u64,
+            )
             .hset(&state_key, HOSTSTATE_FIELD_LAST_KIND, format!("{kind:?}"))
             .zadd(&sched_key, host, until_score)
             .query_async(&mut *conn)
@@ -348,7 +360,6 @@ impl Politeness for RedisPoliteness {
 
         Ok(soonest.map(wall_to_instant))
     }
-
 }
 
 impl RedisPoliteness {

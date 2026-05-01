@@ -39,6 +39,7 @@ pub trait Store: Send + Sync {
 }
 
 #[async_trait]
+#[allow(clippy::len_without_is_empty)] // `len` is a queue-depth metric, not a Collection contract
 pub trait Frontier: Send + Sync {
     /// Add one URL to the queue.
     ///
@@ -300,12 +301,7 @@ pub trait MetadataStore: Send + Sync {
     /// `status -> InProgress`, `last_run_id`, `depth`, and
     /// `updated_at`. `retry_count` is preserved across attempts and
     /// only reset by `mark_succeeded`.
-    async fn mark_attempting(
-        &self,
-        url: &CanonicalUrl,
-        run_id: &str,
-        depth: u32,
-    ) -> Result<()>;
+    async fn mark_attempting(&self, url: &CanonicalUrl, run_id: &str, depth: u32) -> Result<()>;
 
     /// Successful fetch + persist. `status -> Succeeded`,
     /// `retry_count` reset to 0, `blob_path` and `content_hash`
@@ -325,11 +321,7 @@ pub trait MetadataStore: Send + Sync {
     /// Give-up. `status -> PermanentlyFailed`, the URL is recorded in
     /// the dead-letter Stream with `reason` so operators can inspect
     /// via `XRANGE`.
-    async fn mark_permanently_failed(
-        &self,
-        url: &CanonicalUrl,
-        reason: &str,
-    ) -> Result<()>;
+    async fn mark_permanently_failed(&self, url: &CanonicalUrl, reason: &str) -> Result<()>;
 }
 
 #[cfg(test)]

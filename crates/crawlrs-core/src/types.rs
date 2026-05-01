@@ -26,7 +26,11 @@ pub struct UrlEntry {
 
 impl UrlEntry {
     pub fn seed(url: CanonicalUrl) -> Self {
-        Self { url, depth: 0, discovered_from: None }
+        Self {
+            url,
+            depth: 0,
+            discovered_from: None,
+        }
     }
 }
 

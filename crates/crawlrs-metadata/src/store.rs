@@ -104,7 +104,10 @@ impl PostgresMetadataStore {
 
     /// Apply pending migrations against `pool`. Idempotent.
     pub async fn migrate(pool: &PgPool) -> Result<()> {
-        MIGRATOR.run(pool).await.map_err(PostgresMetadataError::from)?;
+        MIGRATOR
+            .run(pool)
+            .await
+            .map_err(PostgresMetadataError::from)?;
         Ok(())
     }
 
@@ -113,13 +116,11 @@ impl PostgresMetadataStore {
     /// history events; a URL that ends up `permanently_failed` is
     /// counted once even if it was retried multiple times before.
     pub async fn dlq_size(&self) -> Result<u64> {
-        let count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM url_metadata WHERE status = $1",
-        )
-        .bind(STATUS_PERMANENTLY_FAILED)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(PostgresMetadataError::from)?;
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM url_metadata WHERE status = $1")
+            .bind(STATUS_PERMANENTLY_FAILED)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(PostgresMetadataError::from)?;
         Ok(count as u64)
     }
 
@@ -143,17 +144,18 @@ impl MetadataStore for PostgresMetadataStore {
         .fetch_optional(&self.pool)
         .await
         .map_err(PostgresMetadataError::from)?;
-        row.map(|r| r.into_metadata(url)).transpose().map_err(Error::from)
+        row.map(|r| r.into_metadata(url))
+            .transpose()
+            .map_err(Error::from)
     }
 
     #[tracing::instrument(skip(self), fields(url = %url, run_id = %run_id, depth))]
-    async fn mark_attempting(
-        &self,
-        url: &CanonicalUrl,
-        run_id: &str,
-        depth: u32,
-    ) -> Result<()> {
-        let mut tx = self.pool.begin().await.map_err(PostgresMetadataError::from)?;
+    async fn mark_attempting(&self, url: &CanonicalUrl, run_id: &str, depth: u32) -> Result<()> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(PostgresMetadataError::from)?;
         let id = upsert_attempting(&mut tx, url, run_id, depth as i32).await?;
         insert_history(&mut tx, id, run_id, EVENT_ATTEMPTED, None).await?;
         tx.commit().await.map_err(PostgresMetadataError::from)?;
@@ -168,7 +170,11 @@ impl MetadataStore for PostgresMetadataStore {
         blob_path: &str,
         content_hash: u64,
     ) -> Result<()> {
-        let mut tx = self.pool.begin().await.map_err(PostgresMetadataError::from)?;
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(PostgresMetadataError::from)?;
         let row: Option<(i64, String)> = sqlx::query_as(
             "UPDATE url_metadata
                 SET status = $1,
@@ -198,7 +204,11 @@ impl MetadataStore for PostgresMetadataStore {
 
     #[tracing::instrument(skip(self), fields(url = %url, kind = ?kind))]
     async fn mark_failed(&self, url: &CanonicalUrl, kind: FailureKind) -> Result<u32> {
-        let mut tx = self.pool.begin().await.map_err(PostgresMetadataError::from)?;
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(PostgresMetadataError::from)?;
         let row: Option<(i64, String, i32)> = sqlx::query_as(
             "UPDATE url_metadata
                 SET status = $1,
@@ -223,12 +233,12 @@ impl MetadataStore for PostgresMetadataStore {
     }
 
     #[tracing::instrument(skip(self), fields(url = %url, reason = %reason))]
-    async fn mark_permanently_failed(
-        &self,
-        url: &CanonicalUrl,
-        reason: &str,
-    ) -> Result<()> {
-        let mut tx = self.pool.begin().await.map_err(PostgresMetadataError::from)?;
+    async fn mark_permanently_failed(&self, url: &CanonicalUrl, reason: &str) -> Result<()> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(PostgresMetadataError::from)?;
         let row: Option<(i64, String)> = sqlx::query_as(
             "UPDATE url_metadata
                 SET status = $1,
@@ -245,8 +255,14 @@ impl MetadataStore for PostgresMetadataStore {
         let (id, last_run_id) =
             row.ok_or_else(|| PostgresMetadataError::Missing(url.as_str().to_string()))?;
         let detail = json!({ "reason": reason });
-        insert_history(&mut tx, id, &last_run_id, EVENT_PERMANENTLY_FAILED, Some(detail))
-            .await?;
+        insert_history(
+            &mut tx,
+            id,
+            &last_run_id,
+            EVENT_PERMANENTLY_FAILED,
+            Some(detail),
+        )
+        .await?;
         tx.commit().await.map_err(PostgresMetadataError::from)?;
         debug!(url = url.as_str(), "mark_permanently_failed");
         Ok(())
@@ -366,8 +382,7 @@ fn datetime_to_system_time(dt: DateTime<Utc>) -> SystemTime {
     let secs = dt.timestamp();
     let nanos = dt.timestamp_subsec_nanos();
     if secs >= 0 {
-        SystemTime::UNIX_EPOCH
-            + std::time::Duration::new(secs as u64, nanos)
+        SystemTime::UNIX_EPOCH + std::time::Duration::new(secs as u64, nanos)
     } else {
         // Pre-epoch timestamps cannot occur in our schema (NOW() at
         // insert), but encode defensively.
@@ -403,7 +418,10 @@ mod tests {
 
     #[test]
     fn failure_kind_str_is_stable() {
-        assert_eq!(failure_kind_str(FailureKind::TooManyRequests), "too_many_requests");
+        assert_eq!(
+            failure_kind_str(FailureKind::TooManyRequests),
+            "too_many_requests"
+        );
         assert_eq!(failure_kind_str(FailureKind::Other), "other");
     }
 

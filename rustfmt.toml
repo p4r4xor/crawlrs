@@ -1,0 +1,14 @@
+# crawlrs formatting config.
+#
+# Only stable-channel options here so `cargo fmt` works on stock
+# rustup toolchains (no nightly required). Add nightly-only
+# refinements (group_imports, imports_granularity) as a separate
+# `rustfmt.nightly.toml` if/when we want them.
+
+edition          = "2024"
+max_width        = 100
+tab_spaces       = 4
+newline_style    = "Unix"
+hard_tabs        = false
+use_field_init_shorthand = true
+use_try_shorthand        = true

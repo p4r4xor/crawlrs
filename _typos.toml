@@ -1,0 +1,21 @@
+# typos config. See https://github.com/crate-ci/typos.
+#
+# Run locally: `cargo install typos-cli` then `typos`.
+
+[default]
+extend-ignore-identifiers-re = [
+    # cuid2 / generated IDs / hex hashes can include letter sequences
+    # that look like typos.
+    "[0-9a-f]{12,}",
+]
+
+[default.extend-words]
+# Project-specific terms that look like misspellings to typos.
+crawlrs = "crawlrs"
+
+[files]
+extend-exclude = [
+    "target/",
+    "Cargo.lock",
+    ".git/",
+]

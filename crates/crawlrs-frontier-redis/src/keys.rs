@@ -23,7 +23,9 @@ pub struct KeyPrefix {
 
 impl KeyPrefix {
     pub fn new(run_id: impl Into<String>) -> Self {
-        Self { run_id: run_id.into() }
+        Self {
+            run_id: run_id.into(),
+        }
     }
 
     pub fn run_id(&self) -> &str {

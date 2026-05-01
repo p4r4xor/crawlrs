@@ -159,7 +159,7 @@ async fn process_url(_worker_id: usize, deps: &Arc<WorkerDeps>, entry: UrlEntry)
     // submit discovered links -> ack).
     let _ = deps.politeness.record_fetch(&entry.url).await;
 
-    let doc = match extract_document(&deps, &resp).await {
+    let doc = match extract_document(deps, &resp).await {
         Some(d) => d,
         None => {
             // Parser/adapter failed; treat as a content-side issue, not
@@ -170,7 +170,7 @@ async fn process_url(_worker_id: usize, deps: &Arc<WorkerDeps>, entry: UrlEntry)
     };
 
     // Submit discovered links subject to scope rules.
-    submit_discovered(&deps, &entry, &doc).await;
+    submit_discovered(deps, &entry, &doc).await;
 
     // Persist.
     if let Err(e) = deps.store.write(&doc, Some(&resp.body)).await {
@@ -183,10 +183,7 @@ async fn process_url(_worker_id: usize, deps: &Arc<WorkerDeps>, entry: UrlEntry)
     }
 }
 
-async fn extract_document(
-    deps: &Arc<WorkerDeps>,
-    resp: &FetchResponse,
-) -> Option<ParsedDocument> {
+async fn extract_document(deps: &Arc<WorkerDeps>, resp: &FetchResponse) -> Option<ParsedDocument> {
     if let Some(adapter) = deps.adapters.find_for(&resp.url) {
         match adapter.extract(resp).await {
             Ok(Some(doc)) => return Some(doc),
@@ -206,11 +203,7 @@ async fn extract_document(
     }
 }
 
-async fn submit_discovered(
-    deps: &Arc<WorkerDeps>,
-    parent: &UrlEntry,
-    doc: &ParsedDocument,
-) {
+async fn submit_discovered(deps: &Arc<WorkerDeps>, parent: &UrlEntry, doc: &ParsedDocument) {
     let max_depth = deps.config.max_depth;
     let new_depth = parent.depth + 1;
 
@@ -218,7 +211,7 @@ async fn submit_discovered(
         .outbound_links
         .iter()
         .filter(|u| u.is_http())
-        .filter(|_| max_depth.map_or(true, |limit| new_depth <= limit))
+        .filter(|_| max_depth.is_none_or(|limit| new_depth <= limit))
         .map(|u| UrlEntry {
             url: u.clone(),
             depth: new_depth,
@@ -237,15 +230,19 @@ async fn submit_discovered(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn worker_deps_field_count_locked() {
         // If you add a field to WorkerDeps, update this and the
         // CrawlerBuilder::build site that constructs it. Locking
         // against silent drift.
         let names = [
-            "frontier", "politeness", "fetcher", "parser", "store", "adapters", "config",
+            "frontier",
+            "politeness",
+            "fetcher",
+            "parser",
+            "store",
+            "adapters",
+            "config",
         ];
         assert_eq!(names.len(), 7);
     }

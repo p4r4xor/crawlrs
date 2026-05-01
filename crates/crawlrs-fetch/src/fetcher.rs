@@ -19,7 +19,7 @@ pub struct WreqFetcher {
 impl WreqFetcher {
     pub fn new(config: WreqFetcherConfig) -> Result<Self> {
         let mut client_builder = Client::builder()
-            .emulation(config.emulation.clone())
+            .emulation(config.emulation)
             .connect_timeout(config.connect_timeout)
             .timeout(config.default_timeout)
             .pool_max_idle_per_host(config.pool_max_idle_per_host)
@@ -30,8 +30,9 @@ impl WreqFetcher {
         }
 
         if let Some(ca_pem_bytes) = config.proxy.trusted_ca_pem() {
-            let cert_store = wreq::tls::CertStore::from_pem_stack(ca_pem_bytes)
-                .map_err(|err| Error::Fetch(format!("invalid CA PEM from proxy resolver: {err}")))?;
+            let cert_store = wreq::tls::CertStore::from_pem_stack(ca_pem_bytes).map_err(|err| {
+                Error::Fetch(format!("invalid CA PEM from proxy resolver: {err}"))
+            })?;
             client_builder = client_builder.cert_store(cert_store);
         }
 
@@ -83,23 +84,19 @@ impl Fetcher for WreqFetcher {
                     .headers()
                     .iter()
                     .filter_map(|(header_name, header_value)| {
-                        header_value
-                            .to_str()
-                            .ok()
-                            .map(|value_str| (header_name.as_str().to_string(), value_str.to_string()))
+                        header_value.to_str().ok().map(|value_str| {
+                            (header_name.as_str().to_string(), value_str.to_string())
+                        })
                     })
                     .collect::<HashMap<_, _>>();
-                let redirect_history = response
-                    .extensions()
-                    .get::<redirect::History>()
-                    .cloned();
+                let redirect_history = response.extensions().get::<redirect::History>().cloned();
                 let response_body = response
                     .bytes()
                     .await
                     .map_err(|err| Error::Fetch(format!("body read failed: {err}")))?;
 
-                let final_url = CanonicalUrl::parse(&final_uri_string)
-                    .unwrap_or_else(|_| request.url.clone());
+                let final_url =
+                    CanonicalUrl::parse(&final_uri_string).unwrap_or_else(|_| request.url.clone());
                 let redirect_chain = redirect_history
                     .map(|history| {
                         history

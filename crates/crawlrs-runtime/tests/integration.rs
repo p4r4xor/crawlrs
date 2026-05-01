@@ -80,7 +80,9 @@ impl Fetcher for FakeFetcher {
         self.calls.lock().unwrap().push(url.clone());
         match self.responses.lock().unwrap().get(&url).cloned() {
             Some(r) => Ok(r),
-            None => Err(Error::Fetch(format!("FakeFetcher: no canned response for {url}"))),
+            None => Err(Error::Fetch(format!(
+                "FakeFetcher: no canned response for {url}"
+            ))),
         }
     }
 }
@@ -132,7 +134,10 @@ async fn fixture() -> Fixture {
     let url = format!("redis://{host}:{port}");
     let manager = RedisConnectionManager::new(url).unwrap();
     let pool = Pool::builder().max_size(8).build(manager).await.unwrap();
-    Fixture { _container: container, pool }
+    Fixture {
+        _container: container,
+        pool,
+    }
 }
 
 fn run_id() -> String {
@@ -177,7 +182,7 @@ async fn build_crawler(
         .await
         .unwrap(),
     );
-    let parser = Arc::new(LolHtmlParser::default());
+    let parser = Arc::new(LolHtmlParser);
     let store = Arc::new(InMemoryStore::default());
     let adapters = Arc::new(SiteAdapterRegistry::new());
 
@@ -209,11 +214,12 @@ fn fast_config() -> CrawlerConfig {
 }
 
 fn fast_politeness() -> PolitenessConfig {
-    let mut c = PolitenessConfig::default();
-    c.min_delay = Duration::from_millis(50);
-    c.honor_robots_txt = false;
-    c.user_agent = "TestBot/1.0".into();
-    c
+    PolitenessConfig {
+        min_delay: Duration::from_millis(50),
+        honor_robots_txt: false,
+        user_agent: "TestBot/1.0".into(),
+        ..Default::default()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -223,8 +229,7 @@ fn fast_politeness() -> PolitenessConfig {
 #[tokio::test]
 async fn end_to_end_crawl_one_seed_two_pages() {
     let fx = fixture().await;
-    let (crawler, fetcher, store) =
-        build_crawler(&fx, fast_config(), fast_politeness()).await;
+    let (crawler, fetcher, store) = build_crawler(&fx, fast_config(), fast_politeness()).await;
 
     fetcher.install_html(
         "https://a.test/",
@@ -233,7 +238,12 @@ async fn end_to_end_crawl_one_seed_two_pages() {
     fetcher.install_html("https://a.test/page1", "<html><body>page1</body></html>");
     fetcher.install_html("https://b.test/", "<html><body>b</body></html>");
 
-    crawler.deps().frontier.submit(entry("https://a.test/")).await.unwrap();
+    crawler
+        .deps()
+        .frontier
+        .submit(entry("https://a.test/"))
+        .await
+        .unwrap();
 
     // Run the crawler in a task; trigger shutdown after enough time
     // for the seed + its 2 children to have been fetched.
@@ -248,21 +258,28 @@ async fn end_to_end_crawl_one_seed_two_pages() {
     run_handle.await.unwrap().unwrap();
 
     let calls = fetcher.calls();
-    assert!(calls.contains(&"https://a.test/".to_string()), "seed fetched");
+    assert!(
+        calls.contains(&"https://a.test/".to_string()),
+        "seed fetched"
+    );
     let stored = store.urls();
-    assert!(stored.len() >= 1, "at least the seed was stored");
+    assert!(!stored.is_empty(), "at least the seed was stored");
     assert!(stored.contains(&"https://a.test/".to_string()));
 }
 
 #[tokio::test]
 async fn rate_limit_response_triggers_failure_recording_and_nack() {
     let fx = fixture().await;
-    let (crawler, fetcher, _store) =
-        build_crawler(&fx, fast_config(), fast_politeness()).await;
+    let (crawler, fetcher, _store) = build_crawler(&fx, fast_config(), fast_politeness()).await;
 
     fetcher.install_status("https://flaky.test/", 429);
 
-    crawler.deps().frontier.submit(entry("https://flaky.test/")).await.unwrap();
+    crawler
+        .deps()
+        .frontier
+        .submit(entry("https://flaky.test/"))
+        .await
+        .unwrap();
 
     let crawler = Arc::new(crawler);
     let crawler_clone = crawler.clone();
@@ -284,8 +301,7 @@ async fn rate_limit_response_triggers_failure_recording_and_nack() {
 #[tokio::test]
 async fn graceful_shutdown_returns_promptly() {
     let fx = fixture().await;
-    let (crawler, _fetcher, _store) =
-        build_crawler(&fx, fast_config(), fast_politeness()).await;
+    let (crawler, _fetcher, _store) = build_crawler(&fx, fast_config(), fast_politeness()).await;
 
     let crawler = Arc::new(crawler);
     let crawler_clone = crawler.clone();
@@ -304,10 +320,14 @@ async fn graceful_shutdown_returns_promptly() {
 #[tokio::test]
 async fn missing_canned_response_records_transport_failure() {
     let fx = fixture().await;
-    let (crawler, _fetcher, _store) =
-        build_crawler(&fx, fast_config(), fast_politeness()).await;
+    let (crawler, _fetcher, _store) = build_crawler(&fx, fast_config(), fast_politeness()).await;
 
-    crawler.deps().frontier.submit(entry("https://missing.test/")).await.unwrap();
+    crawler
+        .deps()
+        .frontier
+        .submit(entry("https://missing.test/"))
+        .await
+        .unwrap();
 
     let crawler = Arc::new(crawler);
     let crawler_clone = crawler.clone();
@@ -342,7 +362,12 @@ async fn discovered_links_respect_max_depth() {
     // Note: do NOT install /d2; if we ever did fetch it, we'd see a
     // transport-error class entry, but we shouldn't.
 
-    crawler.deps().frontier.submit(entry("https://a.test/")).await.unwrap();
+    crawler
+        .deps()
+        .frontier
+        .submit(entry("https://a.test/"))
+        .await
+        .unwrap();
 
     let crawler = Arc::new(crawler);
     let crawler_clone = crawler.clone();

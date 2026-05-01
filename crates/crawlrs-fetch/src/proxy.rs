@@ -99,7 +99,11 @@ impl std::fmt::Debug for GatewayProxyResolver {
 
 impl GatewayProxyResolver {
     pub fn new(url: impl Into<String>) -> Self {
-        Self { url: url.into(), header_fn: None, ca_pem: None }
+        Self {
+            url: url.into(),
+            header_fn: None,
+            ca_pem: None,
+        }
     }
 
     /// Provide a callback that computes routing headers per request.
@@ -137,6 +141,7 @@ impl ProxyResolver for GatewayProxyResolver {
 }
 
 #[cfg(test)]
+#[allow(unsafe_code)] // env::set_var/remove_var are unsafe under Rust 2024
 mod tests {
     use super::*;
     use crawlrs_core::{CanonicalUrl, FetchRequest};

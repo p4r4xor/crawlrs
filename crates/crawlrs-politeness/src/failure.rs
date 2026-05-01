@@ -49,8 +49,7 @@ pub fn compute_backoff(
     };
     let exponent = (consecutive_failures - 1) as i32;
     let backoff_secs = base * scale * policy.multiplier.powi(exponent);
-    let backoff = Duration::try_from_secs_f64(backoff_secs.max(0.0))
-        .unwrap_or(Duration::ZERO);
+    let backoff = Duration::try_from_secs_f64(backoff_secs.max(0.0)).unwrap_or(Duration::ZERO);
     backoff.min(policy.max_backoff)
 }
 

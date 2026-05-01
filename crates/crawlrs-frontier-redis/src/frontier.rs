@@ -2,20 +2,18 @@
 //! design overview.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use bb8::Pool;
 use bb8_redis::RedisConnectionManager;
-use crawlrs_core::{
-    CanonicalUrl, Error, Frontier, Result, ShardKey, ShardingPolicy, UrlEntry,
-};
+use crawlrs_core::{CanonicalUrl, Error, Frontier, Result, ShardKey, ShardingPolicy, UrlEntry};
+use redis::AsyncCommands;
 use redis::streams::{
     StreamAutoClaimOptions, StreamAutoClaimReply, StreamReadOptions, StreamReadReply,
 };
-use redis::AsyncCommands;
 use thiserror::Error as ThisError;
 use tracing::{debug, info, warn};
 
@@ -136,9 +134,7 @@ impl RedisFrontier {
         let count = sharding_policy.shard_count();
         for &shard in &owned_shards {
             if shard >= count {
-                return Err(
-                    RedisFrontierError::ShardOutOfRange { got: shard, count }.into(),
-                );
+                return Err(RedisFrontierError::ShardOutOfRange { got: shard, count }.into());
             }
         }
 
@@ -192,8 +188,7 @@ impl RedisFrontier {
         let mut conn = self.checkout().await?;
         for &shard in &self.owned_shards {
             let key = self.keys.queue(shard);
-            let len: usize =
-                conn.xlen(&key).await.map_err(RedisFrontierError::from)?;
+            let len: usize = conn.xlen(&key).await.map_err(RedisFrontierError::from)?;
             depths.insert(shard, len);
         }
         Ok(depths)
@@ -241,7 +236,8 @@ impl RedisFrontier {
                 );
                 for stream_id in reply.claimed {
                     if let Some(entry) = decode_stream_entry(&stream_id)? {
-                        self.claims.record(entry.url.clone(), shard, stream_id.id.clone());
+                        self.claims
+                            .record(entry.url.clone(), shard, stream_id.id.clone());
                     }
                 }
             }
@@ -252,10 +248,11 @@ impl RedisFrontier {
 
     // --- internals -----------------------------------------------------
 
-    async fn checkout(
-        &self,
-    ) -> LocalResult<bb8::PooledConnection<'_, RedisConnectionManager>> {
-        self.pool.get().await.map_err(|e| RedisFrontierError::Pool(e.to_string()))
+    async fn checkout(&self) -> LocalResult<bb8::PooledConnection<'_, RedisConnectionManager>> {
+        self.pool
+            .get()
+            .await
+            .map_err(|e| RedisFrontierError::Pool(e.to_string()))
     }
 
     fn assert_owned(&self, shard: ShardKey) -> LocalResult<()> {
@@ -283,10 +280,7 @@ impl RedisFrontier {
         order
     }
 
-    async fn submit_one(
-        &self,
-        entry: &UrlEntry,
-    ) -> LocalResult<bool> {
+    async fn submit_one(&self, entry: &UrlEntry) -> LocalResult<bool> {
         let shard = self.sharding_policy.shard_key(&entry.url);
         self.assert_owned(shard)?;
 
@@ -310,7 +304,12 @@ impl RedisFrontier {
             .await
             .map_err(RedisFrontierError::from)?;
 
-        debug!(shard, url = entry.url.as_str(), newly = result == 1, "submit");
+        debug!(
+            shard,
+            url = entry.url.as_str(),
+            newly = result == 1,
+            "submit"
+        );
         Ok(result == 1)
     }
 
@@ -519,11 +518,9 @@ fn decode_stream_entry(stream_id: &redis::streams::StreamId) -> LocalResult<Opti
         other => {
             return Err(RedisFrontierError::Codec(format!(
                 "expected BulkString in stream field `{STREAM_FIELD_BODY}`, got {other:?}"
-            )))
+            )));
         }
     };
-    let entry =
-        codec::decode(bytes).map_err(|e| RedisFrontierError::Codec(e.to_string()))?;
+    let entry = codec::decode(bytes).map_err(|e| RedisFrontierError::Codec(e.to_string()))?;
     Ok(Some(entry))
 }
-

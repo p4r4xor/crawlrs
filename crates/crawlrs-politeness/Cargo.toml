@@ -29,3 +29,6 @@ chrono.workspace                 = true
 testcontainers.workspace         = true
 testcontainers-modules.workspace = true
 cuid2.workspace                   = true
+
+[lints]
+workspace = true

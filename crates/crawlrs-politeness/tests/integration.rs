@@ -20,9 +20,7 @@ use crawlrs_core::{
     CanonicalUrl, Error, FailureKind, FetchRequest, FetchResponse, Fetcher, PoliteDecision,
     Politeness, Result, ShardingPolicy, SingleShardPolicy,
 };
-use crawlrs_politeness::{
-    BackoffPolicy, PolitenessConfig, PolitenessOverride, RedisPoliteness,
-};
+use crawlrs_politeness::{BackoffPolicy, PolitenessConfig, PolitenessOverride, RedisPoliteness};
 use testcontainers_modules::redis::Redis;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
 use testcontainers_modules::testcontainers::{ContainerAsync, ImageExt};
@@ -64,7 +62,9 @@ impl Fetcher for FakeFetcher {
         self.requests.lock().unwrap().push(url.clone());
         match self.responses.lock().unwrap().get(&url).cloned() {
             Some(resp) => Ok(resp),
-            None => Err(Error::Fetch(format!("FakeFetcher: no canned response for {url}"))),
+            None => Err(Error::Fetch(format!(
+                "FakeFetcher: no canned response for {url}"
+            ))),
         }
     }
 }
@@ -89,7 +89,10 @@ async fn fixture() -> RedisFixture {
     let url = format!("redis://{host}:{port}");
     let manager = RedisConnectionManager::new(url).unwrap();
     let pool = Pool::builder().max_size(8).build(manager).await.unwrap();
-    RedisFixture { _container: container, pool }
+    RedisFixture {
+        _container: container,
+        pool,
+    }
 }
 
 fn run_id() -> String {
@@ -101,11 +104,12 @@ fn url(s: &str) -> CanonicalUrl {
 }
 
 fn config_with(min_delay: Duration, robots: bool) -> PolitenessConfig {
-    let mut c = PolitenessConfig::default();
-    c.min_delay = min_delay;
-    c.honor_robots_txt = robots;
-    c.user_agent = "TestBot/1.0".into();
-    c
+    PolitenessConfig {
+        min_delay,
+        honor_robots_txt: robots,
+        user_agent: "TestBot/1.0".into(),
+        ..Default::default()
+    }
 }
 
 async fn build(
@@ -127,22 +131,38 @@ async fn build(
 async fn unseen_host_is_allowed() {
     let fx = fixture().await;
     let fake = Arc::new(FakeFetcher::default());
-    let p = build(&fx.pool, fake.clone(), config_with(Duration::from_millis(1_000), false)).await;
-    assert_eq!(p.check(&url("https://a.test/")).await.unwrap(), PoliteDecision::Allow);
+    let p = build(
+        &fx.pool,
+        fake.clone(),
+        config_with(Duration::from_millis(1_000), false),
+    )
+    .await;
+    assert_eq!(
+        p.check(&url("https://a.test/")).await.unwrap(),
+        PoliteDecision::Allow
+    );
 }
 
 #[tokio::test]
 async fn record_fetch_sets_delay_for_same_host() {
     let fx = fixture().await;
     let fake = Arc::new(FakeFetcher::default());
-    let p = build(&fx.pool, fake.clone(), config_with(Duration::from_millis(5_000), false)).await;
+    let p = build(
+        &fx.pool,
+        fake.clone(),
+        config_with(Duration::from_millis(5_000), false),
+    )
+    .await;
 
     p.record_fetch(&url("https://a.test/")).await.unwrap();
     let decision = p.check(&url("https://a.test/page2")).await.unwrap();
     match decision {
         PoliteDecision::Delay(d) => {
             let ms = d.as_millis() as u64;
-            assert!(ms > 0 && ms <= 5_000, "expected delay in [0, 5000]; got {ms}");
+            assert!(
+                ms > 0 && ms <= 5_000,
+                "expected delay in [0, 5000]; got {ms}"
+            );
         }
         other => panic!("expected Delay; got {:?}", other),
     }
@@ -152,11 +172,19 @@ async fn record_fetch_sets_delay_for_same_host() {
 async fn delay_elapses_and_host_is_allowed_again() {
     let fx = fixture().await;
     let fake = Arc::new(FakeFetcher::default());
-    let p = build(&fx.pool, fake.clone(), config_with(Duration::from_millis(100), false)).await;
+    let p = build(
+        &fx.pool,
+        fake.clone(),
+        config_with(Duration::from_millis(100), false),
+    )
+    .await;
 
     p.record_fetch(&url("https://a.test/")).await.unwrap();
     tokio::time::sleep(Duration::from_millis(150)).await;
-    assert_eq!(p.check(&url("https://a.test/")).await.unwrap(), PoliteDecision::Allow);
+    assert_eq!(
+        p.check(&url("https://a.test/")).await.unwrap(),
+        PoliteDecision::Allow
+    );
 }
 
 #[tokio::test]
@@ -180,7 +208,10 @@ async fn per_domain_override_uses_custom_delay() {
     let mut config = config_with(Duration::from_millis(100), false);
     config.per_domain.insert(
         "slow.test".into(),
-        PolitenessOverride { min_delay: Some(Duration::from_millis(5_000)), honor_robots_txt: None },
+        PolitenessOverride {
+            min_delay: Some(Duration::from_millis(5_000)),
+            honor_robots_txt: None,
+        },
     );
 
     let p = build(&fx.pool, fake.clone(), config).await;
@@ -238,19 +269,26 @@ async fn consecutive_failures_grow_backoff() {
     let p = build(&fx.pool, fake.clone(), config).await;
 
     let u = url("https://flaky.test/");
-    p.record_failure(&u, FailureKind::TooManyRequests).await.unwrap();
+    p.record_failure(&u, FailureKind::TooManyRequests)
+        .await
+        .unwrap();
     let first = match p.check(&u).await.unwrap() {
         PoliteDecision::Delay(d) => d.as_millis() as u64,
         other => panic!("expected delay after 1 failure; got {:?}", other),
     };
 
-    p.record_failure(&u, FailureKind::TooManyRequests).await.unwrap();
+    p.record_failure(&u, FailureKind::TooManyRequests)
+        .await
+        .unwrap();
     let second = match p.check(&u).await.unwrap() {
         PoliteDecision::Delay(d) => d.as_millis() as u64,
         other => panic!("expected delay after 2 failures; got {:?}", other),
     };
 
-    assert!(second > first, "backoff should grow; first={first} second={second}");
+    assert!(
+        second > first,
+        "backoff should grow; first={first} second={second}"
+    );
 }
 
 #[tokio::test]
@@ -262,7 +300,9 @@ async fn record_fetch_resets_failure_state() {
     let p = build(&fx.pool, fake.clone(), config).await;
 
     let u = url("https://flaky.test/");
-    p.record_failure(&u, FailureKind::TooManyRequests).await.unwrap();
+    p.record_failure(&u, FailureKind::TooManyRequests)
+        .await
+        .unwrap();
     p.record_fetch(&u).await.unwrap();
 
     // After record_fetch resets state, the only delay should come from the
@@ -286,7 +326,9 @@ async fn circuit_opens_after_threshold_consecutive_failures() {
 
     let u = url("https://broken.test/");
     for _ in 0..3 {
-        p.record_failure(&u, FailureKind::TooManyRequests).await.unwrap();
+        p.record_failure(&u, FailureKind::TooManyRequests)
+            .await
+            .unwrap();
     }
     assert_eq!(p.check(&u).await.unwrap(), PoliteDecision::Disallow);
 }
@@ -295,11 +337,19 @@ async fn circuit_opens_after_threshold_consecutive_failures() {
 async fn next_ready_at_finds_soonest_host() {
     let fx = fixture().await;
     let fake = Arc::new(FakeFetcher::default());
-    let p = build(&fx.pool, fake.clone(), config_with(Duration::from_millis(60_000), false)).await;
+    let p = build(
+        &fx.pool,
+        fake.clone(),
+        config_with(Duration::from_millis(60_000), false),
+    )
+    .await;
 
     p.record_fetch(&url("https://a.test/")).await.unwrap();
     let ready = p.next_ready_at().await.unwrap();
-    assert!(ready.is_some(), "next_ready_at should find the host we just recorded");
+    assert!(
+        ready.is_some(),
+        "next_ready_at should find the host we just recorded"
+    );
 
     let when = ready.unwrap();
     let now = std::time::Instant::now();
@@ -315,7 +365,12 @@ async fn next_ready_at_finds_soonest_host() {
 async fn next_ready_at_is_none_when_no_hosts_tracked() {
     let fx = fixture().await;
     let fake = Arc::new(FakeFetcher::default());
-    let p = build(&fx.pool, fake.clone(), config_with(Duration::from_millis(1_000), false)).await;
+    let p = build(
+        &fx.pool,
+        fake.clone(),
+        config_with(Duration::from_millis(1_000), false),
+    )
+    .await;
 
     assert!(p.next_ready_at().await.unwrap().is_none());
 }
@@ -330,7 +385,12 @@ async fn robots_txt_blocks_disallowed_path_and_caches_body() {
         "User-agent: *\nDisallow: /private",
     );
 
-    let p = build(&fx.pool, fake.clone(), config_with(Duration::from_millis(100), true)).await;
+    let p = build(
+        &fx.pool,
+        fake.clone(),
+        config_with(Duration::from_millis(100), true),
+    )
+    .await;
 
     // Public path: allowed.
     let pub_decision = p.check(&url("https://blocky.test/public")).await.unwrap();
@@ -338,7 +398,9 @@ async fn robots_txt_blocks_disallowed_path_and_caches_body() {
 
     // Private path: blocked by robots.
     assert_eq!(
-        p.check(&url("https://blocky.test/private/secret")).await.unwrap(),
+        p.check(&url("https://blocky.test/private/secret"))
+            .await
+            .unwrap(),
         PoliteDecision::Disallow,
     );
 
@@ -346,7 +408,11 @@ async fn robots_txt_blocks_disallowed_path_and_caches_body() {
     // robots.txt.
     let count_before = fake.request_count();
     p.check(&url("https://blocky.test/another")).await.unwrap();
-    assert_eq!(fake.request_count(), count_before, "robots.txt should not be re-fetched");
+    assert_eq!(
+        fake.request_count(),
+        count_before,
+        "robots.txt should not be re-fetched"
+    );
 }
 
 #[tokio::test]
@@ -355,8 +421,16 @@ async fn robots_txt_404_treated_as_no_rules() {
     let fake = Arc::new(FakeFetcher::default());
     fake.install("https://norobots.test/robots.txt", 404, "");
 
-    let p = build(&fx.pool, fake.clone(), config_with(Duration::from_millis(100), true)).await;
-    let decision = p.check(&url("https://norobots.test/anything")).await.unwrap();
+    let p = build(
+        &fx.pool,
+        fake.clone(),
+        config_with(Duration::from_millis(100), true),
+    )
+    .await;
+    let decision = p
+        .check(&url("https://norobots.test/anything"))
+        .await
+        .unwrap();
     assert_ne!(decision, PoliteDecision::Disallow);
 }
 
@@ -375,12 +449,18 @@ async fn robots_per_domain_override_disables_check() {
     let mut config = config_with(Duration::from_millis(100), true);
     config.per_domain.insert(
         "staging.test".into(),
-        PolitenessOverride { min_delay: None, honor_robots_txt: Some(false) },
+        PolitenessOverride {
+            min_delay: None,
+            honor_robots_txt: Some(false),
+        },
     );
 
     let p = build(&fx.pool, fake.clone(), config).await;
     // Override flips honor_robots_txt off for this host; check passes.
-    let decision = p.check(&url("https://staging.test/anything")).await.unwrap();
+    let decision = p
+        .check(&url("https://staging.test/anything"))
+        .await
+        .unwrap();
     assert_ne!(decision, PoliteDecision::Disallow);
     // Robots.txt is never fetched because the gate is disabled.
     assert_eq!(fake.request_count(), 0);
@@ -390,13 +470,22 @@ async fn robots_per_domain_override_disables_check() {
 async fn tracked_hosts_count_reflects_record_fetch() {
     let fx = fixture().await;
     let fake = Arc::new(FakeFetcher::default());
-    let p = build(&fx.pool, fake.clone(), config_with(Duration::from_millis(1_000), false)).await;
+    let p = build(
+        &fx.pool,
+        fake.clone(),
+        config_with(Duration::from_millis(1_000), false),
+    )
+    .await;
 
     assert_eq!(p.tracked_hosts_count().await.unwrap(), 0);
     p.record_fetch(&url("https://a.test/")).await.unwrap();
     p.record_fetch(&url("https://b.test/")).await.unwrap();
     p.record_fetch(&url("https://a.test/page2")).await.unwrap(); // same host
-    assert_eq!(p.tracked_hosts_count().await.unwrap(), 2, "two distinct hosts");
+    assert_eq!(
+        p.tracked_hosts_count().await.unwrap(),
+        2,
+        "two distinct hosts"
+    );
 }
 
 #[tokio::test]
@@ -409,7 +498,12 @@ async fn in_process_robots_lru_populates_after_first_check() {
         "User-agent: *\nAllow: /",
     );
 
-    let p = build(&fx.pool, fake.clone(), config_with(Duration::from_millis(100), true)).await;
+    let p = build(
+        &fx.pool,
+        fake.clone(),
+        config_with(Duration::from_millis(100), true),
+    )
+    .await;
 
     assert_eq!(p.robots().in_process_size(), 0, "LRU empty at startup");
 

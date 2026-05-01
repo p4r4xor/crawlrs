@@ -10,7 +10,7 @@ use tokio::task::JoinSet;
 use tracing::{info, warn};
 
 use crate::maintenance::maintenance_loop;
-use crate::worker::{worker_loop, WorkerDeps};
+use crate::worker::{WorkerDeps, worker_loop};
 
 #[derive(Debug, Error)]
 pub enum CrawlerError {
@@ -86,7 +86,10 @@ impl std::fmt::Debug for Crawler {
         f.debug_struct("Crawler")
             .field("workers", &self.deps.config.workers)
             .field("max_depth", &self.deps.config.max_depth)
-            .field("maintenance_interval", &self.deps.config.maintenance_interval)
+            .field(
+                "maintenance_interval",
+                &self.deps.config.maintenance_interval,
+            )
             .finish()
     }
 }
@@ -192,7 +195,9 @@ impl CrawlerBuilder {
 
     pub fn build(self) -> Result<Crawler, CrawlerError> {
         let frontier = self.frontier.ok_or(CrawlerError::MissingDep("frontier"))?;
-        let politeness = self.politeness.ok_or(CrawlerError::MissingDep("politeness"))?;
+        let politeness = self
+            .politeness
+            .ok_or(CrawlerError::MissingDep("politeness"))?;
         let fetcher = self.fetcher.ok_or(CrawlerError::MissingDep("fetcher"))?;
         let parser = self.parser.ok_or(CrawlerError::MissingDep("parser"))?;
         let store = self.store.ok_or(CrawlerError::MissingDep("store"))?;
@@ -211,7 +216,11 @@ impl CrawlerBuilder {
             config,
         });
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
-        Ok(Crawler { deps, shutdown_tx, shutdown_rx })
+        Ok(Crawler {
+            deps,
+            shutdown_tx,
+            shutdown_rx,
+        })
     }
 }
 

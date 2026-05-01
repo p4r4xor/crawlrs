@@ -44,6 +44,10 @@ mod tests {
         // postcard encoding. Locks against accidental encoding-format
         // regressions (e.g. someone swaps in JSON).
         let bytes = encode(&entry()).unwrap();
-        assert!(bytes.len() < 100, "expected compact encoding; got {} bytes", bytes.len());
+        assert!(
+            bytes.len() < 100,
+            "expected compact encoding; got {} bytes",
+            bytes.len()
+        );
     }
 }

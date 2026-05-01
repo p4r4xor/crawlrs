@@ -25,3 +25,6 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 [[example]]
 name = "fetch"
 path = "examples/fetch.rs"
+
+[lints]
+workspace = true

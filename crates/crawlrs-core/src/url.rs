@@ -153,19 +153,17 @@ mod tests {
 
     #[test]
     fn utm_params_stripped() {
-        let url = CanonicalUrl::parse(
-            "https://example.com/?utm_source=foo&utm_medium=bar&kept=yes",
-        )
-        .unwrap();
+        let url =
+            CanonicalUrl::parse("https://example.com/?utm_source=foo&utm_medium=bar&kept=yes")
+                .unwrap();
         assert_eq!(url.as_str(), "https://example.com/?kept=yes");
     }
 
     #[test]
     fn other_tracking_params_stripped() {
-        let url = CanonicalUrl::parse(
-            "https://example.com/?gclid=x&fbclid=y&ref=z&ref_src=w&kept=yes",
-        )
-        .unwrap();
+        let url =
+            CanonicalUrl::parse("https://example.com/?gclid=x&fbclid=y&ref=z&ref_src=w&kept=yes")
+                .unwrap();
         assert_eq!(url.as_str(), "https://example.com/?kept=yes");
     }
 
@@ -215,14 +213,26 @@ mod tests {
     #[test]
     fn is_http_accepts_http_and_https() {
         assert!(CanonicalUrl::parse("http://example.com").unwrap().is_http());
-        assert!(CanonicalUrl::parse("https://example.com").unwrap().is_http());
+        assert!(
+            CanonicalUrl::parse("https://example.com")
+                .unwrap()
+                .is_http()
+        );
     }
 
     #[test]
     fn is_http_rejects_other_schemes() {
         assert!(!CanonicalUrl::parse("mailto:foo@bar.com").unwrap().is_http());
-        assert!(!CanonicalUrl::parse("javascript:alert(1)").unwrap().is_http());
-        assert!(!CanonicalUrl::parse("ftp://example.com/file").unwrap().is_http());
+        assert!(
+            !CanonicalUrl::parse("javascript:alert(1)")
+                .unwrap()
+                .is_http()
+        );
+        assert!(
+            !CanonicalUrl::parse("ftp://example.com/file")
+                .unwrap()
+                .is_http()
+        );
         assert!(!CanonicalUrl::parse("tel:+15551234567").unwrap().is_http());
     }
 

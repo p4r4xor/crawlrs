@@ -15,7 +15,9 @@ pub struct KeyPrefix {
 
 impl KeyPrefix {
     pub fn new(run_id: impl Into<String>) -> Self {
-        Self { run_id: run_id.into() }
+        Self {
+            run_id: run_id.into(),
+        }
     }
 
     pub fn run_id(&self) -> &str {
@@ -54,7 +56,13 @@ mod tests {
     fn keys_are_run_and_shard_scoped() {
         let k = KeyPrefix::new("run-x");
         assert_eq!(k.hostsched(0), "crawlrs:run-x:s0:hostsched");
-        assert_eq!(k.hoststate(2, "example.com"), "crawlrs:run-x:s2:hoststate:example.com");
-        assert_eq!(k.robots(0, "example.com"), "crawlrs:run-x:s0:robots:example.com");
+        assert_eq!(
+            k.hoststate(2, "example.com"),
+            "crawlrs:run-x:s2:hoststate:example.com"
+        );
+        assert_eq!(
+            k.robots(0, "example.com"),
+            "crawlrs:run-x:s0:robots:example.com"
+        );
     }
 }

@@ -14,9 +14,7 @@ use crawlrs_fetch::{EnvProxyResolver, NoProxyResolver, WreqFetcher, WreqFetcherC
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let url_arg = std::env::args()
-        .nth(1)
-        .ok_or("usage: fetch_one <url>")?;
+    let url_arg = std::env::args().nth(1).ok_or("usage: fetch_one <url>")?;
 
     let proxy = match std::env::var("CRAWLRS_PROXY").as_deref() {
         Ok("env") => Arc::new(EnvProxyResolver::new()) as Arc<_>,

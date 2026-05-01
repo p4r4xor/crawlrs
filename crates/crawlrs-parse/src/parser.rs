@@ -24,10 +24,8 @@ use std::collections::HashSet;
 use std::rc::Rc;
 
 use async_trait::async_trait;
-use crawlrs_core::{
-    CanonicalUrl, Error, FetchResponse, ParsedDocument, Parser, Result,
-};
-use lol_html::{element, text, EndTagHandler, HtmlRewriter, Settings};
+use crawlrs_core::{CanonicalUrl, Error, FetchResponse, ParsedDocument, Parser, Result};
+use lol_html::{EndTagHandler, HtmlRewriter, Settings, element, text};
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct LolHtmlParser;
@@ -58,7 +56,11 @@ impl Parser for LolHtmlParser {
 
         let text = {
             let collapsed = collapse_whitespace(&extracted.visible_text);
-            if collapsed.is_empty() { None } else { Some(collapsed) }
+            if collapsed.is_empty() {
+                None
+            } else {
+                Some(collapsed)
+            }
         };
 
         Ok(ParsedDocument {

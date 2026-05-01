@@ -114,11 +114,7 @@ impl RobotsCache {
     /// and we'd rather over-allow than block crawling on a transient
     /// network blip.
     #[tracing::instrument(skip(self), fields(url = %url, user_agent = %user_agent))]
-    pub async fn allowed(
-        &self,
-        url: &CanonicalUrl,
-        user_agent: &str,
-    ) -> LocalResult<bool> {
+    pub async fn allowed(&self, url: &CanonicalUrl, user_agent: &str) -> LocalResult<bool> {
         let host = match url.host() {
             Some(h) => h,
             None => return Ok(true),
@@ -139,7 +135,8 @@ impl RobotsCache {
         }
         // Tier 2: Redis.
         if let Some(redis_cached) = self.read_cache(host, source_url).await? {
-            self.in_process.insert(host.to_string(), redis_cached.clone());
+            self.in_process
+                .insert(host.to_string(), redis_cached.clone());
             return Ok(redis_cached);
         }
         // Tier 3: network fetch.
@@ -155,9 +152,11 @@ impl RobotsCache {
     ) -> LocalResult<Option<Bytes>> {
         let shard = self.sharding_policy.shard_key(source_url);
         let key = self.keys.robots(shard, host);
-        let mut conn = self.pool.get().await.map_err(|e| {
-            RedisPolitenessError::Pool(format!("{e:?}"))
-        })?;
+        let mut conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| RedisPolitenessError::Pool(format!("{e:?}")))?;
 
         let status: Option<String> = conn
             .hget::<_, _, Option<String>>(&key, ROBOTS_FIELD_STATUS)
@@ -166,24 +165,26 @@ impl RobotsCache {
 
         match status.as_deref() {
             Some(ROBOTS_STATUS_OK) => {
-                let raw: Option<redis::Value> =
-                    conn.hget(&key, ROBOTS_FIELD_BODY).await.map_err(RedisPolitenessError::from)?;
+                let raw: Option<redis::Value> = conn
+                    .hget(&key, ROBOTS_FIELD_BODY)
+                    .await
+                    .map_err(RedisPolitenessError::from)?;
                 Ok(raw.map(value_into_bytes).transpose()?)
             }
             Some(ROBOTS_STATUS_ABSENT) => Ok(Some(Bytes::new())),
             Some(other) => {
-                warn!(host, status = other, "unknown robots cache status; treating as miss");
+                warn!(
+                    host,
+                    status = other,
+                    "unknown robots cache status; treating as miss"
+                );
                 Ok(None)
             }
             None => Ok(None),
         }
     }
 
-    async fn fetch_and_cache(
-        &self,
-        host: &str,
-        source_url: &CanonicalUrl,
-    ) -> LocalResult<Bytes> {
+    async fn fetch_and_cache(&self, host: &str, source_url: &CanonicalUrl) -> LocalResult<Bytes> {
         let robots_url_str = format!("{}://{}/robots.txt", source_url.scheme(), host);
         let robots_url = CanonicalUrl::parse(&robots_url_str).map_err(|e| {
             RedisPolitenessError::Robots(format!("invalid robots url {robots_url_str}: {e}"))
@@ -212,7 +213,11 @@ impl RobotsCache {
                 Ok(Bytes::new())
             }
             other => {
-                warn!(host, status = other, "robots.txt non-2xx/404; treating as absent");
+                warn!(
+                    host,
+                    status = other,
+                    "robots.txt non-2xx/404; treating as absent"
+                );
                 self.write_cache(host, source_url, None).await?;
                 Ok(Bytes::new())
             }
@@ -227,9 +232,11 @@ impl RobotsCache {
     ) -> LocalResult<()> {
         let shard = self.sharding_policy.shard_key(source_url);
         let key = self.keys.robots(shard, host);
-        let mut conn = self.pool.get().await.map_err(|e| {
-            RedisPolitenessError::Pool(format!("{e:?}"))
-        })?;
+        let mut conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| RedisPolitenessError::Pool(format!("{e:?}")))?;
 
         match body {
             Some(b) => {
@@ -311,21 +318,41 @@ mod tests {
     #[test]
     fn disallow_root_blocks_path() {
         let body = b"User-agent: *\nDisallow: /";
-        assert!(!evaluate_rules(body, "test-bot", "https://example.com/anything"));
+        assert!(!evaluate_rules(
+            body,
+            "test-bot",
+            "https://example.com/anything"
+        ));
     }
 
     #[test]
     fn disallow_specific_path_only() {
         let body = b"User-agent: *\nDisallow: /private";
-        assert!(evaluate_rules(body, "test-bot", "https://example.com/public"));
-        assert!(!evaluate_rules(body, "test-bot", "https://example.com/private/secret"));
+        assert!(evaluate_rules(
+            body,
+            "test-bot",
+            "https://example.com/public"
+        ));
+        assert!(!evaluate_rules(
+            body,
+            "test-bot",
+            "https://example.com/private/secret"
+        ));
     }
 
     #[test]
     fn ua_specific_rules_apply_to_matching_ua() {
         let body = b"User-agent: bad-bot\nDisallow: /\n\nUser-agent: *\nDisallow: /private";
-        assert!(!evaluate_rules(body, "bad-bot", "https://example.com/anything"));
-        assert!(evaluate_rules(body, "good-bot", "https://example.com/public"));
+        assert!(!evaluate_rules(
+            body,
+            "bad-bot",
+            "https://example.com/anything"
+        ));
+        assert!(evaluate_rules(
+            body,
+            "good-bot",
+            "https://example.com/public"
+        ));
     }
 
     #[test]

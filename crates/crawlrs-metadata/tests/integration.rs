@@ -6,8 +6,8 @@
 
 use crawlrs_core::{CanonicalUrl, FailureKind, MetadataStore, UrlStatus};
 use crawlrs_metadata::PostgresMetadataStore;
-use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
+use sqlx::postgres::PgPoolOptions;
 use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
 use testcontainers_modules::testcontainers::{ContainerAsync, ImageExt};
@@ -35,8 +35,13 @@ async fn fixture() -> Fixture {
         .connect(&url)
         .await
         .expect("connect to postgres");
-    PostgresMetadataStore::migrate(&pool).await.expect("apply migrations");
-    Fixture { _container: container, pool }
+    PostgresMetadataStore::migrate(&pool)
+        .await
+        .expect("apply migrations");
+    Fixture {
+        _container: container,
+        pool,
+    }
 }
 
 /// Generate a unique URL per test (different host) so concurrent tests
@@ -71,7 +76,11 @@ async fn mark_attempting_creates_row_with_in_progress_status() {
 
     store.mark_attempting(&url, &rid, 0).await.unwrap();
 
-    let m = store.get(&url).await.unwrap().expect("row exists after mark_attempting");
+    let m = store
+        .get(&url)
+        .await
+        .unwrap()
+        .expect("row exists after mark_attempting");
     assert_eq!(m.status, UrlStatus::InProgress);
     assert_eq!(m.retry_count, 0);
     assert_eq!(m.last_run_id, rid);
@@ -97,10 +106,16 @@ async fn mark_attempting_preserves_discovered_at_on_re_attempt() {
     store.mark_attempting(&url, "run-2", 1).await.unwrap();
     let second = store.get(&url).await.unwrap().unwrap();
 
-    assert_eq!(second.discovered_at, original_discovered_at, "discovered_at must not move");
+    assert_eq!(
+        second.discovered_at, original_discovered_at,
+        "discovered_at must not move"
+    );
     assert_eq!(second.last_run_id, "run-2");
     assert_eq!(second.depth, 1);
-    assert!(second.updated_at >= original_discovered_at, "updated_at advances");
+    assert!(
+        second.updated_at >= original_discovered_at,
+        "updated_at advances"
+    );
 }
 
 #[tokio::test]
@@ -129,9 +144,18 @@ async fn mark_failed_increments_retry_count() {
     let url = unique_url("failing");
     store.mark_attempting(&url, "run-1", 0).await.unwrap();
 
-    let count1 = store.mark_failed(&url, FailureKind::TooManyRequests).await.unwrap();
-    let count2 = store.mark_failed(&url, FailureKind::TooManyRequests).await.unwrap();
-    let count3 = store.mark_failed(&url, FailureKind::ServiceUnavailable).await.unwrap();
+    let count1 = store
+        .mark_failed(&url, FailureKind::TooManyRequests)
+        .await
+        .unwrap();
+    let count2 = store
+        .mark_failed(&url, FailureKind::TooManyRequests)
+        .await
+        .unwrap();
+    let count3 = store
+        .mark_failed(&url, FailureKind::ServiceUnavailable)
+        .await
+        .unwrap();
 
     assert_eq!(count1, 1);
     assert_eq!(count2, 2);
@@ -164,7 +188,10 @@ async fn mark_permanently_failed_lands_in_dlq() {
     let store = PostgresMetadataStore::with_pool(fx.pool.clone());
     let url = unique_url("doomed");
     store.mark_attempting(&url, "run-1", 0).await.unwrap();
-    store.mark_failed(&url, FailureKind::ConnectReset).await.unwrap();
+    store
+        .mark_failed(&url, FailureKind::ConnectReset)
+        .await
+        .unwrap();
 
     let dlq_before = store.dlq_size().await.unwrap();
     store
@@ -187,7 +214,10 @@ async fn cross_run_dedup_lookup_works() {
 
     // Run 1 finishes.
     store.mark_attempting(&url, "run-1", 0).await.unwrap();
-    store.mark_succeeded(&url, "/data/run-1.parquet", 42).await.unwrap();
+    store
+        .mark_succeeded(&url, "/data/run-1.parquet", 42)
+        .await
+        .unwrap();
 
     // Run 2 starts later. Asks: "have we crawled this?"
     let m = store.get(&url).await.unwrap().expect("must see prior run");
