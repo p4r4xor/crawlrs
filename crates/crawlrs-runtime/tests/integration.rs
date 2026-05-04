@@ -14,8 +14,9 @@ use bb8_redis::RedisConnectionManager;
 use bytes::Bytes;
 use chrono::Utc;
 use crawlrs_core::{
-    CanonicalUrl, Error, FetchRequest, FetchResponse, Fetcher, ParsedDocument, Result,
-    ShardingPolicy, SingleShardPolicy, SiteAdapterRegistry, Store, UrlEntry,
+    CanonicalUrl, Error, FailureKind, FetchRequest, FetchResponse, Fetcher, MetadataStore,
+    ParsedDocument, Result, ShardingPolicy, SingleShardPolicy, SiteAdapterRegistry, Store,
+    UrlEntry, UrlMetadata, UrlStatus,
 };
 use crawlrs_frontier_redis::RedisFrontier;
 use crawlrs_parse::LolHtmlParser;
@@ -68,6 +69,25 @@ impl FakeFetcher {
         self.responses.lock().unwrap().insert(url.to_string(), resp);
     }
 
+    fn install_status_with_headers(
+        &self,
+        url: &str,
+        status: u16,
+        headers: HashMap<String, String>,
+    ) {
+        let canon = CanonicalUrl::parse(url).unwrap();
+        let resp = FetchResponse {
+            url: canon,
+            status,
+            headers,
+            body: Bytes::new(),
+            redirect_chain: Vec::new(),
+            fetched_at: Utc::now(),
+            duration: Duration::from_millis(0),
+        };
+        self.responses.lock().unwrap().insert(url.to_string(), resp);
+    }
+
     fn calls(&self) -> Vec<String> {
         self.calls.lock().unwrap().clone()
     }
@@ -105,11 +125,108 @@ impl InMemoryStore {
 
 #[async_trait]
 impl Store for InMemoryStore {
-    async fn write(&self, doc: &ParsedDocument, _raw_body: Option<&Bytes>) -> Result<()> {
+    async fn write(&self, doc: &ParsedDocument, _raw_body: Option<&Bytes>) -> Result<String> {
+        let blob_path = format!("memory://{}", doc.url.as_str());
         self.written.lock().unwrap().push(doc.clone());
-        Ok(())
+        Ok(blob_path)
     }
     async fn flush(&self) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// In-memory `MetadataStore` for tests. Mirrors the
+/// `PostgresMetadataStore` semantics (atomic mark transitions, retry
+/// counter preserved across attempts and reset only on success) but
+/// holds state in a `HashMap` so tests don't need a Postgres container.
+/// One row per URL, last-write-wins on every field except `discovered_at`
+/// which is preserved across mark_attempting calls.
+#[derive(Default)]
+struct InMemoryMetadataStore {
+    rows: Mutex<HashMap<String, UrlMetadata>>,
+    dlq: Mutex<Vec<(String, String)>>,
+}
+
+impl InMemoryMetadataStore {
+    #[allow(dead_code)]
+    fn dlq_count(&self) -> usize {
+        self.dlq.lock().unwrap().len()
+    }
+}
+
+#[async_trait]
+impl MetadataStore for InMemoryMetadataStore {
+    async fn get(&self, url: &CanonicalUrl) -> Result<Option<UrlMetadata>> {
+        Ok(self.rows.lock().unwrap().get(url.as_str()).cloned())
+    }
+
+    async fn mark_attempting(&self, url: &CanonicalUrl, run_id: &str, depth: u32) -> Result<()> {
+        let mut rows = self.rows.lock().unwrap();
+        let now = std::time::SystemTime::now();
+        let row = rows
+            .entry(url.as_str().to_string())
+            .and_modify(|m| {
+                m.status = UrlStatus::InProgress;
+                m.last_run_id = run_id.to_string();
+                m.depth = depth;
+                m.updated_at = now;
+            })
+            .or_insert_with(|| UrlMetadata {
+                url: url.clone(),
+                status: UrlStatus::InProgress,
+                retry_count: 0,
+                blob_path: None,
+                content_hash: None,
+                depth,
+                last_run_id: run_id.to_string(),
+                discovered_at: now,
+                updated_at: now,
+            });
+        let _ = row; // silence unused warning when entry path was taken
+        Ok(())
+    }
+
+    async fn mark_succeeded(
+        &self,
+        url: &CanonicalUrl,
+        blob_path: &str,
+        content_hash: u64,
+    ) -> Result<()> {
+        let mut rows = self.rows.lock().unwrap();
+        let row = rows
+            .get_mut(url.as_str())
+            .ok_or_else(|| Error::Metadata(format!("mark_succeeded: missing row for {url}")))?;
+        row.status = UrlStatus::Succeeded;
+        row.retry_count = 0;
+        row.blob_path = Some(blob_path.to_string());
+        row.content_hash = Some(content_hash);
+        row.updated_at = std::time::SystemTime::now();
+        Ok(())
+    }
+
+    async fn mark_failed(&self, url: &CanonicalUrl, _kind: FailureKind) -> Result<u32> {
+        let mut rows = self.rows.lock().unwrap();
+        let row = rows
+            .get_mut(url.as_str())
+            .ok_or_else(|| Error::Metadata(format!("mark_failed: missing row for {url}")))?;
+        row.retry_count += 1;
+        row.status = UrlStatus::FailedTransient;
+        row.updated_at = std::time::SystemTime::now();
+        Ok(row.retry_count)
+    }
+
+    async fn mark_permanently_failed(&self, url: &CanonicalUrl, reason: &str) -> Result<()> {
+        let mut rows = self.rows.lock().unwrap();
+        let row = rows.get_mut(url.as_str()).ok_or_else(|| {
+            Error::Metadata(format!("mark_permanently_failed: missing row for {url}"))
+        })?;
+        row.status = UrlStatus::PermanentlyFailed;
+        row.updated_at = std::time::SystemTime::now();
+        drop(rows);
+        self.dlq
+            .lock()
+            .unwrap()
+            .push((url.as_str().to_string(), reason.to_string()));
         Ok(())
     }
 }
@@ -153,13 +270,19 @@ fn entry(s: &str) -> UrlEntry {
 }
 
 /// Build a crawler with the standard test setup. Returns the crawler
-/// plus handles to the fake fetcher and store so the test can install
-/// canned responses and assert on stored docs.
+/// plus handles to the fake fetcher, store, and metadata so the test
+/// can install canned responses and assert on stored docs / ledger
+/// transitions.
 async fn build_crawler(
     fx: &Fixture,
     config: CrawlerConfig,
     politeness_config: PolitenessConfig,
-) -> (Crawler, Arc<FakeFetcher>, Arc<InMemoryStore>) {
+) -> (
+    Crawler,
+    Arc<FakeFetcher>,
+    Arc<InMemoryStore>,
+    Arc<InMemoryMetadataStore>,
+) {
     let policy: Arc<dyn ShardingPolicy> = Arc::new(SingleShardPolicy);
     let rid = run_id();
 
@@ -176,7 +299,7 @@ async fn build_crawler(
             policy.clone(),
             vec![0],
             fetcher.clone(),
-            rid,
+            rid.clone(),
             politeness_config,
         )
         .await
@@ -184,6 +307,7 @@ async fn build_crawler(
     );
     let parser = Arc::new(LolHtmlParser);
     let store = Arc::new(InMemoryStore::default());
+    let metadata = Arc::new(InMemoryMetadataStore::default());
     let adapters = Arc::new(SiteAdapterRegistry::new());
 
     let crawler = Crawler::builder()
@@ -192,12 +316,14 @@ async fn build_crawler(
         .fetcher(fetcher.clone())
         .parser(parser)
         .store(store.clone())
+        .metadata(metadata.clone())
         .adapters(adapters)
         .config(config)
+        .run_id(rid)
         .build()
         .unwrap();
 
-    (crawler, fetcher, store)
+    (crawler, fetcher, store, metadata)
 }
 
 fn fast_config() -> CrawlerConfig {
@@ -210,6 +336,8 @@ fn fast_config() -> CrawlerConfig {
         startup_poll: Duration::from_millis(20),
         max_idle_sleep: Duration::from_millis(200),
         error_backoff: Duration::from_millis(200),
+        max_retries: 3,
+        cross_run_dedup: true,
     }
 }
 
@@ -218,6 +346,12 @@ fn fast_politeness() -> PolitenessConfig {
         min_delay: Duration::from_millis(50),
         honor_robots_txt: false,
         user_agent: "TestBot/1.0".into(),
+        backoff: crawlrs_politeness::BackoffPolicy {
+            initial_backoff: Duration::from_millis(50),
+            max_backoff: Duration::from_millis(200),
+            multiplier: 2.0,
+            circuit_open_after_failures: 100,
+        },
         ..Default::default()
     }
 }
@@ -229,7 +363,8 @@ fn fast_politeness() -> PolitenessConfig {
 #[tokio::test]
 async fn end_to_end_crawl_one_seed_two_pages() {
     let fx = fixture().await;
-    let (crawler, fetcher, store) = build_crawler(&fx, fast_config(), fast_politeness()).await;
+    let (crawler, fetcher, store, _metadata) =
+        build_crawler(&fx, fast_config(), fast_politeness()).await;
 
     fetcher.install_html(
         "https://a.test/",
@@ -270,7 +405,8 @@ async fn end_to_end_crawl_one_seed_two_pages() {
 #[tokio::test]
 async fn rate_limit_response_triggers_failure_recording_and_nack() {
     let fx = fixture().await;
-    let (crawler, fetcher, _store) = build_crawler(&fx, fast_config(), fast_politeness()).await;
+    let (crawler, fetcher, _store, _metadata) =
+        build_crawler(&fx, fast_config(), fast_politeness()).await;
 
     fetcher.install_status("https://flaky.test/", 429);
 
@@ -301,7 +437,8 @@ async fn rate_limit_response_triggers_failure_recording_and_nack() {
 #[tokio::test]
 async fn graceful_shutdown_returns_promptly() {
     let fx = fixture().await;
-    let (crawler, _fetcher, _store) = build_crawler(&fx, fast_config(), fast_politeness()).await;
+    let (crawler, _fetcher, _store, _metadata) =
+        build_crawler(&fx, fast_config(), fast_politeness()).await;
 
     let crawler = Arc::new(crawler);
     let crawler_clone = crawler.clone();
@@ -320,7 +457,8 @@ async fn graceful_shutdown_returns_promptly() {
 #[tokio::test]
 async fn missing_canned_response_records_transport_failure() {
     let fx = fixture().await;
-    let (crawler, _fetcher, _store) = build_crawler(&fx, fast_config(), fast_politeness()).await;
+    let (crawler, _fetcher, _store, _metadata) =
+        build_crawler(&fx, fast_config(), fast_politeness()).await;
 
     crawler
         .deps()
@@ -346,7 +484,7 @@ async fn discovered_links_respect_max_depth() {
     let fx = fixture().await;
     let mut config = fast_config();
     config.max_depth = Some(1); // seed -> depth 0; children -> depth 1; depth 2 dropped
-    let (crawler, fetcher, store) = build_crawler(&fx, config, fast_politeness()).await;
+    let (crawler, fetcher, store, _metadata) = build_crawler(&fx, config, fast_politeness()).await;
 
     // Seed at depth 0 has one link to depth 1; depth 1 page has one
     // link to depth 2. With max_depth=1, depth-2 should not be
@@ -385,4 +523,195 @@ async fn discovered_links_respect_max_depth() {
         "d2 is at depth 2 and should be dropped under max_depth=1; calls: {calls:?}",
     );
     let _ = store; // unused; kept for parity with other tests
+}
+
+#[tokio::test]
+async fn successful_fetch_records_metadata_succeeded() {
+    // After a successful fetch + parse + store, the metadata ledger
+    // shows status=Succeeded, blob_path set, content_hash set.
+    let fx = fixture().await;
+    let (crawler, fetcher, _store, metadata) =
+        build_crawler(&fx, fast_config(), fast_politeness()).await;
+
+    fetcher.install_html(
+        "https://a.test/",
+        "<html><body><h1>hello</h1></body></html>",
+    );
+
+    crawler
+        .deps()
+        .frontier
+        .submit(entry("https://a.test/"))
+        .await
+        .unwrap();
+
+    let crawler = Arc::new(crawler);
+    let crawler_clone = crawler.clone();
+    let run_handle = tokio::spawn(async move { crawler_clone.run().await });
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    crawler.shutdown();
+    run_handle.await.unwrap().unwrap();
+
+    let row = metadata
+        .get(&url("https://a.test/"))
+        .await
+        .unwrap()
+        .expect("metadata row exists for fetched URL");
+    assert_eq!(row.status, UrlStatus::Succeeded);
+    assert_eq!(row.retry_count, 0);
+    assert!(
+        row.blob_path
+            .as_deref()
+            .unwrap_or("")
+            .starts_with("memory://"),
+        "blob_path={:?}",
+        row.blob_path
+    );
+    assert!(row.content_hash.is_some(), "content_hash recorded");
+}
+
+#[tokio::test]
+async fn repeated_failure_exhausts_retry_budget_and_lands_in_dlq() {
+    // Server returns 503 forever. After max_retries failures the URL
+    // should move to PermanentlyFailed and stop being re-claimed.
+    let fx = fixture().await;
+    let mut config = fast_config();
+    config.max_retries = 2; // 2 attempts then DLQ
+    let (crawler, fetcher, _store, metadata) = build_crawler(&fx, config, fast_politeness()).await;
+
+    fetcher.install_status("https://flaky.test/", 503);
+
+    crawler
+        .deps()
+        .frontier
+        .submit(entry("https://flaky.test/"))
+        .await
+        .unwrap();
+
+    let crawler = Arc::new(crawler);
+    let crawler_clone = crawler.clone();
+    let run_handle = tokio::spawn(async move { crawler_clone.run().await });
+    // Long enough that the worker reclaims via XAUTOCLAIM and exhausts
+    // the budget; autoclaim_idle is set to 0 in the fixture so retries
+    // are immediate.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    crawler.shutdown();
+    run_handle.await.unwrap().unwrap();
+
+    let row = metadata
+        .get(&url("https://flaky.test/"))
+        .await
+        .unwrap()
+        .expect("metadata row exists after first failure");
+    assert_eq!(
+        row.status,
+        UrlStatus::PermanentlyFailed,
+        "URL should land in DLQ after retry budget; got {:?}",
+        row.status,
+    );
+    assert!(metadata.dlq_count() >= 1, "DLQ has at least one entry");
+}
+
+#[tokio::test]
+async fn cross_run_dedup_skips_previously_succeeded_url() {
+    // Pre-seed the metadata ledger with a Succeeded row for some URL.
+    // When the runtime claims that URL, it must ack without fetching.
+    let fx = fixture().await;
+    let (crawler, fetcher, _store, metadata) =
+        build_crawler(&fx, fast_config(), fast_politeness()).await;
+
+    let already_done = url("https://done.test/");
+    metadata
+        .mark_attempting(&already_done, "prior-run", 0)
+        .await
+        .unwrap();
+    metadata
+        .mark_succeeded(&already_done, "memory://prior", 0xdead_beef)
+        .await
+        .unwrap();
+
+    // Install a canned response so we'd detect a fetch if it happened.
+    fetcher.install_html(
+        "https://done.test/",
+        "<html><body>should not be fetched</body></html>",
+    );
+
+    crawler
+        .deps()
+        .frontier
+        .submit(UrlEntry::seed(already_done.clone()))
+        .await
+        .unwrap();
+
+    let crawler = Arc::new(crawler);
+    let crawler_clone = crawler.clone();
+    let run_handle = tokio::spawn(async move { crawler_clone.run().await });
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    crawler.shutdown();
+    run_handle.await.unwrap().unwrap();
+
+    assert!(
+        !fetcher.calls().contains(&"https://done.test/".to_string()),
+        "cross-run dedup should have prevented the fetch; calls: {:?}",
+        fetcher.calls(),
+    );
+}
+
+#[tokio::test]
+async fn retry_after_header_extends_politeness_wake_time() {
+    // Server returns 503 with Retry-After: 2 (seconds). compute_backoff
+    // should take max(computed=50ms, hint=2s) = 2s, parking the host
+    // for that long.
+    //
+    // We verify by counting fetch calls within a short observation
+    // window: with the hint honored, we should see ~1 attempt; without,
+    // we'd see many more (50ms backoff × N retries).
+    let fx = fixture().await;
+    let mut config = fast_config();
+    config.max_retries = 100; // disable DLQ short-circuit so we observe retry pacing only
+
+    // max_backoff must be larger than the server hint so the cap
+    // doesn't clip the 2s value.
+    let politeness_cfg = PolitenessConfig {
+        min_delay: Duration::from_millis(50),
+        honor_robots_txt: false,
+        user_agent: "TestBot/1.0".into(),
+        backoff: crawlrs_politeness::BackoffPolicy {
+            initial_backoff: Duration::from_millis(50),
+            max_backoff: Duration::from_secs(60),
+            multiplier: 2.0,
+            circuit_open_after_failures: 1000,
+        },
+        ..Default::default()
+    };
+    let (crawler, fetcher, _store, _metadata) = build_crawler(&fx, config, politeness_cfg).await;
+
+    let mut headers = HashMap::new();
+    headers.insert("Retry-After".into(), "2".into());
+    fetcher.install_status_with_headers("https://slow.test/", 503, headers);
+
+    crawler
+        .deps()
+        .frontier
+        .submit(entry("https://slow.test/"))
+        .await
+        .unwrap();
+
+    let crawler = Arc::new(crawler);
+    let crawler_clone = crawler.clone();
+    let run_handle = tokio::spawn(async move { crawler_clone.run().await });
+    // Observe for ~800ms; Retry-After: 2 means at most 1 attempt fits.
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    crawler.shutdown();
+    run_handle.await.unwrap().unwrap();
+
+    let attempts = fetcher
+        .calls()
+        .iter()
+        .filter(|u| *u == "https://slow.test/")
+        .count();
+    assert!(
+        attempts <= 1,
+        "Retry-After: 2 should have parked the host past our 800ms window; got {attempts} attempts",
+    );
 }

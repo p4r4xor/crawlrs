@@ -9,7 +9,7 @@
 //! All trait methods are `async` and use `#[async_trait]` so they're
 //! object-safe (we want `Box<dyn Fetcher>` for runtime composition).
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -30,8 +30,16 @@ pub trait Parser: Send + Sync {
 
 #[async_trait]
 pub trait Store: Send + Sync {
-    /// Persist one parsed document, optionally with the raw response body.
-    async fn write(&self, doc: &ParsedDocument, raw_body: Option<&Bytes>) -> Result<()>;
+    /// Persist one parsed document, optionally with the raw response
+    /// body. Returns the storage-specific identifier for the persisted
+    /// blob: a filesystem path for `JsonLinesStore`, an `s3://` URI for
+    /// `ParquetStore` on S3, a `warc://record-id` for `WarcStore`,
+    /// `memory://...` for in-memory test stubs.
+    ///
+    /// The returned string is recorded in the metadata ledger
+    /// ([`UrlMetadata::blob_path`]) so a future "where is this URL's
+    /// body?" question is answered without searching the data plane.
+    async fn write(&self, doc: &ParsedDocument, raw_body: Option<&Bytes>) -> Result<String>;
 
     /// Flush any buffered writes to durable storage. Implementations that
     /// write synchronously may make this a no-op.
@@ -176,15 +184,25 @@ impl ShardingPolicy for HostHashShardPolicy {
 }
 
 /// FNV-1a 64-bit hash. Deterministic across processes and crate versions,
-/// no allocation, no dependency. Used for shard routing where a stable
+/// no allocation, no dependency. Used for shard routing (host hash) and
+/// content fingerprinting ([`content_hash`]) where a stable
 /// non-cryptographic hash is sufficient.
-fn fnv1a_64(bytes: &[u8]) -> u64 {
+pub fn fnv1a_64(bytes: &[u8]) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for &byte in bytes {
         hash ^= byte as u64;
         hash = hash.wrapping_mul(0x100_0000_01b3);
     }
     hash
+}
+
+/// Compute the content hash recorded in [`UrlMetadata::content_hash`].
+/// Wraps [`fnv1a_64`] so callers don't need to know the underlying
+/// hash function. Stability matters more than collision resistance:
+/// two runs of the crawler against the same body must produce the
+/// same value so change-detection works across runs.
+pub fn content_hash(body: &[u8]) -> u64 {
+    fnv1a_64(body)
 }
 
 // ---------------------------------------------------------------------------
@@ -249,9 +267,23 @@ pub trait Politeness: Send + Sync {
     /// A fetch failed. Implementations use this to apply per-host
     /// exponential backoff on rate-limit categories (429/503) and to
     /// open per-host circuits after repeated transport failures.
+    ///
+    /// `retry_after` carries a server-supplied hint when one was
+    /// present (HTTP `Retry-After` header, RFC 9110 §10.2.3). When
+    /// present, implementations honor it as a *floor*: the next
+    /// allowed time is `max(server_hint, computed_backoff)`. Servers
+    /// know best how long they need to recover; we don't undercut
+    /// them, but we still apply our own backoff if it's harsher
+    /// (e.g., after the 5th consecutive 503 we may want longer than
+    /// the 5-second hint).
     /// Without this, the policy can't distinguish "host is fine, just
     /// slow" from "host is rate-limiting us."
-    async fn record_failure(&self, url: &CanonicalUrl, kind: FailureKind) -> Result<()>;
+    async fn record_failure(
+        &self,
+        url: &CanonicalUrl,
+        kind: FailureKind,
+        retry_after: Option<Duration>,
+    ) -> Result<()>;
 
     /// Soonest moment any host this instance tracks becomes claimable.
     /// Lets the runtime sleep precisely until then instead of

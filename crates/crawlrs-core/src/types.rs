@@ -135,8 +135,9 @@ pub struct UrlMetadata {
     /// Where the body lives in the configured `Store` impl. `None`
     /// until the URL has been successfully fetched + persisted.
     pub blob_path: Option<String>,
-    /// xxhash64 of the response body, recorded at storage time. Used
-    /// for content-level dedup (v2) and change detection.
+    /// `fnv1a_64` of the response body (see [`crate::content_hash`]),
+    /// recorded at storage time. Used for content-level dedup (v2)
+    /// and change detection.
     pub content_hash: Option<u64>,
     /// Hop distance from the seed that introduced this URL.
     pub depth: u32,

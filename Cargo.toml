@@ -24,6 +24,7 @@ authors     = ["Aniketh <p4r4xor@gmail.com>"]
 async-trait = "0.1"
 bb8         = "0.9"
 futures     = { version = "0.3", default-features = false, features = ["std", "async-await"] }
+httpdate    = "1.0"
 bb8-redis   = "0.26"
 bytes       = "1"
 chrono      = { version = "0.4", default-features = false, features = ["serde", "std", "clock"] }

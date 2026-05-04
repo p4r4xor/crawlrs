@@ -241,9 +241,13 @@ async fn record_failure_applies_backoff() {
     };
     let p = build(&fx.pool, fake.clone(), config).await;
 
-    p.record_failure(&url("https://flaky.test/"), FailureKind::TooManyRequests)
-        .await
-        .unwrap();
+    p.record_failure(
+        &url("https://flaky.test/"),
+        FailureKind::TooManyRequests,
+        None,
+    )
+    .await
+    .unwrap();
 
     let decision = p.check(&url("https://flaky.test/page")).await.unwrap();
     match decision {
@@ -269,7 +273,7 @@ async fn consecutive_failures_grow_backoff() {
     let p = build(&fx.pool, fake.clone(), config).await;
 
     let u = url("https://flaky.test/");
-    p.record_failure(&u, FailureKind::TooManyRequests)
+    p.record_failure(&u, FailureKind::TooManyRequests, None)
         .await
         .unwrap();
     let first = match p.check(&u).await.unwrap() {
@@ -277,7 +281,7 @@ async fn consecutive_failures_grow_backoff() {
         other => panic!("expected delay after 1 failure; got {:?}", other),
     };
 
-    p.record_failure(&u, FailureKind::TooManyRequests)
+    p.record_failure(&u, FailureKind::TooManyRequests, None)
         .await
         .unwrap();
     let second = match p.check(&u).await.unwrap() {
@@ -300,7 +304,7 @@ async fn record_fetch_resets_failure_state() {
     let p = build(&fx.pool, fake.clone(), config).await;
 
     let u = url("https://flaky.test/");
-    p.record_failure(&u, FailureKind::TooManyRequests)
+    p.record_failure(&u, FailureKind::TooManyRequests, None)
         .await
         .unwrap();
     p.record_fetch(&u).await.unwrap();
@@ -326,7 +330,7 @@ async fn circuit_opens_after_threshold_consecutive_failures() {
 
     let u = url("https://broken.test/");
     for _ in 0..3 {
-        p.record_failure(&u, FailureKind::TooManyRequests)
+        p.record_failure(&u, FailureKind::TooManyRequests, None)
             .await
             .unwrap();
     }

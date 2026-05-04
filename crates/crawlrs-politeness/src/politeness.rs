@@ -294,7 +294,12 @@ impl Politeness for RedisPoliteness {
     }
 
     #[tracing::instrument(skip(self), fields(url = %url, kind = ?kind))]
-    async fn record_failure(&self, url: &CanonicalUrl, kind: FailureKind) -> Result<()> {
+    async fn record_failure(
+        &self,
+        url: &CanonicalUrl,
+        kind: FailureKind,
+        retry_after: Option<std::time::Duration>,
+    ) -> Result<()> {
         let host = self.host_of(url).map_err(Error::from)?;
         let shard = self.sharding_policy.shard_key(url);
         self.assert_owned(shard).map_err(Error::from)?;
@@ -313,7 +318,12 @@ impl Politeness for RedisPoliteness {
             .map_err(RedisPolitenessError::from)
             .map_err(Error::from)?;
 
-        let backoff = compute_backoff(new_failures, kind, &self.config.backoff);
+        // Take max(server hint, computed backoff). Server's hint is a
+        // floor; if our exponential backoff is harsher (e.g. 5th 503
+        // in a row), we still apply that. Servers under-estimate
+        // recovery time more often than they over-estimate it, but
+        // either way max() honors both bounds.
+        let backoff = compute_backoff(new_failures, kind, retry_after, &self.config.backoff);
         let until = SystemTime::now() + backoff;
         let until_score = wall_to_score(until);
 
@@ -334,6 +344,7 @@ impl Politeness for RedisPoliteness {
             host,
             new_failures,
             backoff_ms = backoff.as_millis() as u64,
+            retry_after_ms = retry_after.map(|d| d.as_millis() as u64).unwrap_or(0),
             "record_failure",
         );
         Ok(())

@@ -12,6 +12,7 @@ crawlrs-core.workspace = true
 
 async-trait.workspace = true
 bytes.workspace       = true
+httpdate.workspace    = true
 thiserror.workspace   = true
 tokio.workspace       = true
 tracing.workspace     = true
@@ -24,11 +25,13 @@ crawlrs-fetch.workspace          = true
 crawlrs-frontier-redis.workspace = true
 crawlrs-politeness.workspace     = true
 crawlrs-parse.workspace          = true
+crawlrs-metadata.workspace       = true
 
 bb8.workspace                    = true
 bb8-redis.workspace              = true
 chrono.workspace                 = true
 redis.workspace                  = true
+sqlx                             = { workspace = true }
 testcontainers.workspace         = true
 testcontainers-modules.workspace = true
 cuid2.workspace                   = true

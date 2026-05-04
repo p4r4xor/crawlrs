@@ -22,7 +22,7 @@ pub use outcome::{CrawlOutcome, FetchOutcome, ParseOutcome, StoreOutcome};
 pub use proxy::{ProxyOutcome, ProxyResolver, ProxySelection};
 pub use traits::{
     FailureKind, Fetcher, Frontier, HostHashShardPolicy, MetadataStore, Parser, PoliteDecision,
-    Politeness, ShardKey, ShardingPolicy, SingleShardPolicy, Store,
+    Politeness, ShardKey, ShardingPolicy, SingleShardPolicy, Store, content_hash, fnv1a_64,
 };
 pub use types::{
     FetchRequest, FetchResponse, ParsedDocument, RedirectHop, UrlEntry, UrlMetadata, UrlStatus,

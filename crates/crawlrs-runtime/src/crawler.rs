@@ -3,7 +3,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crawlrs_core::{Fetcher, Frontier, Parser, Politeness, SiteAdapterRegistry, Store};
+use crawlrs_core::{
+    Fetcher, Frontier, MetadataStore, Parser, Politeness, SiteAdapterRegistry, Store,
+};
 use thiserror::Error;
 use tokio::sync::watch;
 use tokio::task::JoinSet;
@@ -55,6 +57,21 @@ pub struct CrawlerConfig {
     /// Sleep duration after an unexpected backend error before
     /// retrying. Throttles error spam without giving up.
     pub error_backoff: Duration,
+
+    /// Per-URL retry budget. After this many `mark_failed` calls the
+    /// runtime moves the URL to the dead-letter queue
+    /// (`mark_permanently_failed` + frontier `ack` so it stops cycling
+    /// via `XAUTOCLAIM`). 5 covers typical 429/503 transient bursts
+    /// without re-attempting genuinely broken hosts indefinitely; tune
+    /// down on hostile networks, up on tolerant corpora.
+    pub max_retries: u32,
+
+    /// When true, every claimed URL is checked against the metadata
+    /// ledger before fetching; if a prior run already succeeded, the
+    /// runtime acks immediately without re-fetching. Costs one
+    /// metadata `get` per claim. Disable for runs that *want* to
+    /// re-fetch (re-crawl mode, content-freshness validation).
+    pub cross_run_dedup: bool,
 }
 
 impl Default for CrawlerConfig {
@@ -68,6 +85,8 @@ impl Default for CrawlerConfig {
             startup_poll: Duration::from_millis(100),
             max_idle_sleep: Duration::from_secs(5),
             error_backoff: Duration::from_secs(1),
+            max_retries: 5,
+            cross_run_dedup: true,
         }
     }
 }
@@ -159,8 +178,10 @@ pub struct CrawlerBuilder {
     fetcher: Option<Arc<dyn Fetcher>>,
     parser: Option<Arc<dyn Parser>>,
     store: Option<Arc<dyn Store>>,
+    metadata: Option<Arc<dyn MetadataStore>>,
     adapters: Option<Arc<SiteAdapterRegistry>>,
     config: Option<CrawlerConfig>,
+    run_id: Option<String>,
 }
 
 impl CrawlerBuilder {
@@ -184,12 +205,20 @@ impl CrawlerBuilder {
         self.store = Some(s);
         self
     }
+    pub fn metadata(mut self, m: Arc<dyn MetadataStore>) -> Self {
+        self.metadata = Some(m);
+        self
+    }
     pub fn adapters(mut self, a: Arc<SiteAdapterRegistry>) -> Self {
         self.adapters = Some(a);
         self
     }
     pub fn config(mut self, c: CrawlerConfig) -> Self {
         self.config = Some(c);
+        self
+    }
+    pub fn run_id(mut self, id: impl Into<String>) -> Self {
+        self.run_id = Some(id.into());
         self
     }
 
@@ -201,6 +230,8 @@ impl CrawlerBuilder {
         let fetcher = self.fetcher.ok_or(CrawlerError::MissingDep("fetcher"))?;
         let parser = self.parser.ok_or(CrawlerError::MissingDep("parser"))?;
         let store = self.store.ok_or(CrawlerError::MissingDep("store"))?;
+        let metadata = self.metadata.ok_or(CrawlerError::MissingDep("metadata"))?;
+        let run_id = self.run_id.ok_or(CrawlerError::MissingDep("run_id"))?;
         let adapters = self
             .adapters
             .unwrap_or_else(|| Arc::new(SiteAdapterRegistry::new()));
@@ -212,8 +243,10 @@ impl CrawlerBuilder {
             fetcher,
             parser,
             store,
+            metadata,
             adapters,
             config,
+            run_id,
         });
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Ok(Crawler {
