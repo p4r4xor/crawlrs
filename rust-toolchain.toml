@@ -1,0 +1,9 @@
+# Pinning the toolchain stops local/CI drift; everyone running `cargo`
+# in this repo gets exactly this rustc + the components our tooling
+# requires (rustfmt for `cargo fmt`, clippy for `cargo clippy`).
+# Bump deliberately, in a PR, with a note in the commit message about
+# what motivated the bump (new lint, new feature, edition).
+[toolchain]
+channel = "1.94.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

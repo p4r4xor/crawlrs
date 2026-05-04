@@ -1,0 +1,35 @@
+# Nextest profiles. The default profile applies to local + CI runs;
+# override per-binary for testcontainer-backed tests, which have a
+# baseline cost (docker pull + container boot) that pure-Rust unit
+# tests do not.
+#
+# Why thresholds matter: silent slowness is how flaky tests sneak
+# in. ADR-0012 was a worker race that took several test reruns to
+# notice; a slow-timeout warn would have flagged the affected test
+# binary the first time it tipped over.
+
+[profile.default]
+# Most of our tests are sub-second pure-Rust. Anything past 30s is
+# either stuck or waiting on a resource it shouldn't be waiting on.
+# `terminate-after = 3` kills the test at 90s rather than letting
+# `cargo nextest` hang forever; generous enough to survive a cold
+# docker pull on a fresh checkout.
+slow-timeout = { period = "30s", terminate-after = 3 }
+
+# Print failure output the moment a test fails AND again at the end
+# of the run, so a long suite doesn't bury the failure mid-stream.
+failure-output = "immediate-final"
+
+# Testcontainer-backed integration tests:
+#   - per-crate `tests/integration.rs` files (frontier-redis,
+#     politeness, metadata, runtime) all boot a Redis or Postgres
+#     container via testcontainers-rs.
+#   - `runtime/tests/postgres_metadata.rs` ditto.
+# They are CPU-light but heavyweight on baseline latency, so we
+# raise the slow threshold and count each as two threads against
+# the parallelism budget (so we don't fork off N redis containers
+# in parallel and thrash the docker daemon).
+[[profile.default.overrides]]
+filter = 'binary(integration) | binary(postgres_metadata)'
+slow-timeout = { period = "60s", terminate-after = 3 }
+threads-required = 2

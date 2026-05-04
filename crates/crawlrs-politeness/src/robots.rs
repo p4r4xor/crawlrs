@@ -332,6 +332,12 @@ fn value_into_bytes(v: redis::Value) -> LocalResult<Bytes> {
     }
 }
 
+// Inline because: `evaluate_rules` is `pub(crate)` (a thin wrapper
+// over `texting_robots`; users who want robots evaluation should
+// reach for `texting_robots` directly, not us), and `jittered_ttl`
+// is fully private (a hash-derived TTL helper that has no
+// standalone purpose outside the cache). Both are correctly
+// invisible from `tests/`; we test them inline.
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -31,6 +31,7 @@ crawlrs-testing.workspace        = true
 bb8.workspace                    = true
 bb8-redis.workspace              = true
 chrono.workspace                 = true
+httpdate.workspace               = true
 redis.workspace                  = true
 sqlx                             = { workspace = true }
 testcontainers.workspace         = true

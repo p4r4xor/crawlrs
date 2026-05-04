@@ -258,22 +258,3 @@ impl CrawlerBuilder {
         })
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn missing_deps_fail_to_build() {
-        let err = Crawler::builder().build().unwrap_err();
-        assert!(matches!(err, CrawlerError::MissingDep("frontier")));
-    }
-
-    #[test]
-    fn defaults_are_sensible() {
-        let c = CrawlerConfig::default();
-        assert!(c.workers >= 1);
-        assert!(c.maintenance_interval >= Duration::from_secs(1));
-        assert!(c.empty_queue_poll < c.maintenance_interval);
-    }
-}

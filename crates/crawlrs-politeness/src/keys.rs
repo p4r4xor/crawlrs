@@ -47,22 +47,3 @@ impl KeyPrefix {
         format!("crawlrs:{}:s{}:robots:{}", self.run_id, shard, host)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn keys_are_run_and_shard_scoped() {
-        let k = KeyPrefix::new("run-x");
-        assert_eq!(k.hostsched(0), "crawlrs:run-x:s0:hostsched");
-        assert_eq!(
-            k.hoststate(2, "example.com"),
-            "crawlrs:run-x:s2:hoststate:example.com"
-        );
-        assert_eq!(
-            k.robots(0, "example.com"),
-            "crawlrs:run-x:s0:robots:example.com"
-        );
-    }
-}

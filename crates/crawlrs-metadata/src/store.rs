@@ -392,6 +392,13 @@ fn datetime_to_system_time(dt: DateTime<Utc>) -> SystemTime {
     }
 }
 
+// Inline because: `parse_status`, `failure_kind_str`, and
+// `datetime_to_system_time` are all private boundary functions that
+// translate Postgres-vocabulary (TEXT statuses, BIGINT timestamps,
+// chrono::DateTime) into our domain types. Making them `pub` would
+// commit the public API to a specific DB schema and break a future
+// swap to DynamoDB / Scylla. They stay private; their tests stay
+// here.
 #[cfg(test)]
 mod tests {
     use super::*;

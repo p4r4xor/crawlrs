@@ -18,4 +18,6 @@ pub mod maintenance;
 pub mod worker;
 
 pub use crawler::{Crawler, CrawlerBuilder, CrawlerConfig, CrawlerError};
-pub use failure::{classify_status, classify_transport_error};
+pub use failure::{
+    classify_status, classify_transport_error, extract_retry_after, parse_retry_after,
+};

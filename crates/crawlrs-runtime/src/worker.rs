@@ -428,6 +428,12 @@ impl UrlPipeline {
     }
 }
 
+// Inline because: this is a *locality guard*, not a visibility-forced
+// test. Its job is to remind whoever edits `WorkerDeps` (a few
+// hundred lines above) to update the array; that reminder only
+// works if the test sits in the same file as the struct. Moving it
+// to `tests/` would make the array a number floating in space, no
+// longer tied to the thing it guards.
 #[cfg(test)]
 mod tests {
     #[test]
