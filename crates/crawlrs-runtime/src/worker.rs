@@ -6,12 +6,19 @@
 //! and don't coordinate with each other directly. Backpressure is
 //! implicit via await-points: a worker that's blocked in `fetch` or
 //! `store` simply isn't claiming new URLs.
+//!
+//! The per-URL pipeline is encapsulated in [`UrlPipeline`]: a struct
+//! that owns one URL's working set (deps + entry) and exposes one
+//! short async method per phase. The top-level [`UrlPipeline::run`]
+//! reads as a checklist; each phase fits well under the 60-line
+//! readability budget.
 
 use std::sync::Arc;
 
 use crawlrs_core::{
-    FetchRequest, FetchResponse, Fetcher, Frontier, MetadataStore, ParsedDocument, Parser,
-    PoliteDecision, Politeness, SiteAdapterRegistry, Store, UrlEntry, UrlStatus, content_hash,
+    CanonicalUrl, FailureKind, FetchRequest, FetchResponse, Fetcher, Frontier, MetadataStore,
+    ParsedDocument, Parser, PoliteDecision, Politeness, SiteAdapterRegistry, Store, UrlEntry,
+    UrlStatus, content_hash,
 };
 use tokio::sync::watch;
 use tokio::time::Instant as TokioInstant;
@@ -42,7 +49,7 @@ pub struct WorkerDeps {
 ///   1. Sleep until the soonest host-wake-time the politeness layer
 ///      knows about, or a brief poll interval if no hosts are tracked.
 ///   2. Claim a URL. If the queue is empty, sleep poll interval.
-///   3. Process the URL (politeness gate, fetch, parse, submit, store).
+///   3. Process the URL via [`UrlPipeline`].
 pub async fn worker_loop(
     worker_id: usize,
     deps: Arc<WorkerDeps>,
@@ -117,230 +124,308 @@ async fn sleep_until_ready(deps: &Arc<WorkerDeps>, shutdown: &mut watch::Receive
     }
 }
 
+/// Trace boundary for one URL's pipeline. Wraps [`UrlPipeline::run`]
+/// so the worker_id is in scope for every span the pipeline emits.
 #[tracing::instrument(skip(deps), fields(worker_id, url = %entry.url, depth = entry.depth))]
 async fn process_url(_worker_id: usize, deps: &Arc<WorkerDeps>, entry: UrlEntry) {
-    // Cross-run dedup: if a prior run already crawled this URL
-    // successfully, ack and skip without fetching. Costs one metadata
-    // get per claim; opt out via `CrawlerConfig::cross_run_dedup` if
-    // re-fetching is the point of the run.
-    if deps.config.cross_run_dedup {
-        match deps.metadata.get(&entry.url).await {
-            Ok(Some(prior)) if prior.status == UrlStatus::Succeeded => {
-                debug!(url = %entry.url, "cross-run dedup hit; acking without fetch");
-                let _ = deps.frontier.ack(&entry.url).await;
-                return;
-            }
-            Ok(Some(prior)) if prior.status == UrlStatus::PermanentlyFailed => {
-                debug!(url = %entry.url, "URL is in DLQ; acking without fetch");
-                let _ = deps.frontier.ack(&entry.url).await;
-                return;
-            }
-            Ok(_) | Err(_) => {} // missing row, transient ledger error, or non-terminal status -> proceed
-        }
-    }
-
-    // Politeness gate.
-    match deps.politeness.check(&entry.url).await {
-        Ok(PoliteDecision::Allow) => {}
-        Ok(PoliteDecision::Disallow) => {
-            // Disallow is a per-run policy verdict, not a URL-level
-            // failure: robots.txt or excludes can flip between runs,
-            // so we don't burn a metadata row recording today's "no."
-            // Just ack and move on.
-            debug!(url = %entry.url, "politeness disallowed; acking");
-            let _ = deps.frontier.ack(&entry.url).await;
-            return;
-        }
-        Ok(PoliteDecision::Delay(d)) => {
-            // Host isn't ready. Nack so the entry stays in our PEL for
-            // XAUTOCLAIM-driven re-delivery later; another worker may
-            // hit it once the host wakes. Avoids tight retry loops.
-            // No metadata write: a Delay isn't an attempt yet.
-            debug!(url = %entry.url, delay_ms = d.as_millis() as u64, "politeness delay; nacking");
-            let _ = deps.frontier.nack(&entry.url).await;
-            return;
-        }
-        Err(e) => {
-            warn!(url = %entry.url, error = %e, "politeness.check failed");
-            let _ = deps.frontier.nack(&entry.url).await;
-            return;
-        }
-    }
-
-    // Mark the attempt before any fetch I/O. If the worker dies before
-    // ack/nack, the row is left InProgress and XAUTOCLAIM hands the
-    // URL to a peer who'll redo this transition.
-    if let Err(e) = deps
-        .metadata
-        .mark_attempting(&entry.url, &deps.run_id, entry.depth)
-        .await
-    {
-        warn!(url = %entry.url, error = %e, "metadata.mark_attempting failed; continuing");
-    }
-
-    // Fetch.
-    let mut req = FetchRequest::new(entry.url.clone());
-    req.headers
-        .insert("User-Agent".into(), deps.config.user_agent.clone());
-    let resp = match deps.fetcher.fetch(req).await {
-        Ok(r) => r,
-        Err(e) => {
-            let kind = classify_transport_error(&e);
-            warn!(url = %entry.url, error = %e, kind = ?kind, "fetch transport error");
-            // No response means no Retry-After header; computed
-            // backoff is the only signal.
-            let _ = deps.politeness.record_failure(&entry.url, kind, None).await;
-            handle_failure(deps, &entry, kind, &format!("transport: {e}")).await;
-            return;
-        }
-    };
-
-    // HTTP-status-level failure handling.
-    if let Some(kind) = classify_status(resp.status) {
-        // Honor Retry-After when the server sent one (RFC 9110 §10.2.3).
-        // Politeness uses max(server_hint, computed_backoff).
-        let retry_after = extract_retry_after(&resp.headers);
-        debug!(
-            url = %entry.url,
-            status = resp.status,
-            kind = ?kind,
-            retry_after_ms = retry_after.map(|d| d.as_millis() as u64).unwrap_or(0),
-            "fetch http failure",
-        );
-        let _ = deps
-            .politeness
-            .record_failure(&entry.url, kind, retry_after)
-            .await;
-        handle_failure(deps, &entry, kind, &format!("http {}", resp.status)).await;
-        return;
-    }
-
-    // Successful fetch: tell politeness, then run the extraction
-    // pipeline (site adapter -> generic parser fallback -> store ->
-    // submit discovered links -> ack).
-    let _ = deps.politeness.record_fetch(&entry.url).await;
-
-    let doc = match extract_document(deps, &resp).await {
-        Some(d) => d,
-        None => {
-            // Parser/adapter failed; the URL was fetched but the bytes
-            // were unusable. Mark permanently failed (re-trying won't
-            // help; a bad parse is content-side) and ack.
-            let _ = deps
-                .metadata
-                .mark_permanently_failed(&entry.url, "parse: extractor returned no document")
-                .await;
-            let _ = deps.frontier.ack(&entry.url).await;
-            return;
-        }
-    };
-
-    // Submit discovered links subject to scope rules.
-    submit_discovered(deps, &entry, &doc).await;
-
-    // Persist body, capture blob path for the metadata write.
-    let blob_path = match deps.store.write(&doc, Some(&resp.body)).await {
-        Ok(p) => p,
-        Err(e) => {
-            warn!(url = %entry.url, error = %e, "store write failed; acking anyway to avoid hot loop");
-            // No metadata.mark_succeeded: the row stays InProgress so
-            // a future run can pick it up. Acking the frontier
-            // prevents an infinite re-claim loop.
-            let _ = deps.frontier.ack(&entry.url).await;
-            return;
-        }
-    };
-
-    let body_hash = content_hash(&resp.body);
-    if let Err(e) = deps
-        .metadata
-        .mark_succeeded(&entry.url, &blob_path, body_hash)
-        .await
-    {
-        warn!(url = %entry.url, error = %e, "metadata.mark_succeeded failed; acking anyway");
-    }
-
-    if let Err(e) = deps.frontier.ack(&entry.url).await {
-        warn!(url = %entry.url, error = %e, "frontier ack failed");
-    }
+    UrlPipeline::new(Arc::clone(deps), entry).run().await;
 }
 
-/// Common path for transport + HTTP-status failures: increment retry
-/// count via the metadata ledger; if the budget is exhausted, move to
-/// DLQ + ack so the URL stops cycling. Otherwise nack and let
-/// XAUTOCLAIM re-deliver it later.
-async fn handle_failure(
-    deps: &Arc<WorkerDeps>,
-    entry: &UrlEntry,
-    kind: crawlrs_core::FailureKind,
-    reason: &str,
-) {
-    let new_count = match deps.metadata.mark_failed(&entry.url, kind).await {
-        Ok(c) => c,
-        Err(e) => {
-            warn!(url = %entry.url, error = %e, "metadata.mark_failed failed; nacking conservatively");
-            let _ = deps.frontier.nack(&entry.url).await;
-            return;
-        }
-    };
+// ---------------------------------------------------------------------------
+// Per-URL pipeline
+// ---------------------------------------------------------------------------
 
-    if new_count >= deps.config.max_retries {
-        debug!(url = %entry.url, retry_count = new_count, "retry budget exhausted; DLQ");
-        let dlq_reason = format!("retries exceeded ({new_count}): {reason}");
-        let _ = deps
-            .metadata
-            .mark_permanently_failed(&entry.url, &dlq_reason)
-            .await;
-        let _ = deps.frontier.ack(&entry.url).await;
-    } else {
-        debug!(url = %entry.url, retry_count = new_count, "retry budget remaining; nacking");
-        let _ = deps.frontier.nack(&entry.url).await;
-    }
+/// One URL's worth of work, encapsulated as a struct.
+///
+/// Owns the dependencies (cheap `Arc` clone) and the entry being
+/// processed for the lifetime of one `run()` call. Each phase is its
+/// own short async method; [`Self::run`] is the orchestration.
+///
+/// The contract for each phase method is uniform: perform the phase,
+/// and *if it terminally handled the URL* (acked or nacked the
+/// frontier, wrote any required metadata transition), signal that to
+/// the caller via the return type so `run` can short-circuit. None of
+/// the phase methods bubble errors; politeness/metadata/frontier
+/// errors are warn-and-move-on so one failed RPC doesn't poison the
+/// whole pipeline.
+struct UrlPipeline {
+    deps: Arc<WorkerDeps>,
+    entry: UrlEntry,
 }
 
-async fn extract_document(deps: &Arc<WorkerDeps>, resp: &FetchResponse) -> Option<ParsedDocument> {
-    if let Some(adapter) = deps.adapters.find_for(&resp.url) {
-        match adapter.extract(resp).await {
-            Ok(Some(doc)) => return Some(doc),
-            Ok(None) => {} // adapter punted; fall through to generic parser
+impl UrlPipeline {
+    fn new(deps: Arc<WorkerDeps>, entry: UrlEntry) -> Self {
+        Self { deps, entry }
+    }
+
+    fn url(&self) -> &CanonicalUrl {
+        &self.entry.url
+    }
+
+    /// Top-level orchestration. Reads as a checklist: each step
+    /// either proceeds or short-circuits the run. The methods below
+    /// follow a uniform contract — they perform their phase, and if
+    /// they terminally handle the URL (acking/nacking the frontier
+    /// and writing any metadata transition), they signal that to
+    /// `run` via the return type so we exit early.
+    async fn run(self) {
+        if self.is_already_done().await {
+            return;
+        }
+        if !self.politeness_allows().await {
+            return;
+        }
+        self.mark_attempting().await;
+        let Some(resp) = self.fetch().await else {
+            return;
+        };
+        let Some(doc) = self.extract(&resp).await else {
+            return;
+        };
+        self.submit_discovered(&doc).await;
+        self.finalize(&resp, &doc).await;
+    }
+
+    /// Cross-run dedup. Returns `true` iff a prior run already
+    /// terminally handled this URL (Succeeded or in DLQ); the caller
+    /// (in this case `run()`) treats `true` as "ack and skip." Costs
+    /// one metadata `get` per claim; opt out via
+    /// `CrawlerConfig::cross_run_dedup`.
+    async fn is_already_done(&self) -> bool {
+        if !self.deps.config.cross_run_dedup {
+            return false;
+        }
+        let prior = match self.deps.metadata.get(self.url()).await {
+            Ok(Some(p)) => p,
+            Ok(None) | Err(_) => return false,
+        };
+        match prior.status {
+            UrlStatus::Succeeded => {
+                debug!(url = %self.url(), "cross-run dedup hit; acking without fetch");
+                let _ = self.deps.frontier.ack(self.url()).await;
+                true
+            }
+            UrlStatus::PermanentlyFailed => {
+                debug!(url = %self.url(), "URL is in DLQ; acking without fetch");
+                let _ = self.deps.frontier.ack(self.url()).await;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Returns `true` iff politeness allows the fetch. `false` means
+    /// the pipeline is already finalized (acked on Disallow, nacked on
+    /// Delay or check-error). No metadata write on Disallow: the
+    /// verdict is per-run policy, not a URL-level failure.
+    async fn politeness_allows(&self) -> bool {
+        match self.deps.politeness.check(self.url()).await {
+            Ok(PoliteDecision::Allow) => true,
+            Ok(PoliteDecision::Disallow) => {
+                debug!(url = %self.url(), "politeness disallowed; acking");
+                let _ = self.deps.frontier.ack(self.url()).await;
+                false
+            }
+            Ok(PoliteDecision::Delay(d)) => {
+                debug!(url = %self.url(), delay_ms = d.as_millis() as u64, "politeness delay; nacking");
+                let _ = self.deps.frontier.nack(self.url()).await;
+                false
+            }
             Err(e) => {
-                warn!(url = %resp.url, error = %e, "site adapter extract failed");
+                warn!(url = %self.url(), error = %e, "politeness.check failed");
+                let _ = self.deps.frontier.nack(self.url()).await;
+                false
+            }
+        }
+    }
+
+    /// Best-effort: stamp the metadata ledger before any fetch I/O.
+    /// If the worker dies before ack/nack the row is left InProgress
+    /// and `XAUTOCLAIM` hands the URL to a peer who'll redo this
+    /// transition.
+    async fn mark_attempting(&self) {
+        let result = self
+            .deps
+            .metadata
+            .mark_attempting(self.url(), &self.deps.run_id, self.entry.depth)
+            .await;
+        if let Err(e) = result {
+            warn!(url = %self.url(), error = %e, "metadata.mark_attempting failed; continuing");
+        }
+    }
+
+    /// Fetch + classification + politeness recording. Returns
+    /// `Some(resp)` only on a clean status; `None` means the failure
+    /// path already finalized the URL (handled retry budget + ack/nack).
+    async fn fetch(&self) -> Option<FetchResponse> {
+        let mut req = FetchRequest::new(self.url().clone());
+        req.headers
+            .insert("User-Agent".into(), self.deps.config.user_agent.clone());
+
+        let resp = match self.deps.fetcher.fetch(req).await {
+            Ok(r) => r,
+            Err(e) => {
+                let kind = classify_transport_error(&e);
+                warn!(url = %self.url(), error = %e, kind = ?kind, "fetch transport error");
+                let _ = self
+                    .deps
+                    .politeness
+                    .record_failure(self.url(), kind, None)
+                    .await;
+                self.handle_failure(kind, &format!("transport: {e}")).await;
                 return None;
             }
+        };
+
+        if let Some(kind) = classify_status(resp.status) {
+            let retry_after = extract_retry_after(&resp.headers);
+            debug!(
+                url = %self.url(),
+                status = resp.status,
+                kind = ?kind,
+                retry_after_ms = retry_after.map(|d| d.as_millis() as u64).unwrap_or(0),
+                "fetch http failure",
+            );
+            let _ = self
+                .deps
+                .politeness
+                .record_failure(self.url(), kind, retry_after)
+                .await;
+            self.handle_failure(kind, &format!("http {}", resp.status))
+                .await;
+            return None;
+        }
+
+        let _ = self.deps.politeness.record_fetch(self.url()).await;
+        Some(resp)
+    }
+
+    /// Site-adapter first, generic parser fallback. Returns `None` if
+    /// the bytes were unusable; in that case we mark the URL
+    /// permanently failed (re-trying won't help; bad parse is a
+    /// content-side problem) and ack.
+    async fn extract(&self, resp: &FetchResponse) -> Option<ParsedDocument> {
+        if let Some(adapter) = self.deps.adapters.find_for(&resp.url) {
+            match adapter.extract(resp).await {
+                Ok(Some(doc)) => return Some(doc),
+                Ok(None) => {} // adapter punted; fall through to generic parser
+                Err(e) => {
+                    warn!(url = %resp.url, error = %e, "site adapter extract failed");
+                    self.fail_parse(&format!("adapter: {e}")).await;
+                    return None;
+                }
+            }
+        }
+        match self.deps.parser.parse(resp).await {
+            Ok(doc) => Some(doc),
+            Err(e) => {
+                warn!(url = %resp.url, error = %e, "generic parse failed");
+                self.fail_parse(&format!("parser: {e}")).await;
+                None
+            }
         }
     }
-    match deps.parser.parse(resp).await {
-        Ok(doc) => Some(doc),
-        Err(e) => {
-            warn!(url = %resp.url, error = %e, "generic parse failed");
-            None
+
+    /// Mark permanently failed for a parse-side failure and ack. Helper
+    /// for the two parse paths (site adapter + generic).
+    async fn fail_parse(&self, reason: &str) {
+        let dlq_reason = format!("parse: {reason}");
+        let _ = self
+            .deps
+            .metadata
+            .mark_permanently_failed(self.url(), &dlq_reason)
+            .await;
+        let _ = self.deps.frontier.ack(self.url()).await;
+    }
+
+    /// Filter outbound links by scheme + max-depth, then submit the
+    /// batch to the frontier. Errors are logged; submit failure
+    /// doesn't abort the URL we're processing.
+    async fn submit_discovered(&self, doc: &ParsedDocument) {
+        let max_depth = self.deps.config.max_depth;
+        let new_depth = self.entry.depth + 1;
+
+        let candidates: Vec<UrlEntry> = doc
+            .outbound_links
+            .iter()
+            .filter(|u| u.is_http())
+            .filter(|_| max_depth.is_none_or(|limit| new_depth <= limit))
+            .map(|u| UrlEntry {
+                url: u.clone(),
+                depth: new_depth,
+                discovered_from: Some(self.entry.url.clone()),
+            })
+            .collect();
+
+        if candidates.is_empty() {
+            return;
+        }
+
+        let _ = self
+            .deps
+            .frontier
+            .submit_batch(candidates)
+            .await
+            .map_err(|e| warn!(parent = %self.url(), error = %e, "submit_batch failed"));
+    }
+
+    /// Persist the body via the store, record the blob path + content
+    /// hash on the metadata ledger, then ack the frontier. Each step's
+    /// failure path acks anyway to avoid hot-looping; the URL stays
+    /// `InProgress` in the ledger so a future run can pick it up.
+    async fn finalize(&self, resp: &FetchResponse, doc: &ParsedDocument) {
+        let blob_path = match self.deps.store.write(doc, Some(&resp.body)).await {
+            Ok(p) => p,
+            Err(e) => {
+                warn!(url = %self.url(), error = %e, "store write failed; acking anyway to avoid hot loop");
+                let _ = self.deps.frontier.ack(self.url()).await;
+                return;
+            }
+        };
+
+        let body_hash = content_hash(&resp.body);
+        if let Err(e) = self
+            .deps
+            .metadata
+            .mark_succeeded(self.url(), &blob_path, body_hash)
+            .await
+        {
+            warn!(url = %self.url(), error = %e, "metadata.mark_succeeded failed; acking anyway");
+        }
+
+        if let Err(e) = self.deps.frontier.ack(self.url()).await {
+            warn!(url = %self.url(), error = %e, "frontier ack failed");
         }
     }
-}
 
-async fn submit_discovered(deps: &Arc<WorkerDeps>, parent: &UrlEntry, doc: &ParsedDocument) {
-    let max_depth = deps.config.max_depth;
-    let new_depth = parent.depth + 1;
+    /// Common path for transport + HTTP-status failures: increment
+    /// retry count via the metadata ledger; if the budget is
+    /// exhausted, move to DLQ + ack so the URL stops cycling.
+    /// Otherwise nack and let `XAUTOCLAIM` re-deliver later.
+    async fn handle_failure(&self, kind: FailureKind, reason: &str) {
+        let new_count = match self.deps.metadata.mark_failed(self.url(), kind).await {
+            Ok(c) => c,
+            Err(e) => {
+                warn!(url = %self.url(), error = %e, "metadata.mark_failed failed; nacking conservatively");
+                let _ = self.deps.frontier.nack(self.url()).await;
+                return;
+            }
+        };
 
-    let candidates: Vec<UrlEntry> = doc
-        .outbound_links
-        .iter()
-        .filter(|u| u.is_http())
-        .filter(|_| max_depth.is_none_or(|limit| new_depth <= limit))
-        .map(|u| UrlEntry {
-            url: u.clone(),
-            depth: new_depth,
-            discovered_from: Some(parent.url.clone()),
-        })
-        .collect();
-
-    if candidates.is_empty() {
-        return;
+        if new_count >= self.deps.config.max_retries {
+            debug!(url = %self.url(), retry_count = new_count, "retry budget exhausted; DLQ");
+            let dlq_reason = format!("retries exceeded ({new_count}): {reason}");
+            let _ = self
+                .deps
+                .metadata
+                .mark_permanently_failed(self.url(), &dlq_reason)
+                .await;
+            let _ = self.deps.frontier.ack(self.url()).await;
+        } else {
+            debug!(url = %self.url(), retry_count = new_count, "retry budget remaining; nacking");
+            let _ = self.deps.frontier.nack(self.url()).await;
+        }
     }
-
-    let _ = deps.frontier.submit_batch(candidates).await.map_err(|e| {
-        warn!(parent = %parent.url, error = %e, "submit_batch failed");
-    });
 }
 
 #[cfg(test)]

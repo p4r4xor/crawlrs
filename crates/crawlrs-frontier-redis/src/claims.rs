@@ -9,7 +9,7 @@
 //!
 //! The map is bounded by the worker's max-in-flight count (typically
 //! tens to low hundreds of URLs), so memory is negligible. We also
-//! expose the size as a metric (`pending_claims_count`) for runtime
+//! expose the size as a metric (`claim_count`) for runtime
 //! observability.
 
 use std::collections::HashMap;

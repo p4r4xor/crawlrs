@@ -24,6 +24,9 @@ pub enum Error {
     #[error("frontier error: {0}")]
     Frontier(String),
 
+    #[error("politeness error: {0}")]
+    Politeness(String),
+
     #[error("metadata error: {0}")]
     Metadata(String),
 

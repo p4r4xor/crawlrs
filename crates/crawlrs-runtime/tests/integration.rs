@@ -2,234 +2,29 @@
 //! politeness + a fake Fetcher + the real lol_html parser + an
 //! in-memory test Store. Each test brings up its own Redis container
 //! via testcontainers-rs.
+//!
+//! Test doubles (FakeFetcher, InMemoryStore, InMemoryMetadataStore)
+//! live in `crawlrs-testing` so this file stays focused on test
+//! scenarios rather than scaffolding.
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::time::Duration;
 
-use async_trait::async_trait;
 use bb8::Pool;
 use bb8_redis::RedisConnectionManager;
-use bytes::Bytes;
-use chrono::Utc;
 use crawlrs_core::{
-    CanonicalUrl, Error, FailureKind, FetchRequest, FetchResponse, Fetcher, MetadataStore,
-    ParsedDocument, Result, ShardingPolicy, SingleShardPolicy, SiteAdapterRegistry, Store,
-    UrlEntry, UrlMetadata, UrlStatus,
+    CanonicalUrl, MetadataStore, ShardingPolicy, SingleShardPolicy, SiteAdapterRegistry, UrlEntry,
+    UrlStatus,
 };
 use crawlrs_frontier_redis::RedisFrontier;
 use crawlrs_parse::LolHtmlParser;
 use crawlrs_politeness::{PolitenessConfig, RedisPoliteness};
 use crawlrs_runtime::{Crawler, CrawlerConfig};
+use crawlrs_testing::{FakeFetcher, InMemoryMetadataStore, InMemoryStore};
 use testcontainers_modules::redis::Redis;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
 use testcontainers_modules::testcontainers::{ContainerAsync, ImageExt};
-
-// ---------------------------------------------------------------------------
-// Test doubles
-// ---------------------------------------------------------------------------
-
-#[derive(Default)]
-struct FakeFetcher {
-    responses: Mutex<HashMap<String, FetchResponse>>,
-    calls: Mutex<Vec<String>>,
-}
-
-impl FakeFetcher {
-    fn install_html(&self, url: &str, body: &str) {
-        let canon = CanonicalUrl::parse(url).unwrap();
-        let resp = FetchResponse {
-            url: canon,
-            status: 200,
-            headers: {
-                let mut h = HashMap::new();
-                h.insert("content-type".into(), "text/html".into());
-                h
-            },
-            body: Bytes::copy_from_slice(body.as_bytes()),
-            redirect_chain: Vec::new(),
-            fetched_at: Utc::now(),
-            duration: Duration::from_millis(0),
-        };
-        self.responses.lock().unwrap().insert(url.to_string(), resp);
-    }
-
-    fn install_status(&self, url: &str, status: u16) {
-        let canon = CanonicalUrl::parse(url).unwrap();
-        let resp = FetchResponse {
-            url: canon,
-            status,
-            headers: HashMap::new(),
-            body: Bytes::new(),
-            redirect_chain: Vec::new(),
-            fetched_at: Utc::now(),
-            duration: Duration::from_millis(0),
-        };
-        self.responses.lock().unwrap().insert(url.to_string(), resp);
-    }
-
-    fn install_status_with_headers(
-        &self,
-        url: &str,
-        status: u16,
-        headers: HashMap<String, String>,
-    ) {
-        let canon = CanonicalUrl::parse(url).unwrap();
-        let resp = FetchResponse {
-            url: canon,
-            status,
-            headers,
-            body: Bytes::new(),
-            redirect_chain: Vec::new(),
-            fetched_at: Utc::now(),
-            duration: Duration::from_millis(0),
-        };
-        self.responses.lock().unwrap().insert(url.to_string(), resp);
-    }
-
-    fn calls(&self) -> Vec<String> {
-        self.calls.lock().unwrap().clone()
-    }
-}
-
-#[async_trait]
-impl Fetcher for FakeFetcher {
-    async fn fetch(&self, req: FetchRequest) -> Result<FetchResponse> {
-        let url = req.url.as_str().to_string();
-        self.calls.lock().unwrap().push(url.clone());
-        match self.responses.lock().unwrap().get(&url).cloned() {
-            Some(r) => Ok(r),
-            None => Err(Error::Fetch(format!(
-                "FakeFetcher: no canned response for {url}"
-            ))),
-        }
-    }
-}
-
-#[derive(Default)]
-struct InMemoryStore {
-    written: Mutex<Vec<ParsedDocument>>,
-}
-
-impl InMemoryStore {
-    fn urls(&self) -> Vec<String> {
-        self.written
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|d| d.url.as_str().to_string())
-            .collect()
-    }
-}
-
-#[async_trait]
-impl Store for InMemoryStore {
-    async fn write(&self, doc: &ParsedDocument, _raw_body: Option<&Bytes>) -> Result<String> {
-        let blob_path = format!("memory://{}", doc.url.as_str());
-        self.written.lock().unwrap().push(doc.clone());
-        Ok(blob_path)
-    }
-    async fn flush(&self) -> Result<()> {
-        Ok(())
-    }
-}
-
-/// In-memory `MetadataStore` for tests. Mirrors the
-/// `PostgresMetadataStore` semantics (atomic mark transitions, retry
-/// counter preserved across attempts and reset only on success) but
-/// holds state in a `HashMap` so tests don't need a Postgres container.
-/// One row per URL, last-write-wins on every field except `discovered_at`
-/// which is preserved across mark_attempting calls.
-#[derive(Default)]
-struct InMemoryMetadataStore {
-    rows: Mutex<HashMap<String, UrlMetadata>>,
-    dlq: Mutex<Vec<(String, String)>>,
-}
-
-impl InMemoryMetadataStore {
-    #[allow(dead_code)]
-    fn dlq_count(&self) -> usize {
-        self.dlq.lock().unwrap().len()
-    }
-}
-
-#[async_trait]
-impl MetadataStore for InMemoryMetadataStore {
-    async fn get(&self, url: &CanonicalUrl) -> Result<Option<UrlMetadata>> {
-        Ok(self.rows.lock().unwrap().get(url.as_str()).cloned())
-    }
-
-    async fn mark_attempting(&self, url: &CanonicalUrl, run_id: &str, depth: u32) -> Result<()> {
-        let mut rows = self.rows.lock().unwrap();
-        let now = std::time::SystemTime::now();
-        let row = rows
-            .entry(url.as_str().to_string())
-            .and_modify(|m| {
-                m.status = UrlStatus::InProgress;
-                m.last_run_id = run_id.to_string();
-                m.depth = depth;
-                m.updated_at = now;
-            })
-            .or_insert_with(|| UrlMetadata {
-                url: url.clone(),
-                status: UrlStatus::InProgress,
-                retry_count: 0,
-                blob_path: None,
-                content_hash: None,
-                depth,
-                last_run_id: run_id.to_string(),
-                discovered_at: now,
-                updated_at: now,
-            });
-        let _ = row; // silence unused warning when entry path was taken
-        Ok(())
-    }
-
-    async fn mark_succeeded(
-        &self,
-        url: &CanonicalUrl,
-        blob_path: &str,
-        content_hash: u64,
-    ) -> Result<()> {
-        let mut rows = self.rows.lock().unwrap();
-        let row = rows
-            .get_mut(url.as_str())
-            .ok_or_else(|| Error::Metadata(format!("mark_succeeded: missing row for {url}")))?;
-        row.status = UrlStatus::Succeeded;
-        row.retry_count = 0;
-        row.blob_path = Some(blob_path.to_string());
-        row.content_hash = Some(content_hash);
-        row.updated_at = std::time::SystemTime::now();
-        Ok(())
-    }
-
-    async fn mark_failed(&self, url: &CanonicalUrl, _kind: FailureKind) -> Result<u32> {
-        let mut rows = self.rows.lock().unwrap();
-        let row = rows
-            .get_mut(url.as_str())
-            .ok_or_else(|| Error::Metadata(format!("mark_failed: missing row for {url}")))?;
-        row.retry_count += 1;
-        row.status = UrlStatus::FailedTransient;
-        row.updated_at = std::time::SystemTime::now();
-        Ok(row.retry_count)
-    }
-
-    async fn mark_permanently_failed(&self, url: &CanonicalUrl, reason: &str) -> Result<()> {
-        let mut rows = self.rows.lock().unwrap();
-        let row = rows.get_mut(url.as_str()).ok_or_else(|| {
-            Error::Metadata(format!("mark_permanently_failed: missing row for {url}"))
-        })?;
-        row.status = UrlStatus::PermanentlyFailed;
-        row.updated_at = std::time::SystemTime::now();
-        drop(rows);
-        self.dlq
-            .lock()
-            .unwrap()
-            .push((url.as_str().to_string(), reason.to_string()));
-        Ok(())
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Fixture
@@ -290,7 +85,10 @@ async fn build_crawler(
         RedisFrontier::new(fx.pool.clone(), policy.clone(), vec![0], rid.clone())
             .await
             .unwrap()
-            .with_autoclaim_idle(Duration::ZERO),
+            // 50ms gives the original consumer time to ack/nack
+            // before a peer worker tries to steal the entry; healthy
+            // workers complete in ~1ms.
+            .with_autoclaim_idle(Duration::from_millis(50)),
     );
     let fetcher = Arc::new(FakeFetcher::default());
     let politeness = Arc::new(

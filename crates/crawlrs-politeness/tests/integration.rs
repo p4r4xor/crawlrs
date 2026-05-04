@@ -471,7 +471,7 @@ async fn robots_per_domain_override_disables_check() {
 }
 
 #[tokio::test]
-async fn tracked_hosts_count_reflects_record_fetch() {
+async fn host_count_reflects_record_fetch() {
     let fx = fixture().await;
     let fake = Arc::new(FakeFetcher::default());
     let p = build(
@@ -481,15 +481,11 @@ async fn tracked_hosts_count_reflects_record_fetch() {
     )
     .await;
 
-    assert_eq!(p.tracked_hosts_count().await.unwrap(), 0);
+    assert_eq!(p.host_count().await.unwrap(), 0);
     p.record_fetch(&url("https://a.test/")).await.unwrap();
     p.record_fetch(&url("https://b.test/")).await.unwrap();
     p.record_fetch(&url("https://a.test/page2")).await.unwrap(); // same host
-    assert_eq!(
-        p.tracked_hosts_count().await.unwrap(),
-        2,
-        "two distinct hosts"
-    );
+    assert_eq!(p.host_count().await.unwrap(), 2, "two distinct hosts");
 }
 
 #[tokio::test]
@@ -509,7 +505,7 @@ async fn in_process_robots_lru_populates_after_first_check() {
     )
     .await;
 
-    assert_eq!(p.robots().in_process_size(), 0, "LRU empty at startup");
+    assert_eq!(p.robots().cache_len(), 0, "LRU empty at startup");
 
     let _ = p.check(&url("https://lru.test/some/page")).await.unwrap();
 
@@ -519,7 +515,7 @@ async fn in_process_robots_lru_populates_after_first_check() {
     p.robots().run_pending_tasks();
 
     assert_eq!(
-        p.robots().in_process_size(),
+        p.robots().cache_len(),
         1,
         "LRU should hold the one host we just checked",
     );
@@ -529,5 +525,5 @@ async fn in_process_robots_lru_populates_after_first_check() {
     // robots_txt_blocks_disallowed_path_and_caches_body test).
     let _ = p.check(&url("https://lru.test/another")).await.unwrap();
     p.robots().run_pending_tasks();
-    assert_eq!(p.robots().in_process_size(), 1);
+    assert_eq!(p.robots().cache_len(), 1);
 }

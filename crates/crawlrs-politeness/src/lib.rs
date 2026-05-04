@@ -31,7 +31,6 @@ pub mod politeness;
 pub mod robots;
 
 pub use config::{BackoffPolicy, PolitenessConfig, PolitenessOverride};
-pub use failure::FailureState;
 pub use keys::KeyPrefix;
 pub use politeness::{RedisPoliteness, RedisPolitenessError};
 pub use robots::RobotsCache;

@@ -58,3 +58,4 @@ crawlrs-frontier-redis  = { path = "crates/crawlrs-frontier-redis",  version = "
 crawlrs-politeness      = { path = "crates/crawlrs-politeness",      version = "0.0.1" }
 crawlrs-runtime         = { path = "crates/crawlrs-runtime",         version = "0.0.1" }
 crawlrs-metadata        = { path = "crates/crawlrs-metadata",        version = "0.0.1" }
+crawlrs-testing         = { path = "crates/crawlrs-testing",         version = "0.0.1" }

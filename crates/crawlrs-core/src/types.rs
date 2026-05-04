@@ -112,7 +112,10 @@ pub enum UrlStatus {
     /// far.
     FailedTransient,
     /// Retry budget exhausted, or the failure is non-retryable.
-    /// Also pushed to the dead-letter Stream for ops introspection.
+    /// Forms the dead-letter view: rows where `status =
+    /// 'permanently_failed'` are the DLQ; ops queries against
+    /// `url_metadata` and `url_history` answer "what broke?" (per
+    /// ADR-0011).
     PermanentlyFailed,
     /// Skipped without an attempt (e.g. robots.txt disallowed,
     /// manual exclude, depth limit, content-hash dupe).

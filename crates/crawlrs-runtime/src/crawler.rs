@@ -133,11 +133,13 @@ impl Crawler {
 
         let mut tasks = JoinSet::new();
 
-        // Maintenance task.
-        let frontier = self.deps.frontier.clone();
+        // Heartbeat task. Frontier-side maintenance (XAUTOCLAIM
+        // reclaim of stranded entries) is driven by workers
+        // themselves now; this loop only emits the per-interval
+        // process-health log line.
         let interval = self.deps.config.maintenance_interval;
         let m_shutdown = self.shutdown_rx.clone();
-        tasks.spawn(maintenance_loop(frontier, interval, m_shutdown));
+        tasks.spawn(maintenance_loop(interval, m_shutdown));
 
         // Worker pool.
         for worker_id in 0..self.deps.config.workers {

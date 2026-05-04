@@ -39,7 +39,7 @@ impl LolHtmlParser {
 #[async_trait]
 impl Parser for LolHtmlParser {
     async fn parse(&self, response: &FetchResponse) -> Result<ParsedDocument> {
-        let extracted = run_extraction(&response.body)?;
+        let extracted = extract_html(&response.body)?;
 
         let effective_base = match &extracted.base_href {
             Some(href) => CanonicalUrl::parse_relative(&response.url, href)
@@ -47,7 +47,7 @@ impl Parser for LolHtmlParser {
             None => response.url.clone(),
         };
 
-        let outbound_links = filter_and_dedupe_links(&extracted.raw_links, &effective_base);
+        let outbound_links = resolve_links(&extracted.raw_links, &effective_base);
 
         let title = extracted
             .title
@@ -82,7 +82,7 @@ struct Extracted {
     visible_text: String,
 }
 
-fn run_extraction(body: &[u8]) -> Result<Extracted> {
+fn extract_html(body: &[u8]) -> Result<Extracted> {
     let title: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
     let base_href: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
     let raw_links: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
@@ -171,7 +171,7 @@ fn run_extraction(body: &[u8]) -> Result<Extracted> {
     })
 }
 
-fn filter_and_dedupe_links(raw: &[String], base: &CanonicalUrl) -> Vec<CanonicalUrl> {
+fn resolve_links(raw: &[String], base: &CanonicalUrl) -> Vec<CanonicalUrl> {
     let mut seen = HashSet::new();
     let mut out = Vec::new();
     for href in raw {

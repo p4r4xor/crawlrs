@@ -5,7 +5,7 @@
 //! integers (depth, etc.). Spec is stable.
 //!
 //! All Redis Stream entries store the encoded `UrlEntry` under field
-//! `body`. See `scripts/submit.lua` for the producer side and
+//! `body`. See `scripts/batch_submit.lua` for the producer side and
 //! `frontier.rs` for the consumer side.
 
 use crawlrs_core::{Error, Result, UrlEntry};

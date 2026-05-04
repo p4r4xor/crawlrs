@@ -26,6 +26,7 @@ crawlrs-frontier-redis.workspace = true
 crawlrs-politeness.workspace     = true
 crawlrs-parse.workspace          = true
 crawlrs-metadata.workspace       = true
+crawlrs-testing.workspace        = true
 
 bb8.workspace                    = true
 bb8-redis.workspace              = true

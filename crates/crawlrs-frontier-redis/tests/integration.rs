@@ -135,10 +135,10 @@ async fn ack_after_claim_drops_pending_count() {
 
     frontier.submit(entry("https://a.test/")).await.unwrap();
     let claimed = frontier.claim().await.unwrap().unwrap();
-    assert_eq!(frontier.pending_claims_count(), 1, "in-flight after claim");
+    assert_eq!(frontier.claim_count(), 1, "in-flight after claim");
 
     frontier.ack(&claimed.url).await.unwrap();
-    assert_eq!(frontier.pending_claims_count(), 0, "drained after ack");
+    assert_eq!(frontier.claim_count(), 0, "drained after ack");
 
     // Idempotent: ack again is a no-op, not an error.
     frontier.ack(&claimed.url).await.unwrap();
@@ -151,10 +151,10 @@ async fn nack_clears_local_tracking_only() {
 
     frontier.submit(entry("https://a.test/")).await.unwrap();
     let claimed = frontier.claim().await.unwrap().unwrap();
-    assert_eq!(frontier.pending_claims_count(), 1);
+    assert_eq!(frontier.claim_count(), 1);
 
     frontier.nack(&claimed.url).await.unwrap();
-    assert_eq!(frontier.pending_claims_count(), 0, "local tracking dropped");
+    assert_eq!(frontier.claim_count(), 0, "local tracking dropped");
 }
 
 #[tokio::test]
@@ -229,7 +229,7 @@ async fn xautoclaim_reclaims_stranded_entries_to_a_second_consumer() {
         .with_autoclaim_idle(Duration::ZERO);
     worker_a.submit(entry("https://a.test/")).await.unwrap();
     let _claim_a = worker_a.claim().await.unwrap().unwrap();
-    assert_eq!(worker_a.pending_claims_count(), 1);
+    assert_eq!(worker_a.claim_count(), 1);
 
     // Worker B starts up (different consumer id) and ticks autoclaim
     // with idle_ms=0, which immediately reclaims A's pending entry.
@@ -237,10 +237,10 @@ async fn xautoclaim_reclaims_stranded_entries_to_a_second_consumer() {
         .await
         .unwrap()
         .with_autoclaim_idle(Duration::ZERO);
-    let reclaimed = worker_b.tick_autoclaim().await.unwrap();
+    let reclaimed = worker_b.reclaim_stranded().await.unwrap();
     assert_eq!(reclaimed, 1, "worker B should reclaim 1 stranded entry");
     assert_eq!(
-        worker_b.pending_claims_count(),
+        worker_b.claim_count(),
         1,
         "B's claims map now holds the reclaimed entry"
     );
@@ -251,7 +251,7 @@ async fn xautoclaim_reclaims_stranded_entries_to_a_second_consumer() {
 
     // B acks; queue is empty.
     worker_b.ack(&claimed_by_b.url).await.unwrap();
-    assert_eq!(worker_b.pending_claims_count(), 0);
+    assert_eq!(worker_b.claim_count(), 0);
 }
 
 #[tokio::test]

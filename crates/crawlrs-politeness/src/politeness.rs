@@ -24,9 +24,8 @@ const HOSTSTATE_FIELD_BACKOFF_UNTIL: &str = "backoff_until_ms";
 const HOSTSTATE_FIELD_LAST_KIND: &str = "last_kind";
 
 /// Internal error type for the politeness crate. All variants flow
-/// out as [`crawlrs_core::Error::Frontier`]; we don't have a dedicated
-/// `Error::Politeness` variant in core yet (TODO if we add more
-/// politeness-specific failure modes that need first-class handling).
+/// out as [`crawlrs_core::Error::Politeness`] at the trait boundary so
+/// callers see a single coarse variant in the public surface.
 #[derive(Debug, ThisError)]
 pub enum RedisPolitenessError {
     #[error("redis error: {0}")]
@@ -50,10 +49,7 @@ pub enum RedisPolitenessError {
 
 impl From<RedisPolitenessError> for Error {
     fn from(e: RedisPolitenessError) -> Self {
-        // Politeness errors funnel through the Frontier variant for now
-        // since core doesn't yet have a Politeness one. The error message
-        // preserves the specific variant via Display.
-        Error::Frontier(format!("politeness: {e}"))
+        Error::Politeness(e.to_string())
     }
 }
 
@@ -132,7 +128,7 @@ impl RedisPoliteness {
 
     /// Number of hosts currently tracked in any owned shard's
     /// host-schedule ZSET. Useful as a metric.
-    pub async fn tracked_hosts_count(&self) -> Result<usize> {
+    pub async fn host_count(&self) -> Result<usize> {
         let mut total = 0usize;
         let mut conn = self.checkout().await.map_err(Error::from)?;
         for &shard in &self.owned_shards {

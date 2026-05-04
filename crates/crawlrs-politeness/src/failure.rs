@@ -1,30 +1,15 @@
-//! Per-host failure state and exponential backoff calculation.
+//! Backoff calculation for per-host failure state.
+//!
+//! The actual failure state lives in Redis (per-shard
+//! `hoststate:{host}` Hash); this module's job is the math that turns
+//! "failures so far + kind + optional Retry-After hint" into "how long
+//! until next allowed."
 
 use std::time::Duration;
 
 use crawlrs_core::FailureKind;
 
 use crate::config::BackoffPolicy;
-
-/// Per-host failure tracking. Stored as a Redis Hash; this struct is
-/// the in-memory mirror.
-#[derive(Debug, Clone, Default)]
-pub struct FailureState {
-    /// Number of consecutive failures since the last successful fetch.
-    /// Reset to 0 on `record_fetch`.
-    pub consecutive_failures: u32,
-
-    /// Wall-clock millis after which this host is allowed to be
-    /// fetched again. Computed from `consecutive_failures` and the
-    /// configured backoff policy. Stored as a raw integer because
-    /// it goes straight into Redis as a ZSET score.
-    pub backoff_until_ms: u64,
-
-    /// The last failure category, kept for debugging. Influences only
-    /// the *initial* backoff multiplier (e.g. transport resets get a
-    /// shorter first wait than 429s).
-    pub last_kind: Option<FailureKind>,
-}
 
 /// Decide how far in the future the next fetch is allowed, given the
 /// current failure count, the failure category, and any

@@ -106,7 +106,7 @@ impl Fetcher for WreqFetcher {
                     )));
                 }
 
-                let response_body = read_capped_body(response, self.config.max_body_bytes).await?;
+                let response_body = read_body(response, self.config.max_body_bytes).await?;
 
                 let final_url =
                     CanonicalUrl::parse(&final_uri_string).unwrap_or_else(|_| request.url.clone());
@@ -126,7 +126,7 @@ impl Fetcher for WreqFetcher {
                     .unwrap_or_default();
 
                 if let Some(active_proxy) = &proxy_selection {
-                    let proxy_outcome = classify_proxy_outcome_from_status(status_code);
+                    let proxy_outcome = classify_outcome(status_code);
                     self.config.proxy.report(active_proxy, proxy_outcome).await;
                 }
 
@@ -155,18 +155,25 @@ impl Fetcher for WreqFetcher {
     }
 }
 
-fn classify_proxy_outcome_from_status(status: u16) -> ProxyOutcome {
+/// Map an HTTP status code to a proxy-health verdict. `403`/`429`
+/// indicate the proxy itself was burned on the destination
+/// (anti-bot challenge / rate-limit attribution); everything else
+/// is treated as success from the proxy's perspective even if it's
+/// a 5xx — the proxy did its job, the upstream just returned what
+/// it returned.
+fn classify_outcome(status: u16) -> ProxyOutcome {
     match status {
         403 | 429 => ProxyOutcome::Banned,
         _ => ProxyOutcome::Success,
     }
 }
 
-/// Read the response body via `bytes_stream`, aborting once cumulative
-/// bytes cross `cap`. Bounded memory regardless of whether the server
-/// advertised a Content-Length, because chunked-transfer responses can
-/// otherwise stream forever.
-async fn read_capped_body(response: wreq::Response, cap: u64) -> Result<Bytes> {
+/// Read the response body via `bytes_stream`, aborting once
+/// cumulative bytes cross `cap`. Bounded memory regardless of whether
+/// the server advertised a Content-Length — chunked-transfer
+/// responses can otherwise stream forever, and a content-length
+/// pre-check (done by the caller) only catches honest servers.
+async fn read_body(response: wreq::Response, cap: u64) -> Result<Bytes> {
     let mut stream = response.bytes_stream();
     let mut buf = BytesMut::new();
     while let Some(chunk_result) = stream.next().await {

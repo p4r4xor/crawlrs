@@ -114,12 +114,12 @@ impl RobotsCache {
     /// Number of hosts currently held in the in-process LRU. Useful as
     /// a gauge metric and for verifying the cache is being populated
     /// in tests.
-    pub fn in_process_size(&self) -> u64 {
+    pub fn cache_len(&self) -> u64 {
         self.in_process.entry_count()
     }
 
     /// Force the in-process LRU to flush any pending insertions /
-    /// evictions so `in_process_size` reflects the current state
+    /// evictions so `cache_len` reflects the current state
     /// exactly. moka batches updates lazily for throughput; tests
     /// that assert on the count call this first.
     pub fn run_pending_tasks(&self) {

@@ -4,82 +4,31 @@
 //! existing fast test suite doesn't pay for a Postgres container on
 //! every run; this file is the "are we wiring the production
 //! impl correctly?" backstop.
+//!
+//! Test doubles come from `crawlrs-testing`; this file only owns the
+//! Redis + Postgres testcontainer fixture.
 
-use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::time::Duration;
 
-use async_trait::async_trait;
 use bb8::Pool;
 use bb8_redis::RedisConnectionManager;
-use bytes::Bytes;
-use chrono::Utc;
 use crawlrs_core::{
-    CanonicalUrl, Error, FetchRequest, FetchResponse, Fetcher, MetadataStore, ParsedDocument,
-    Result, ShardingPolicy, SingleShardPolicy, SiteAdapterRegistry, Store, UrlEntry, UrlStatus,
+    CanonicalUrl, MetadataStore, ShardingPolicy, SingleShardPolicy, SiteAdapterRegistry, UrlEntry,
+    UrlStatus,
 };
 use crawlrs_frontier_redis::RedisFrontier;
 use crawlrs_metadata::PostgresMetadataStore;
 use crawlrs_parse::LolHtmlParser;
 use crawlrs_politeness::{BackoffPolicy, PolitenessConfig, RedisPoliteness};
 use crawlrs_runtime::{Crawler, CrawlerConfig};
+use crawlrs_testing::{FakeFetcher, InMemoryStore};
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
 use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::redis::Redis;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
 use testcontainers_modules::testcontainers::{ContainerAsync, ImageExt};
-
-// ---------------------------------------------------------------------------
-// Test doubles (slimmed copies from tests/integration.rs; the file is
-// independent so the runtime suite stays separable.)
-// ---------------------------------------------------------------------------
-
-#[derive(Default)]
-struct FakeFetcher {
-    responses: Mutex<HashMap<String, FetchResponse>>,
-}
-
-impl FakeFetcher {
-    fn install_html(&self, url: &str, body: &str) {
-        let canon = CanonicalUrl::parse(url).unwrap();
-        let resp = FetchResponse {
-            url: canon,
-            status: 200,
-            headers: HashMap::from([("content-type".into(), "text/html".into())]),
-            body: Bytes::copy_from_slice(body.as_bytes()),
-            redirect_chain: Vec::new(),
-            fetched_at: Utc::now(),
-            duration: Duration::from_millis(0),
-        };
-        self.responses.lock().unwrap().insert(url.to_string(), resp);
-    }
-}
-
-#[async_trait]
-impl Fetcher for FakeFetcher {
-    async fn fetch(&self, req: FetchRequest) -> Result<FetchResponse> {
-        let url = req.url.as_str().to_string();
-        match self.responses.lock().unwrap().get(&url).cloned() {
-            Some(r) => Ok(r),
-            None => Err(Error::Fetch(format!("no canned response for {url}"))),
-        }
-    }
-}
-
-#[derive(Default)]
-struct InMemoryStore;
-
-#[async_trait]
-impl Store for InMemoryStore {
-    async fn write(&self, doc: &ParsedDocument, _raw_body: Option<&Bytes>) -> Result<String> {
-        Ok(format!("memory://{}", doc.url.as_str()))
-    }
-    async fn flush(&self) -> Result<()> {
-        Ok(())
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Fixture: spins up Redis + Postgres, returns ready-to-use pools.
@@ -153,7 +102,7 @@ async fn end_to_end_against_postgres_metadata_store() {
         RedisFrontier::new(fx.redis_pool.clone(), policy.clone(), vec![0], rid.clone())
             .await
             .unwrap()
-            .with_autoclaim_idle(Duration::ZERO),
+            .with_autoclaim_idle(Duration::from_millis(50)),
     );
     let fetcher = Arc::new(FakeFetcher::default());
     fetcher.install_html(
@@ -186,7 +135,7 @@ async fn end_to_end_against_postgres_metadata_store() {
         .unwrap(),
     );
     let parser = Arc::new(LolHtmlParser);
-    let store = Arc::new(InMemoryStore);
+    let store = Arc::new(InMemoryStore::new());
     let metadata: Arc<dyn MetadataStore> =
         Arc::new(PostgresMetadataStore::with_pool(fx.pg_pool.clone()));
     let adapters = Arc::new(SiteAdapterRegistry::new());
