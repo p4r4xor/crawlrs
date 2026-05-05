@@ -1,0 +1,34 @@
+{{- if .Values.o11y.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "crawlrs.vmsingleScrapeConfigMapName" . }}
+  labels:
+    {{- include "crawlrs.componentLabels" (dict "component" "vmsingle" "context" .) | nindent 4 }}
+data:
+  scrape.yml: |
+    # vmsingle scrape config (Prometheus-compatible). Each crawlrs
+    # pod has stable DNS via the headless Service; we list every
+    # ordinal up to replicaCount as a static target so vmsingle
+    # doesn't need K8s service discovery.
+    global:
+      scrape_interval: {{ .Values.o11y.vmsingle.scrapeInterval }}
+      external_labels:
+        cluster: crawlrs
+        run_id: {{ .Values.runId | quote }}
+
+    scrape_configs:
+      - job_name: crawlrs
+        metrics_path: /metrics
+        static_configs:
+          - targets:
+            {{- $fullname := include "crawlrs.fullname" . }}
+            {{- $headless := include "crawlrs.headlessServiceName" . }}
+            {{- $namespace := .Release.Namespace }}
+            {{- $port := .Values.server.port }}
+            {{- range $i, $_ := until (int .Values.replicaCount) }}
+              - "{{ $fullname }}-{{ $i }}.{{ $headless }}.{{ $namespace }}.svc.cluster.local:{{ $port }}"
+            {{- end }}
+            labels:
+              service: crawlrs
+{{- end }}

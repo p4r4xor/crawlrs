@@ -1,6 +1,6 @@
 //! `MultiStore`: Composite-over-Strategy fan-out of one `Store::write`
-//! call to N inner stores. Per ADR-0013 the runtime sees one `Store`
-//! trait object even when the operator has configured Parquet + WARC.
+//! call to N inner stores. The runtime sees one `Store` trait object
+//! even when the operator has configured Parquet + WARC.
 //!
 //! Convention: the first-configured store is the *primary*; its
 //! returned blob_path is the canonical pointer recorded in the
@@ -12,7 +12,7 @@
 //! immediately and the runtime treats the call as a write failure.
 //! Partial state (one store wrote, another didn't) is acceptable for
 //! v1; the runtime's per-URL retry budget covers eventual re-attempt
-//! and ADR-0011's at-least-once posture is unchanged.
+//! and the at-least-once delivery posture is unchanged.
 
 use std::sync::Arc;
 

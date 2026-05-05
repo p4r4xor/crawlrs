@@ -1,0 +1,17 @@
+{{- if .Values.o11y.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "crawlrs.vmsingleName" . }}
+  labels:
+    {{- include "crawlrs.componentLabels" (dict "component" "vmsingle" "context" .) | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "crawlrs.componentSelectorLabels" (dict "component" "vmsingle" "context" .) | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.o11y.vmsingle.service.port }}
+      targetPort: http
+      protocol: TCP
+{{- end }}

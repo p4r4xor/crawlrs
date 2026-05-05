@@ -1,4 +1,4 @@
-//! Parse-layer metric names + descriptors. Per ADR-0014.
+//! Parse-layer metric names + descriptors.
 
 use metrics::{Unit, describe_histogram};
 

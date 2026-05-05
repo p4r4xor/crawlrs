@@ -1,4 +1,4 @@
-//! Metadata-layer metric names + descriptors. Per ADR-0014.
+//! Metadata-layer metric names + descriptors.
 
 use std::time::Instant;
 

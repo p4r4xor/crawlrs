@@ -11,7 +11,7 @@
 //! - `response` per fetched URL: a synthetic HTTP-response payload
 //!   (status line + headers + body) wrapped in the WARC framing.
 //!
-//! Deferred to v2 (per ADR-0013):
+//! Deferred to v2:
 //!
 //! - `request` records (would require preserving FetchRequest into
 //!   StoreRecord; lossy without it).
@@ -76,8 +76,7 @@ pub fn encode_response(record: &StoreRecord<'_>) -> Vec<u8> {
 
 /// Build the HTTP-response payload: status line + headers + CRLF + body.
 /// HTTP version is always emitted as `HTTP/1.1` because `FetchResponse`
-/// doesn't preserve the wire-level protocol version (a v1 lossiness
-/// noted in ADR-0013).
+/// doesn't preserve the wire-level protocol version (a v1 lossiness).
 fn build_http_response_payload(record: &StoreRecord<'_>) -> Vec<u8> {
     let mut buf = Vec::with_capacity(record.resp.body.len() + 512);
     let reason = StatusCode::from_u16(record.resp.status)

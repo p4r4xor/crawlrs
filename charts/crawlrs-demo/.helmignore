@@ -1,0 +1,22 @@
+# Helm ignores these when packaging the chart.
+.DS_Store
+.git/
+.gitignore
+.bzr/
+.bzrignore
+.hg/
+.hgignore
+.svn/
+*.swp
+*.bak
+*.tmp
+*.orig
+*~
+.project
+.idea/
+*.tmproj
+.vscode/
+
+# Don't bake the resolved subchart tarballs into the packaged chart;
+# `helm dep update` regenerates them from Chart.yaml + Chart.lock.
+charts/*.tgz

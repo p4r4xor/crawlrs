@@ -16,7 +16,7 @@ all = { level = "warn", priority = -1 }
 [workspace.package]
 version     = "0.0.1"
 edition     = "2024"
-license     = "MIT OR Apache-2.0"
+license     = "GPL-3.0-only"
 repository  = "https://github.com/p4r4xor/crawlrs"
 authors     = ["Aniketh <p4r4xor@gmail.com>"]
 

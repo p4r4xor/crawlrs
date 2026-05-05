@@ -180,7 +180,7 @@ impl WreqFetcher {
 /// indicate the proxy itself was burned on the destination
 /// (anti-bot challenge / rate-limit attribution); everything else
 /// is treated as success from the proxy's perspective even if it's
-/// a 5xx — the proxy did its job, the upstream just returned what
+/// a 5xx - the proxy did its job, the upstream just returned what
 /// it returned.
 fn classify_outcome(status: u16) -> ProxyOutcome {
     match status {
@@ -191,7 +191,7 @@ fn classify_outcome(status: u16) -> ProxyOutcome {
 
 /// Read the response body via `bytes_stream`, aborting once
 /// cumulative bytes cross `cap`. Bounded memory regardless of whether
-/// the server advertised a Content-Length — chunked-transfer
+/// the server advertised a Content-Length - chunked-transfer
 /// responses can otherwise stream forever, and a content-length
 /// pre-check (done by the caller) only catches honest servers.
 async fn read_body(response: wreq::Response, cap: u64) -> Result<Bytes> {

@@ -1,6 +1,6 @@
 [package]
 name        = "crawlrs-store"
-description = "crawlrs Store impls: ParquetStore (analytical primary), WarcStore (archival mirror), MultiStore (Composite). Per ADR-0013."
+description = "crawlrs Store impls: ParquetStore (analytical primary), WarcStore (archival mirror), MultiStore (Composite)."
 version.workspace    = true
 edition.workspace    = true
 license.workspace    = true

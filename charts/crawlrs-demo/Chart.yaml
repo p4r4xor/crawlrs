@@ -1,0 +1,46 @@
+apiVersion: v2
+name: crawlrs-demo
+description: |
+  Sandbox wrapping `charts/crawlrs/` with bundled Bitnami Redis +
+  Postgres + MinIO. One `helm install crawlrs-demo` produces a fully
+  self-contained crawlrs deployment - useful for evaluating the
+  crawler, dev loops, and CI smoke tests. Not production-shaped:
+  single replicas, fixed credentials, no persistence.
+type: application
+
+version: 0.0.1
+appVersion: "0.0.1"
+
+home: https://github.com/p4r4xor/crawlrs
+sources:
+  - https://github.com/p4r4xor/crawlrs
+
+keywords:
+  - crawler
+  - sandbox
+  - demo
+
+maintainers:
+  - name: p4r4xor
+    url: https://github.com/p4r4xor
+
+# Subchart dependencies. The crawlrs chart is referenced by file://
+# so this chart works without publishing crawlrs to a Helm repo.
+# Bitnami charts are pulled from the legacy registry; on first use
+# the operator runs `helm dep update` to populate `charts/`.
+dependencies:
+  - name: crawlrs
+    version: 0.1.0
+    repository: "file://../crawlrs"
+  - name: redis
+    version: "20.6.2"
+    repository: "https://charts.bitnami.com/bitnami"
+    condition: redis.enabled
+  - name: postgresql
+    version: "16.3.5"
+    repository: "https://charts.bitnami.com/bitnami"
+    condition: postgresql.enabled
+  - name: minio
+    version: "14.8.5"
+    repository: "https://charts.bitnami.com/bitnami"
+    condition: minio.enabled

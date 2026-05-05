@@ -43,3 +43,28 @@ NOTE: secrets.create=true rendered a Secret with values from the
 chart's values.yaml. For production switch to an externally-managed
 Secret via secrets.existingSecret.
 {{- end }}
+
+{{- if .Values.o11y.enabled }}
+
+# Observability stack (Phase 6c)
+
+vmsingle  : http://{{ include "crawlrs.vmsingleName" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.o11y.vmsingle.service.port }}
+            (built-in PromQL UI at /vmui)
+{{- if .Values.o11y.grafana.enabled }}
+Grafana   : http://{{ include "crawlrs.grafanaName" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.o11y.grafana.service.port }}
+            login: {{ .Values.o11y.grafana.adminUser }} / {{ .Values.o11y.grafana.adminPassword }}
+            anonymous viewer access enabled
+{{- end }}
+
+# Port-forward Grafana to your laptop:
+kubectl port-forward -n {{ .Release.Namespace }} \
+  svc/{{ include "crawlrs.grafanaName" . }} 3000:{{ .Values.o11y.grafana.service.port }}
+
+# Then browse to http://localhost:3000 - dashboards live in the
+# "crawlrs" folder.
+
+# Confirm vmsingle is scraping the crawler pods:
+kubectl exec -n {{ .Release.Namespace }} \
+  deployment/{{ include "crawlrs.vmsingleName" . }} -- \
+  wget -qO- 'http://localhost:{{ .Values.o11y.vmsingle.service.port }}/api/v1/targets' | head
+{{- end }}

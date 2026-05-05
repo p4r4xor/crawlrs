@@ -1,4 +1,4 @@
-//! Tests for `compute_backoff` — the math that turns "failures + kind +
+//! Tests for `compute_backoff` - the math that turns "failures + kind +
 //! Retry-After hint" into "how long until next allowed."
 
 use std::time::Duration;

@@ -66,14 +66,14 @@ const IN_PROCESS_LRU_CAPACITY: u64 = 1024;
 /// Per-host cached robots.txt and a parser facade.
 ///
 /// Two-tier cache:
-/// - **In-process** (`moka::sync::Cache<host, Bytes>`) — first hit, no
+/// - **In-process** (`moka::sync::Cache<host, Bytes>`) - first hit, no
 ///   network. TTL aligned with the Redis TTL so the two layers expire
 ///   together. Cuts the typical Redis HGET-per-fetch load to roughly
 ///   one HGET per host per TTL window per worker process.
-/// - **Redis** (Hash keyed on `crawlrs:{run}:s{shard}:robots:{host}`)
-///   — second hit, shared across pods. Survives worker restarts and
+/// - **Redis** (Hash keyed on `crawlrs:{run}:s{shard}:robots:{host}`):
+///   second hit, shared across pods. Survives worker restarts and
 ///   amortises fetches across the cluster.
-/// - **HTTP fetch** — only on miss in both layers; result populates
+/// - **HTTP fetch** - only on miss in both layers; result populates
 ///   both.
 pub struct RobotsCache {
     pool: Pool<RedisConnectionManager>,

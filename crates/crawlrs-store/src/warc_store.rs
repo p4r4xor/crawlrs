@@ -1,7 +1,9 @@
 //! `WarcStore`: archival mirror of every fetch as ISO 28500 records.
 //!
-//! Per ADR-0013, this is the v1 archival path running alongside
-//! `ParquetStore`. Each successful fetch becomes one gzip-framed
+//! This is the v1 archival path running alongside `ParquetStore`.
+//! WARC preserves byte-exact HTTP request and response framing
+//! (status line, header order, raw body) which a Parquet row by
+//! definition cannot. Each successful fetch becomes one gzip-framed
 //! `WARC-Type: response` record; per-shard files open with one
 //! `warcinfo` opener record. Concatenation of independently-gzipped
 //! records is the WARC spec shape: tools like `warcio` / `pywb` read

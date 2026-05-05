@@ -24,8 +24,7 @@ cargo run -p crawlrs-bin -- crawl --config crawl.toml --seeds seeds.txt
 The binary mounts an HTTP server at `0.0.0.0:9090` (configurable in
 `crawl.toml`) exposing four endpoints:
 
-- `/metrics` - Prometheus exposition format. 29 metrics per
-  [ADR-0014](../../docs/decisions/0014-observability-stack.md).
+- `/metrics` - Prometheus exposition format (29 metrics).
 - `/healthz` - process is up. Always 200 if the binary is running.
 - `/livez` - internal liveness. 200 unless the worker pool has
   deadlocked.
@@ -96,5 +95,4 @@ This crate is the composition root. It owns no business logic; it:
 - Listens for SIGTERM via `shutdown::wait_for_signal`.
 - Orchestrates the lifecycle via `run::crawl`.
 
-Anything that's a domain rule lives elsewhere (per
-`docs/ARCHITECTURE_RULES.md`).
+Anything that's a domain rule lives elsewhere.

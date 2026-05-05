@@ -1,8 +1,8 @@
 //! Fetch-layer metric names + descriptors.
 //!
-//! Per ADR-0014. The `status_class` label aggregates raw HTTP status
-//! codes into 4 buckets (`2xx`/`3xx`/`4xx`/`5xx`) so the counter
-//! cardinality stays at 4 instead of ~50 (any-RFC-9110-status).
+//! The `status_class` label aggregates raw HTTP status codes into 4
+//! buckets (`2xx`/`3xx`/`4xx`/`5xx`) so the counter cardinality stays
+//! at 4 instead of ~50 (any-RFC-9110-status).
 
 use crawlrs_core::CanonicalUrl;
 use metrics::{Unit, describe_counter, describe_histogram};

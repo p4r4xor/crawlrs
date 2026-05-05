@@ -22,7 +22,7 @@ pub fn decode(bytes: &[u8]) -> Result<UrlEntry> {
 }
 
 // Inline because: `encode` and `decode` are intentionally `pub(crate)`
-// — they're the postcard wire format for `UrlEntry`, an
+// - they're the postcard wire format for `UrlEntry`, an
 // implementation detail of how this crate stores items in Redis
 // Streams. Promoting them to `pub` to satisfy a `tests/` integration
 // crate would commit the public API to postcard forever; we'd rather

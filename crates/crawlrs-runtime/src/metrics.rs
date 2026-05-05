@@ -1,10 +1,10 @@
 //! Runtime-layer metric names + descriptors.
 //!
-//! Metric names are an external operational contract (per ADR-0014):
-//! dashboards and runbooks reference these strings, so they must be
-//! stable across crawlrs versions. Defining them as `pub const` here
-//! puts them all in one place and protects against typos in the
-//! emission sites (the constants are the single source of truth).
+//! Metric names are an external operational contract: dashboards and
+//! runbooks reference these strings, so they must be stable across
+//! crawlrs versions. Defining them as `pub const` here puts them all
+//! in one place and protects against typos in the emission sites (the
+//! constants are the single source of truth).
 //!
 //! `register()` is the one-shot description hook: callers (the binary
 //! or a test harness) install a `metrics` recorder, then call
@@ -55,7 +55,7 @@ pub fn register() {
 
 /// Bucket a `FailureKind` enum variant into a stable string label
 /// value. Keeps the `kind` label cardinality bounded to the variant
-/// set (per ADR-0014 cardinality discipline).
+/// set, per the cardinality discipline of the metric-name contract.
 pub fn failure_kind_label(kind: crawlrs_core::FailureKind) -> &'static str {
     use crawlrs_core::FailureKind::*;
     match kind {

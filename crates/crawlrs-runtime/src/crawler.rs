@@ -243,7 +243,9 @@ impl CrawlerBuilder {
         let adapters = self
             .adapters
             .unwrap_or_else(|| Arc::new(SiteAdapterRegistry::new()));
-        // Default mirrors ADR-0010's HostHashShardPolicy(8). Operators
+        // 8 shards by default: bounds hot-domain head-of-line blocking
+        // to one shard's worker capacity while staying small enough that
+        // one Redis instance can hold all per-shard state. Operators
         // running SingleShard (typical for tests) override via the builder
         // and must pass the same policy they wired into the frontier.
         let sharding_policy = self

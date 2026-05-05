@@ -18,9 +18,6 @@
 //! A future scripted variant (a `LuaSiteAdapter` or `WasmSiteAdapter`
 //! that loads scripts at runtime) fits behind this same trait without
 //! changing it. The trait surface stays code-agnostic.
-//!
-//! See ARCHITECTURE.md §5 for the per-domain customization layering
-//! (declarative config vs code hooks vs scripting).
 
 use std::sync::Arc;
 

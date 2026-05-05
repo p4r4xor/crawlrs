@@ -1,0 +1,25 @@
+{{- if and .Values.o11y.enabled .Values.o11y.grafana.enabled .Values.o11y.grafana.datasourceProvisioning }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "crawlrs.grafanaDatasourceConfigMapName" . }}
+  labels:
+    {{- include "crawlrs.componentLabels" (dict "component" "grafana" "context" .) | nindent 4 }}
+data:
+  # Mounted at /etc/grafana/provisioning/datasources/. Grafana
+  # auto-loads on startup. vmsingle implements the Prometheus query
+  # protocol, so the datasource type is `prometheus`.
+  datasource.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: VictoriaMetrics
+        type: prometheus
+        uid: crawlrs-vm
+        access: proxy
+        url: http://{{ include "crawlrs.vmsingleName" . }}:{{ .Values.o11y.vmsingle.service.port }}
+        isDefault: true
+        editable: false
+        jsonData:
+          timeInterval: {{ .Values.o11y.vmsingle.scrapeInterval }}
+          httpMethod: POST
+{{- end }}

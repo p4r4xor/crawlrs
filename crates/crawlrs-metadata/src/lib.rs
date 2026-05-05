@@ -1,8 +1,6 @@
 //! Per-URL metadata ledger.
 //!
-//! Implements [`crawlrs_core::MetadataStore`] backed by Postgres. See
-//! [ADR-0009](../../../docs/decisions/0009-metadata-store.md) for the
-//! design.
+//! Implements [`crawlrs_core::MetadataStore`] backed by Postgres.
 //!
 //! Two-table shape: `url_metadata` is the mutable current-state row
 //! (one per URL); `url_history` is the append-only event log

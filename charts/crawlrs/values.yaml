@@ -13,10 +13,13 @@ image:
   pullSecrets: []
 
 # ---- Replicas + sharding --------------------------------------------
-# Per ADR-0010 the default sharding policy is HostHashShardPolicy(8).
-# replicaCount is independent: with N replicas + 8 shards, each pod
-# owns shards (ordinal, ordinal + N, ...) per the binary's
-# CRAWLRS_REPLICAS-aware logic in factory.rs.
+# The default sharding policy is HostHashShardPolicy(8): 8 shards
+# bounds hot-domain head-of-line blocking to one shard's worker
+# capacity while keeping per-shard memory small enough that one Redis
+# instance can hold all per-shard state. replicaCount is independent:
+# with N replicas + 8 shards, each pod owns shards
+# (ordinal, ordinal + N, ...) per the binary's CRAWLRS_REPLICAS-aware
+# logic in factory.rs.
 replicaCount: 1
 
 # ---- crawl.toml content ---------------------------------------------
@@ -164,3 +167,74 @@ serviceAccount:
   create: true
   name: ""
   annotations: {}
+
+# ---- Bundled observability (Phase 6c) -------------------------------
+# The chart ships its own vmsingle + Grafana so the crawler stack is
+# self-contained. Operators with their own Prometheus / VM / Grafana
+# fleet should set `o11y.enabled: false` and point their own scraper
+# at <release>-crawlrs-headless:9090/metrics.
+o11y:
+  enabled: true
+
+  vmsingle:
+    image:
+      repository: victoriametrics/victoria-metrics
+      tag: v1.107.0
+      pullPolicy: IfNotPresent
+    # Persistent volume for the time-series data dir.
+    storage:
+      size: 10Gi
+      storageClassName: ""    # empty = cluster default StorageClass
+      accessMode: ReadWriteOnce
+    # vmsingle CLI flags. retentionPeriod accepts h / d / w / M / y
+    # suffixes (e.g. "1M" for one month, "7d" for a week).
+    retentionPeriod: 1M
+    scrapeInterval: 15s
+    # Extra args appended to the vmsingle container command. Use for
+    # vmui customization, dedup, etc.
+    extraArgs: []
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 1000m
+        memory: 1Gi
+    service:
+      port: 8429
+    podSecurityContext:
+      runAsNonRoot: true
+      runAsUser: 1000
+      runAsGroup: 1000
+      fsGroup: 1000
+
+  grafana:
+    enabled: true
+    image:
+      repository: grafana/grafana
+      tag: 11.4.0
+      pullPolicy: IfNotPresent
+    # Sandbox-shape default; override in production via --set or
+    # secrets management. Set to "" to skip provisioning the env var
+    # (Grafana then prompts for password on first login).
+    adminUser: admin
+    adminPassword: admin
+    # Names match the ConfigMaps the chart provisions; only override
+    # if you're swapping in your own.
+    datasourceProvisioning: true
+    dashboardProvisioning: true
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+    service:
+      port: 3000
+      type: ClusterIP
+    podSecurityContext:
+      runAsNonRoot: true
+      runAsUser: 472
+      runAsGroup: 472
+      fsGroup: 472

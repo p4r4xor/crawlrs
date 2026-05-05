@@ -2,8 +2,8 @@
 //!
 //! Three triggers, OR-combined: byte cap (raw input bytes consumed),
 //! row count, and elapsed time since the file opened. The first one
-//! to fire causes a rotation. Defaults match ADR-0013: 128 MB raw,
-//! 100 K rows, 30 minutes.
+//! to fire causes a rotation. Defaults: 128 MB raw, 100 K rows,
+//! 30 minutes.
 
 use std::time::{Duration, Instant};
 

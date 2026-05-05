@@ -1,0 +1,17 @@
+{{- if and .Values.o11y.enabled .Values.o11y.grafana.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "crawlrs.grafanaName" . }}
+  labels:
+    {{- include "crawlrs.componentLabels" (dict "component" "grafana" "context" .) | nindent 4 }}
+spec:
+  type: {{ .Values.o11y.grafana.service.type }}
+  selector:
+    {{- include "crawlrs.componentSelectorLabels" (dict "component" "grafana" "context" .) | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.o11y.grafana.service.port }}
+      targetPort: http
+      protocol: TCP
+{{- end }}

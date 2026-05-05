@@ -2,15 +2,14 @@
 //!
 //! [`RedisFrontier`] satisfies [`crawlrs_core::Frontier`] using a per-shard
 //! keyspace on a Redis instance, with at-least-once delivery via Redis
-//! Streams and consumer groups (see ADR-0001 / ADR-0006 / ADR-0007).
+//! Streams and consumer groups.
 //!
 //! Design pattern: Strategy at construction (`ShardingPolicy` selects the
 //! shard for each URL); Composite at runtime (one `RedisFrontier` instance
 //! fronts N per-shard sub-keyspaces).
 //!
 //! Key naming, run-id, and ACK semantics are documented on the inherent
-//! methods. See ARCHITECTURE.md §5 for the trait surface and §6 for the
-//! Redis schema sketch.
+//! methods.
 
 pub mod claims;
 pub mod codec;

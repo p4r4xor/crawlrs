@@ -107,8 +107,10 @@ pub struct ParsedDocument {
 /// the runtime supplies the run/shard/depth context plus the
 /// content_hash already computed at this point in the pipeline.
 ///
-/// See ADR-0013 for the rationale (Pattern: Introduce Parameter
-/// Object) and the column-level mapping into the Parquet schema.
+/// Pattern: Introduce Parameter Object. Grouping these fields keeps
+/// the `Store::write` signature one argument and lets impls pull just
+/// the columns they need without overloading the trait method as the
+/// stored shape evolves.
 #[derive(Debug, Clone, Copy)]
 pub struct StoreRecord<'a> {
     pub doc: &'a ParsedDocument,
@@ -119,7 +121,7 @@ pub struct StoreRecord<'a> {
     pub content_hash: u64,
 }
 
-/// Lifecycle status of a URL in the metadata ledger. See ADR-0009.
+/// Lifecycle status of a URL in the metadata ledger.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UrlStatus {
@@ -136,8 +138,7 @@ pub enum UrlStatus {
     /// Retry budget exhausted, or the failure is non-retryable.
     /// Forms the dead-letter view: rows where `status =
     /// 'permanently_failed'` are the DLQ; ops queries against
-    /// `url_metadata` and `url_history` answer "what broke?" (per
-    /// ADR-0011).
+    /// `url_metadata` and `url_history` answer "what broke?".
     PermanentlyFailed,
     /// Skipped without an attempt (e.g. robots.txt disallowed,
     /// manual exclude, depth limit, content-hash dupe).
@@ -145,9 +146,8 @@ pub enum UrlStatus {
 }
 
 /// Per-URL ledger entry. The `MetadataStore` trait stores one of
-/// these per URL across all crawl runs (cross-run shape per ADR-0009);
-/// concrete impls back this with whatever's appropriate (Redis Hash,
-/// Postgres row, etc.).
+/// these per URL across all crawl runs; concrete impls back this with
+/// whatever's appropriate (Redis Hash, Postgres row, etc.).
 ///
 /// All time fields are `SystemTime` in the API surface; storage layers
 /// encode them as wall-clock millis at the wire boundary, the same

@@ -1,12 +1,12 @@
 //! Sharding strategy for distributing URLs across per-shard keyspaces.
 //!
-//! See [ADR-0006](../../../docs/decisions/0006-sharding-policy-abstraction.md)
-//! for the design and [ADR-0010](../../../docs/decisions/0010-default-sharding-policy.md)
-//! for the default-policy choice (`HostHashShardPolicy(8)`).
-//!
 //! Pattern: Strategy. The trait defines the routing decision; concrete
 //! impls (single-shard for tests, host-hash for production) plug into
 //! every adapter that owns shard-keyed state (frontier + politeness).
+//! Production deployments default to `HostHashShardPolicy(8)`: 8 shards
+//! bounds hot-domain head-of-line blocking to one shard's worker
+//! capacity while staying small enough that one Redis instance can
+//! hold all per-shard state.
 
 use crate::hash::fnv1a_64;
 use crate::url::CanonicalUrl;
@@ -32,9 +32,9 @@ pub trait ShardingPolicy: Send + Sync {
     fn shard_count(&self) -> u32;
 }
 
-/// One shard for everyone, Pattern 1 from ADR-0002. Every URL maps to
-/// shard `0`. Reserved for tests and one-off ops scripts; production
-/// deployments default to [`HostHashShardPolicy`] per ADR-0010.
+/// One shard for everyone. Every URL maps to shard `0`. Reserved for
+/// tests and one-off ops scripts; production deployments default to
+/// [`HostHashShardPolicy`].
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SingleShardPolicy;
 
@@ -47,9 +47,8 @@ impl ShardingPolicy for SingleShardPolicy {
     }
 }
 
-/// Host-hashed sharding, Pattern 2 from ADR-0002. Same registrable host
-/// always lands on the same shard, so per-host politeness state stays
-/// local to one shard.
+/// Host-hashed sharding. Same registrable host always lands on the
+/// same shard, so per-host politeness state stays local to one shard.
 ///
 /// Hash function is FNV-1a over the host string. FNV-1a is deterministic
 /// (no per-process seed), stable across releases, dependency-free, and

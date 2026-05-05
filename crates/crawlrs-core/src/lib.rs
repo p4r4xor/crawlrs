@@ -6,17 +6,14 @@
 //!
 //! Layout:
 //!
-//! - [`traits`] — every public trait (port) the crate publishes. One
+//! - [`traits`] - every public trait (port) the crate publishes. One
 //!   file per trait. New abstractions go here.
-//! - [`types`] — value types that flow between traits (`UrlEntry`,
+//! - [`types`] - value types that flow between traits (`UrlEntry`,
 //!   `FetchRequest`, `FetchResponse`, `ParsedDocument`, `UrlMetadata`,
 //!   `UrlStatus`, `RedirectHop`).
-//! - [`url`] — the `CanonicalUrl` newtype + canonicalization rules.
-//! - [`error`] — the crate-wide `Error` enum.
-//! - [`hash`] — pure helper functions for FNV-1a + content hashing.
-//!
-//! For a richer guide to where things live, see
-//! [`docs/ARCHITECTURE_RULES.md`](../../../docs/ARCHITECTURE_RULES.md).
+//! - [`url`] - the `CanonicalUrl` newtype + canonicalization rules.
+//! - [`error`] - the crate-wide `Error` enum.
+//! - [`hash`] - pure helper functions for FNV-1a + content hashing.
 
 pub mod error;
 pub mod hash;

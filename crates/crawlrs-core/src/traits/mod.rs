@@ -6,7 +6,7 @@
 //! it (return enums, parameter types, simple impl structs).
 //!
 //! Modules at the top level of `src/` are guaranteed *not* to declare
-//! traits — they hold value types ([`crate::types`]), errors
+//! traits - they hold value types ([`crate::types`]), errors
 //! ([`crate::error`]), helpers ([`crate::hash`]), or canonicalised
 //! values ([`crate::url`]).
 //!

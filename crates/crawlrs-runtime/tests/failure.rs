@@ -1,5 +1,5 @@
 //! Tests for `classify_status`, `classify_transport_error`,
-//! `parse_retry_after`, and `extract_retry_after` — the boundary
+//! `parse_retry_after`, and `extract_retry_after` - the boundary
 //! helpers that turn HTTP responses into `FailureKind` + Retry-After
 //! durations.
 

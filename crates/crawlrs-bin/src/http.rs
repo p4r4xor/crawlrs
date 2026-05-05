@@ -2,7 +2,7 @@
 //! the three health probes `/healthz`, `/livez`, `/readyz` on a
 //! single port.
 //!
-//! Health-probe semantics (per ADR-0014):
+//! Health-probe semantics:
 //!
 //! - **`/healthz`**: process is up. Always 200 if the binary is
 //!   running. The probe of last resort.

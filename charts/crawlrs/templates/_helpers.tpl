@@ -89,3 +89,43 @@ periodSeconds: {{ .probe.periodSeconds }}
 timeoutSeconds: {{ .probe.timeoutSeconds }}
 failureThreshold: {{ .probe.failureThreshold }}
 {{- end -}}
+
+{{/* o11y helpers (Phase 6c). */}}
+{{- define "crawlrs.vmsingleName" -}}
+{{- printf "%s-vmsingle" (include "crawlrs.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{- define "crawlrs.vmsingleScrapeConfigMapName" -}}
+{{- printf "%s-vmsingle-scrape" (include "crawlrs.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{- define "crawlrs.grafanaName" -}}
+{{- printf "%s-grafana" (include "crawlrs.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{- define "crawlrs.grafanaDatasourceConfigMapName" -}}
+{{- printf "%s-grafana-datasources" (include "crawlrs.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{- define "crawlrs.grafanaDashboardsProviderConfigMapName" -}}
+{{- printf "%s-grafana-dashboards-provider" (include "crawlrs.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{- define "crawlrs.grafanaDashboardsConfigMapName" -}}
+{{- printf "%s-grafana-dashboards" (include "crawlrs.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{/* Component labels add app.kubernetes.io/component to the standard set. */}}
+{{- define "crawlrs.componentLabels" -}}
+{{- $component := .component -}}
+{{- $context := .context -}}
+{{ include "crawlrs.labels" $context }}
+app.kubernetes.io/component: {{ $component }}
+{{- end -}}
+
+{{- define "crawlrs.componentSelectorLabels" -}}
+{{- $component := .component -}}
+{{- $context := .context -}}
+{{ include "crawlrs.selectorLabels" $context }}
+app.kubernetes.io/component: {{ $component }}
+{{- end -}}

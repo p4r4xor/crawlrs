@@ -51,8 +51,8 @@ async fn fans_out_to_all_inner_stores_and_returns_primary_path() {
     );
 
     // Returned path must be the primary's, since the metadata ledger
-    // only carries one blob_path and ADR-0013 specifies the
-    // first-configured store as canonical.
+    // only carries one blob_path and the first-configured store is
+    // the canonical one.
     assert!(
         returned_path.starts_with("memory://"),
         "returned: {returned_path}"

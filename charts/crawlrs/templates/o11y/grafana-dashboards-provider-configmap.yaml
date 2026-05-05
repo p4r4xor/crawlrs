@@ -1,0 +1,24 @@
+{{- if and .Values.o11y.enabled .Values.o11y.grafana.enabled .Values.o11y.grafana.dashboardProvisioning }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "crawlrs.grafanaDashboardsProviderConfigMapName" . }}
+  labels:
+    {{- include "crawlrs.componentLabels" (dict "component" "grafana" "context" .) | nindent 4 }}
+data:
+  # Mounted at /etc/grafana/provisioning/dashboards/. Tells Grafana
+  # to scan /var/lib/grafana/dashboards/ on disk for *.json files.
+  # That path is the mount of the dashboards ConfigMap.
+  dashboards.yaml: |
+    apiVersion: 1
+    providers:
+      - name: crawlrs
+        folder: crawlrs
+        type: file
+        disableDeletion: false
+        editable: true
+        updateIntervalSeconds: 30
+        options:
+          path: /var/lib/grafana/dashboards
+          foldersFromFilesStructure: false
+{{- end }}

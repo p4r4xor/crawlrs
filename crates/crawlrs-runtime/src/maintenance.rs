@@ -2,10 +2,10 @@
 //! FD count) on a configurable cadence.
 //!
 //! Frontier maintenance (`XAUTOCLAIM` reclaim of stranded entries) is
-//! driven by the workers themselves now (per ADR-0012); this loop's
-//! only job is observability — the breadcrumbs Andrew Chan's
-//! debugging sessions wished they had: an FD leak from 1500 to 4000
-//! over 11 hours is invisible without periodic snapshots.
+//! driven by the workers themselves now; this loop's only job is
+//! observability. Periodic snapshots make slow leaks (e.g. an FD
+//! count creeping from 1500 to 4000 over an 11-hour run) visible
+//! when point-in-time inspection would miss them.
 
 use std::time::Duration;
 
@@ -54,7 +54,7 @@ async fn heartbeat() {
 
 /// Parse `VmRSS` out of `/proc/self/status`. Linux-only; returns None
 /// on other platforms or any read/parse failure. Uses `tokio::fs` to
-/// avoid blocking the executor (Rule 16 — `/proc` reads are nominally
+/// avoid blocking the executor (Rule 16 - `/proc` reads are nominally
 /// instant, but the precedent matters).
 async fn read_rss_kb() -> Option<u64> {
     let status = tokio::fs::read_to_string("/proc/self/status").await.ok()?;

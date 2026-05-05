@@ -5,10 +5,10 @@
 //! The frontier is a **durable URL queue** with at-least-once delivery.
 //! It uses three Redis structures per shard, scoped under a `run_id`:
 //!
-//! - **`crawlrs:{run}:s{N}:queue`** — a Redis Stream. Each entry is one
+//! - **`crawlrs:{run}:s{N}:queue`** - a Redis Stream. Each entry is one
 //!   URL (postcard-encoded). Entries flow in via `XADD` and are
 //!   delivered to workers via `XREADGROUP`.
-//! - **`crawlrs:{run}:s{N}:seen`** — a Redis Set of URL strings already
+//! - **`crawlrs:{run}:s{N}:seen`** - a Redis Set of URL strings already
 //!   submitted. Submit-time dedup; checked atomically with the `XADD`
 //!   in one Lua script (`scripts/batch_submit.lua`).
 //! - **A consumer group** (`fetchers`) on the queue Stream. Each
@@ -18,7 +18,10 @@
 //!   delivered but hasn't acked yet.
 //!
 //! Crucially, **one worker = one tokio task = one Redis consumer**.
-//! Multiple workers in one process don't share a PEL. See ADR-0012.
+//! Multiple workers in one process don't share a PEL. A shared
+//! consumer name lets a peer worker read another worker's pending
+//! entries via id `"0"`, which produces double-claims; per-task
+//! consumer names give each worker a private PEL.
 //!
 //! # Production: cold start
 //!
@@ -28,23 +31,23 @@
 //! 2. The constructor:
 //!    - Validates each owned shard is in range.
 //!    - Generates `consumer_base = cuid2` (unique per `RedisFrontier`
-//!      instance — typically one per process).
+//!      instance - typically one per process).
 //!    - For each owned shard, runs `XGROUP CREATE
 //!      crawlrs:{run}:s{N}:queue fetchers $ MKSTREAM`. Creates the
 //!      Stream and the consumer group atomically. If the group
 //!      already exists (from a prior process for the same `run_id`),
-//!      Redis returns BUSYGROUP — we treat that as success.
+//!      Redis returns BUSYGROUP - we treat that as success.
 //! 3. Caller spawns N worker tasks, each holding the same
 //!    `Arc<dyn Frontier>`. Their consumer names are
-//!    `<base>-Id(1)`, `<base>-Id(2)`, … — distinct per task.
+//!    `<base>-Id(1)`, `<base>-Id(2)`, … - distinct per task.
 //! 4. First `claim()` from any worker:
 //!    - Walks owned shards in round-robin order.
 //!    - For each shard, the three-tier ladder:
-//!      1. `XREADGROUP id "0"` — own PEL. Empty: this worker has
+//!      1. `XREADGROUP id "0"` - own PEL. Empty: this worker has
 //!         never claimed anything.
-//!      2. `XREADGROUP id ">"` — new entries. Empty: nothing in the
+//!      2. `XREADGROUP id ">"` - new entries. Empty: nothing in the
 //!         Stream yet.
-//!      3. `reclaim_one(shard)` — `XAUTOCLAIM` with 5-minute
+//!      3. `reclaim_one(shard)` - `XAUTOCLAIM` with 5-minute
 //!         (production) idle threshold. Empty: no stranded entries.
 //!    - All shards return `None`. Worker sleeps `empty_queue_poll`,
 //!      backing off exponentially up to `max_idle_sleep`.
@@ -62,12 +65,12 @@
 //!
 //! Imagine 24 workers across 3 processes (8 workers per process, each
 //! process owning 8 shards via `HostHashShardPolicy(8)`). The Stream
-//! is hot — submits arrive from `submit_discovered` calls in worker
+//! is hot - submits arrive from `submit_discovered` calls in worker
 //! pipelines, claims drain entries.
 //!
 //! - **Each worker's claim path** is the three-tier ladder above:
 //!   1. Read its own PEL first (entries it nacked, or that survived
-//!      a process restart and were re-delivered to the same task id —
+//!      a process restart and were re-delivered to the same task id -
 //!      rare, but the read is cheap). Almost always empty in steady
 //!      state.
 //!   2. Read new entries via `>`. Most claims succeed here. Redis
@@ -88,14 +91,14 @@
 //!   will steal it via tier 3.
 //!
 //! - **Stranded recovery is automatic**. A worker that crashes
-//!   mid-process leaves entries in its PEL forever — until a peer's
+//!   mid-process leaves entries in its PEL forever - until a peer's
 //!   tier 3 `XAUTOCLAIM` picks them up. No separate maintenance
 //!   process needed.
 //!
 //! - **Submit-time dedup** stays correct across runs of `submit_batch`
 //!   because the Lua script `SADD`s and `XADD`s atomically per chunk
 //!   (chunks of 1000 URLs, parallel across shards). A URL already in
-//!   the seen-set is silently dropped — no duplicate Stream entry.
+//!   the seen-set is silently dropped - no duplicate Stream entry.
 //!
 //! - **Discovery growth** is bounded by `max_queue_depth` (passed to
 //!   the Lua script as `XADD MAXLEN ~ N`). Without it, an explosion
@@ -103,11 +106,11 @@
 //!
 //! Operational signals to watch:
 //!
-//! - `claim_count()` — in-flight URLs in this process. Should hover
+//! - `claim_count()` - in-flight URLs in this process. Should hover
 //!   near `worker count` in steady state.
-//! - `shard_depths()` — `XLEN` per owned shard. Tells you which
+//! - `shard_depths()` - `XLEN` per owned shard. Tells you which
 //!   shards are hot.
-//! - `XPENDING <queue> <group>` (run via `redis-cli`) — total
+//! - `XPENDING <queue> <group>` (run via `redis-cli`) - total
 //!   pending entries across all consumers. Steady state ≈ N workers
 //!   in flight; ballooning means workers are stuck.
 
@@ -133,7 +136,10 @@ use crate::keys::KeyPrefix;
 
 /// Stranded URLs (claimed but unacked beyond this idle window) become
 /// candidates for `XAUTOCLAIM` reclaim by another worker. Five minutes
-/// matches the production baseline in ADR-0007.
+/// is the production baseline: long enough that a healthy worker on
+/// the slow tail of its fetch budget keeps ownership, short enough
+/// that a crashed worker's URLs return to circulation within a small
+/// number of fetch latencies.
 pub const DEFAULT_AUTOCLAIM_IDLE: Duration = Duration::from_secs(300);
 
 /// Approximate per-shard `XADD MAXLEN ~ N` cap. `0` disables trimming.
@@ -232,9 +238,9 @@ pub struct RedisFrontier {
     owned_shards: Vec<ShardKey>,
     /// Base name; the actual consumer used on every Redis call is
     /// suffixed with the current `tokio::task::id()` so each worker
-    /// task acts as its own Redis Streams consumer. See ADR-0012:
-    /// shared consumer names cause multiple workers to read each
-    /// other's PEL via `XREADGROUP id "0"`, double-claiming entries.
+    /// task acts as its own Redis Streams consumer. A shared consumer
+    /// name causes multiple workers to read each other's PEL via
+    /// `XREADGROUP id "0"`, double-claiming entries.
     consumer_base: String,
     claims: Arc<PendingClaims>,
 
@@ -242,8 +248,7 @@ pub struct RedisFrontier {
     /// stealing entries idle for at least this long from peer
     /// consumers; the value is the safety net that prevents healthy
     /// workers' in-flight entries from being stolen mid-process. Five
-    /// minutes is the production default (matches ADR-0007); tests
-    /// use ~50 ms.
+    /// minutes is the production default; tests use ~50 ms.
     autoclaim_idle: Duration,
 
     /// `XADD MAXLEN ~ N` cap per shard. `0` disables trimming. When
@@ -331,14 +336,15 @@ impl RedisFrontier {
 
     /// Per-task Redis Streams consumer name. Each worker is its own
     /// tokio task; suffixing the task id makes every worker a distinct
-    /// consumer with a private PEL. See ADR-0012.
+    /// consumer with a private PEL.
     fn consumer_name(&self) -> String {
         match tokio::task::try_id() {
             Some(id) => format!("{}-{:?}", self.consumer_base, id),
             // Outside a tokio runtime (shouldn't happen on the worker
             // hot path) we fall back to the base name. Better than
             // panicking; the at-least-once-delivery guarantee
-            // degrades to the pre-ADR-0012 behavior in this corner.
+            // degrades to the shared-consumer behavior in this corner
+            // (peer workers can read this PEL via id "0").
             None => self.consumer_base.clone(),
         }
     }
@@ -604,7 +610,6 @@ impl RedisFrontier {
     /// Calls `XAUTOCLAIM` with this worker's consumer name as the
     /// target; entries idle for at least `autoclaim_idle` move into
     /// this worker's PEL. Returns the first reclaimed entry (if any).
-    /// See ADR-0012 for the worker-side reclaim model.
     async fn reclaim_one(&self, shard: ShardKey) -> LocalResult<Option<(UrlEntry, StreamEntryId)>> {
         let queue_key = self.keys.queue(shard);
         let group = self.keys.consumer_group();
@@ -810,7 +815,7 @@ impl Frontier for RedisFrontier {
     }
 
     // No `tick()` override: workers self-rebalance via
-    // `reclaim_one` in the claim path (see ADR-0012). The trait
+    // `reclaim_one` in the claim path. The trait
     // default `Ok(0)` is fine. `reclaim_stranded` stays public for
     // ad-hoc drains (e.g. graceful shutdown of an entire pool).
 }

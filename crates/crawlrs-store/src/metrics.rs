@@ -1,4 +1,4 @@
-//! Store-layer metric names + descriptors. Per ADR-0014.
+//! Store-layer metric names + descriptors.
 
 use metrics::{Unit, describe_counter, describe_gauge, describe_histogram};
 

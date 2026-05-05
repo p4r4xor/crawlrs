@@ -1,0 +1,62 @@
+crawlrs-demo: a sandbox bundle of crawlrs + Redis + Postgres + MinIO.
+
+Release    : {{ .Release.Name }} (namespace {{ .Release.Namespace }})
+
+{{- if not (eq .Release.Name "crawlrs-demo") }}
+
+#######################################################################
+# WARNING: this chart's default values assume release name             #
+#  `crawlrs-demo`. You used `{{ .Release.Name }}`. Service DNS in the   #
+# crawler subchart's config points at `crawlrs-demo-redis-master`,     #
+# `crawlrs-demo-postgresql`, `crawlrs-demo-minio`; those names won't   #
+# resolve. Reinstall with:                                              #
+#                                                                       #
+#   helm install crawlrs-demo ./charts/crawlrs-demo \                  #
+#     --create-namespace -n {{ .Release.Namespace }}                   #
+#######################################################################
+{{- end }}
+
+# Wait for everything to come up
+kubectl wait --for=condition=ready pod \
+  -l app.kubernetes.io/instance={{ .Release.Name }} \
+  -n {{ .Release.Namespace }} --timeout=180s
+
+# Submit a few seed URLs (the crawler reads from a frontier; this
+# pipes URLs into Redis directly via the running pod):
+kubectl exec -n {{ .Release.Namespace }} \
+  {{ .Release.Name }}-crawlrs-0 -- \
+  sh -c 'echo "https://example.com" | crawlrs ...'
+
+# Port-forward Grafana to your laptop:
+kubectl port-forward -n {{ .Release.Namespace }} \
+  svc/{{ .Release.Name }}-crawlrs-grafana 3000:3000
+# Then http://localhost:3000 (admin / admin) - dashboards under
+# the "crawlrs" folder.
+
+# Port-forward MinIO console:
+kubectl port-forward -n {{ .Release.Namespace }} \
+  svc/{{ .Release.Name }}-minio-console 9001:9001
+# Then http://localhost:9001 (minioadmin / minioadmin)
+
+# Port-forward vmsingle's PromQL UI:
+kubectl port-forward -n {{ .Release.Namespace }} \
+  svc/{{ .Release.Name }}-crawlrs-vmsingle 8429:8429
+# Then http://localhost:8429/vmui
+
+# Tail crawler logs:
+kubectl logs -f -n {{ .Release.Namespace }} \
+  {{ .Release.Name }}-crawlrs-0
+
+#######################################################################
+# Sandbox-shape disclaimers                                             #
+#                                                                       #
+# - persistence: NONE on Redis / Postgres / MinIO. Pod restart erases   #
+#   all crawl state.                                                    #
+# - credentials: hard-coded ("minioadmin", "crawlrs", "crawlrs-demo").  #
+#   DO NOT expose this chart to the internet.                           #
+# - replicas: single replica everywhere. No HA, no failover.            #
+# - resource limits: tuned for laptop / kind clusters.                  #
+#                                                                       #
+# For production use the bare `charts/crawlrs/` chart and bring         #
+# external Redis / Postgres / S3 endpoints + secrets.                   #
+#######################################################################

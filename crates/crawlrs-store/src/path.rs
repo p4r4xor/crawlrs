@@ -1,6 +1,6 @@
 //! Path-layout helper shared by `ParquetStore` and (future) `WarcStore`.
 //!
-//! The convention (per ADR-0013):
+//! The convention:
 //! ```text
 //! <base>/run=<run_id>/shard=<shard>/worker=<worker_id>/<format>/part-<startts_ms>-<seq>.<ext>
 //! ```

@@ -1,0 +1,17 @@
+{{- if .Values.o11y.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "crawlrs.vmsingleName" . }}
+  labels:
+    {{- include "crawlrs.componentLabels" (dict "component" "vmsingle" "context" .) | nindent 4 }}
+spec:
+  accessModes:
+    - {{ .Values.o11y.vmsingle.storage.accessMode }}
+  resources:
+    requests:
+      storage: {{ .Values.o11y.vmsingle.storage.size }}
+  {{- with .Values.o11y.vmsingle.storage.storageClassName }}
+  storageClassName: {{ . }}
+  {{- end }}
+{{- end }}

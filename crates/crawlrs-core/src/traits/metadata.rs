@@ -1,9 +1,6 @@
 //! Per-URL metadata ledger trait.
 //!
-//! See [ADR-0009](../../../docs/decisions/0009-metadata-store.md) for
-//! the design and [ADR-0011](../../../docs/decisions/0011-retry-budget-and-cross-run-dedup.md)
-//! for how the runtime drives this trait. The Postgres-backed impl
-//! lives in `crawlrs-metadata`.
+//! The Postgres-backed impl lives in `crawlrs-metadata`.
 
 use async_trait::async_trait;
 
@@ -56,6 +53,6 @@ pub trait MetadataStore: Send + Sync {
     /// `url_metadata` (the DLQ is the row-set where status =
     /// `'permanently_failed'`); a `permanently_failed` event row
     /// carrying `reason` is appended to `url_history` so operators can
-    /// inspect "what broke?" via SQL (per ADR-0011).
+    /// inspect "what broke?" via SQL.
     async fn mark_permanently_failed(&self, url: &CanonicalUrl, reason: &str) -> Result<()>;
 }

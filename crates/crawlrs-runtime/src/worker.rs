@@ -43,12 +43,12 @@ pub struct WorkerDeps {
     /// was last touched by run Y." Must be stable for the lifetime of
     /// the `Crawler`.
     pub run_id: String,
-    /// Sharding policy used to derive a URL's shard at storage time
-    /// (per ADR-0013, the blob store's path layout includes the
-    /// shard component for Hive-partitioned downstream pruning).
-    /// Must agree with whatever the frontier impl is using internally;
-    /// the runtime defaults to `HostHashShardPolicy::new(8)` per
-    /// ADR-0010 unless the operator overrides via the builder.
+    /// Sharding policy used to derive a URL's shard at storage time.
+    /// The blob store's path layout includes the shard component for
+    /// Hive-partitioned downstream pruning. Must agree with whatever
+    /// the frontier impl is using internally; the runtime defaults to
+    /// `HostHashShardPolicy::new(8)` unless the operator overrides
+    /// via the builder.
     pub sharding_policy: Arc<dyn ShardingPolicy>,
 }
 
@@ -178,7 +178,7 @@ impl UrlPipeline {
 
     /// Top-level orchestration. Reads as a checklist: each step
     /// either proceeds or short-circuits the run. The methods below
-    /// follow a uniform contract — they perform their phase, and if
+    /// follow a uniform contract - they perform their phase, and if
     /// they terminally handle the URL (acking/nacking the frontier
     /// and writing any metadata transition), they signal that to
     /// `run` via the return type so we exit early.

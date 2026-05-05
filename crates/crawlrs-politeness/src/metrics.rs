@@ -1,8 +1,8 @@
 //! Politeness-layer metric names + descriptors.
 //!
-//! Per ADR-0014. The robots cache hit/miss counters are at "did we
-//! avoid a network fetch?" granularity (in-process and Redis tiers
-//! both count as hits; only network fetches are misses).
+//! The robots cache hit/miss counters are at "did we avoid a network
+//! fetch?" granularity (in-process and Redis tiers both count as
+//! hits; only network fetches are misses).
 
 use metrics::{Unit, describe_counter, describe_gauge, describe_histogram};
 

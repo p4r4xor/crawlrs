@@ -1,0 +1,7 @@
+# Resolved subchart tarballs + unpacked dirs from `helm dep update`.
+# Reproducible from Chart.lock + Chart.yaml; no need to track in git.
+charts/*.tgz
+charts/redis/
+charts/postgresql/
+charts/minio/
+charts/crawlrs/

@@ -1,8 +1,8 @@
 //! Frontier-layer metric names + descriptors.
 //!
-//! Names are an external operational contract per ADR-0014. The
-//! `op` label (Redis-command-seconds histogram) is constrained to
-//! the set below for cardinality discipline.
+//! Names are an external operational contract. The `op` label
+//! (Redis-command-seconds histogram) is constrained to the set below
+//! for cardinality discipline.
 
 use metrics::{Unit, describe_counter, describe_gauge, describe_histogram};
 

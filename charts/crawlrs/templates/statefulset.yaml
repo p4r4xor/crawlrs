@@ -46,9 +46,9 @@ spec:
       affinity:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      # Drain delay (per ADR-0014): SIGTERM -> /readyz unhealthy ->
-      # 5s drain -> frontier shutdown -> worker drain -> store flush
-      # -> exit. terminationGracePeriodSeconds caps total drain time.
+      # Drain delay: SIGTERM -> /readyz unhealthy -> 5s drain ->
+      # frontier shutdown -> worker drain -> store flush -> exit.
+      # terminationGracePeriodSeconds caps total drain time.
       terminationGracePeriodSeconds: 60
       containers:
         - name: crawlrs

@@ -1,0 +1,74 @@
+{{- if .Values.o11y.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "crawlrs.vmsingleName" . }}
+  labels:
+    {{- include "crawlrs.componentLabels" (dict "component" "vmsingle" "context" .) | nindent 4 }}
+spec:
+  replicas: 1
+  # vmsingle is the only writer to its PVC; rolling updates would
+  # try to attach two pods at once. Recreate strategy avoids that.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "crawlrs.componentSelectorLabels" (dict "component" "vmsingle" "context" .) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "crawlrs.componentSelectorLabels" (dict "component" "vmsingle" "context" .) | nindent 8 }}
+      annotations:
+        # Cache-bust the pod when the scrape config changes.
+        checksum/scrape-config: {{ include (print $.Template.BasePath "/o11y/vmsingle-scrape-configmap.yaml") . | sha256sum }}
+    spec:
+      securityContext:
+        {{- toYaml .Values.o11y.vmsingle.podSecurityContext | nindent 8 }}
+      containers:
+        - name: vmsingle
+          image: "{{ .Values.o11y.vmsingle.image.repository }}:{{ .Values.o11y.vmsingle.image.tag }}"
+          imagePullPolicy: {{ .Values.o11y.vmsingle.image.pullPolicy }}
+          args:
+            - -storageDataPath=/storage
+            - -retentionPeriod={{ .Values.o11y.vmsingle.retentionPeriod }}
+            - -httpListenAddr=:{{ .Values.o11y.vmsingle.service.port }}
+            - -promscrape.config=/etc/vmsingle/scrape.yml
+            {{- range .Values.o11y.vmsingle.extraArgs }}
+            - {{ . | quote }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.o11y.vmsingle.service.port }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          volumeMounts:
+            - name: storage
+              mountPath: /storage
+            - name: scrape-config
+              mountPath: /etc/vmsingle
+              readOnly: true
+          resources:
+            {{- toYaml .Values.o11y.vmsingle.resources | nindent 12 }}
+      volumes:
+        - name: storage
+          persistentVolumeClaim:
+            claimName: {{ include "crawlrs.vmsingleName" . }}
+        - name: scrape-config
+          configMap:
+            name: {{ include "crawlrs.vmsingleScrapeConfigMapName" . }}
+{{- end }}

@@ -72,8 +72,8 @@ pub async fn crawl(args: CrawlArgs) -> Result<()> {
         // Mark not-ready *before* draining: lets scrapers and load
         // balancers stop hitting this pod while in-flight URLs finish.
         probes_for_shutdown.mark_not_ready();
-        // 5s drain delay (per ADR-0014) before signaling the worker
-        // pool to stop. Lets in-flight scrapes / probe checks land.
+        // 5s drain delay before signaling the worker pool to stop.
+        // Lets in-flight scrapes / probe checks land.
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
         crawler_for_signal.shutdown();
     });

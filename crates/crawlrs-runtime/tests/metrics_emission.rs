@@ -1,14 +1,14 @@
-//! ADR-0014 metric-name contract: every metric the design pins must
-//! be observable under a `DebuggingRecorder`. This is the
-//! lowest-cost defense against typos in the emission sites: a
-//! mismatch between a constant and the string the recorder sees
-//! would silently pass `cargo build` but get caught here.
+//! Metric-name contract: every metric pinned by the contract must be
+//! observable under a `DebuggingRecorder`. This is the lowest-cost
+//! defense against typos in the emission sites: a mismatch between a
+//! constant and the string the recorder sees would silently pass
+//! `cargo build` but get caught here.
 //!
 //! Each metric is "emitted" by directly calling its facade with the
 //! `pub const` name from the owning crate. We're not trying to
 //! exercise every business code path; we're verifying that the
 //! contract symbols exist and that the names they resolve to are the
-//! ones in ADR-0014.
+//! ones the contract commits to.
 
 use std::collections::HashSet;
 
@@ -160,8 +160,9 @@ fn metric_name_contract_holds() {
     assert_eq!(
         expected.len(),
         29,
-        "expected 29 distinct metric names per ADR-0014; if you intentionally \
-         added or removed one, update both this assertion and the ADR contract"
+        "expected 29 distinct metric names per the metric-name contract; \
+         if you intentionally added or removed one, update both this \
+         assertion and the contract"
     );
 
     for name in &expected {
@@ -172,8 +173,9 @@ fn metric_name_contract_holds() {
         );
     }
 
-    // Also verify each name matches the exact string ADR-0014 commits to.
-    // Catches accidental constant rename that drifts from the contract.
+    // Also verify each name matches the exact string the contract
+    // commits to. Catches accidental constant rename that drifts from
+    // the contract.
     let exact_names: &[&str] = &[
         "crawlrs_urls_fetched_total",
         "crawlrs_urls_failed_total",
@@ -208,7 +210,7 @@ fn metric_name_contract_holds() {
     for name in exact_names {
         assert!(
             captured.contains(*name),
-            "exact name `{name}` from ADR-0014 not captured; \
+            "exact name `{name}` from the metric-name contract not captured; \
              a constant somewhere drifted from the contract"
         );
     }

@@ -1,8 +1,7 @@
 # Sample crawlrs configuration. Copy to crawl.toml and edit.
 #
 # Every value below shows the default, and every section's keys are
-# documented inline. See ADR-0014 for the metric / observability
-# decisions and ADR-0013 for the store decisions.
+# documented inline.
 
 # Stable identifier for this crawl run. Stamped into Redis keys,
 # Postgres rows, and the blob-store path layout. Pick something
@@ -60,9 +59,11 @@ max_depth        = 5      # null/unset = unbounded
 max_retries      = 5      # after this many consecutive failures, URL → DLQ
 cross_run_dedup  = true   # skip URLs already succeeded in a prior run
 
-# Output stores. Both default true per ADR-0013 (data preservation +
-# analytical queries). Disable parquet to save storage; disable warc
-# to skip archival mirroring; disabling both is rejected at startup.
+# Output stores. Parquet is the analytical primary; WARC is the
+# archival mirror that preserves the original HTTP wire framing. Both
+# default true (data preservation + analytical queries). Disable
+# parquet to save storage; disable warc to skip archival mirroring;
+# disabling both is rejected at startup.
 [store]
 parquet     = true
 warc        = true
@@ -93,8 +94,10 @@ path = "/var/lib/crawlrs/data"
 [server]
 listen = "0.0.0.0:9090"
 
-# Sharding policy. num_shards is the load-distribution unit; per
-# ADR-0010 default is 8. owned_shards lets a process narrow its
+# Sharding policy. num_shards is the load-distribution unit; default
+# is 8 (bounds hot-domain head-of-line blocking to one shard's worker
+# capacity while staying small enough that one Redis instance can
+# hold all per-shard state). owned_shards lets a process narrow its
 # subset (useful in single-pod testing); leave unset to derive from
 # POD_NAME ordinal in a StatefulSet deploy.
 [sharding]

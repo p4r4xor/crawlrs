@@ -1,0 +1,141 @@
+# crawlrs-demo: sandbox values for the all-in-one chart.
+#
+# IMPORTANT: install with release name `crawlrs-demo`:
+#
+#   helm install crawlrs-demo ./charts/crawlrs-demo --create-namespace -n crawlrs
+#
+# The service-DNS hostnames below assume that release name. Other
+# release names mean overriding the `crawlrs.redis.url` /
+# `crawlrs.postgres.url` / `crawlrs.store.backend.s3.endpoint`
+# values to match.
+
+# ---- Bundled Redis (Bitnami) ----------------------------------------
+redis:
+  enabled: true
+  architecture: standalone
+  auth:
+    enabled: false
+  master:
+    persistence:
+      enabled: false
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+
+# ---- Bundled Postgres (Bitnami) -------------------------------------
+postgresql:
+  enabled: true
+  auth:
+    postgresPassword: crawlrs-demo
+    username: crawlrs
+    password: crawlrs
+    database: crawlrs
+  primary:
+    persistence:
+      enabled: false
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 1000m
+        memory: 512Mi
+
+# ---- Bundled MinIO (Bitnami) ----------------------------------------
+minio:
+  enabled: true
+  mode: standalone
+  auth:
+    rootUser: minioadmin
+    rootPassword: minioadmin
+  defaultBuckets: "crawlrs-data"
+  persistence:
+    enabled: false
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 512Mi
+
+# ---- crawlrs subchart override --------------------------------------
+# Wires the crawler at the bundled-service DNS names.
+crawlrs:
+  runId: "demo"
+  replicaCount: 1
+
+  redis:
+    url: "redis://crawlrs-demo-redis-master:6379"
+    poolSize: 8
+
+  postgres:
+    url: "postgres://crawlrs:crawlrs@crawlrs-demo-postgresql:5432/crawlrs"
+    poolSize: 4
+
+  store:
+    parquet: true
+    warc: true
+    backend:
+      kind: s3
+      s3:
+        # Bitnami minio chart Service is `<release>-minio:9000` by default.
+        endpoint: "http://crawlrs-demo-minio:9000"
+        bucket: "crawlrs-data"
+        region: "us-east-1"
+        allowHttp: true
+        # MinIO requires path-style requests; AWS-style virtual hosting
+        # would resolve `crawlrs-data.crawlrs-demo-minio` which doesn't
+        # work in-cluster.
+        virtualHostedStyleRequest: false
+
+  # Demo creds rendered into the Secret. Swap for externally-managed
+  # secrets in production via charts/crawlrs/ directly.
+  secrets:
+    create: true
+    values:
+      redisUrl: "redis://crawlrs-demo-redis-master:6379"
+      postgresUrl: "postgres://crawlrs:crawlrs@crawlrs-demo-postgresql:5432/crawlrs"
+      s3AccessKeyId: "minioadmin"
+      s3SecretAccessKey: "minioadmin"
+
+  runtime:
+    workers: 2
+    maxDepth: 3
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+
+  # The bundled o11y stack is on by default; values inherit from the
+  # subchart. Smaller resource asks for sandbox-shape.
+  o11y:
+    enabled: true
+    vmsingle:
+      storage:
+        size: 1Gi
+      retentionPeriod: 7d
+      resources:
+        requests:
+          cpu: 50m
+          memory: 128Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+    grafana:
+      adminPassword: admin
+      resources:
+        requests:
+          cpu: 25m
+          memory: 64Mi
+        limits:
+          cpu: 250m
+          memory: 256Mi
