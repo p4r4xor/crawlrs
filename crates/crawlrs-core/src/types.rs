@@ -97,6 +97,28 @@ pub struct ParsedDocument {
     pub fetched_at: DateTime<Utc>,
 }
 
+/// Input to `Store::write`. Bundles fetch + parse output + per-run
+/// context into one parameter object so the trait surface is one
+/// argument and impls can populate any column they need.
+///
+/// `FetchResponse` carries the wire-level fields (status, headers,
+/// body, redirect chain, fetched_at, duration); `ParsedDocument`
+/// carries the parsed-content fields (title, text, outbound_links);
+/// the runtime supplies the run/shard/depth context plus the
+/// content_hash already computed at this point in the pipeline.
+///
+/// See ADR-0013 for the rationale (Pattern: Introduce Parameter
+/// Object) and the column-level mapping into the Parquet schema.
+#[derive(Debug, Clone, Copy)]
+pub struct StoreRecord<'a> {
+    pub doc: &'a ParsedDocument,
+    pub resp: &'a FetchResponse,
+    pub run_id: &'a str,
+    pub shard: u32,
+    pub depth: u32,
+    pub content_hash: u64,
+}
+
 /// Lifecycle status of a URL in the metadata ledger. See ADR-0009.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

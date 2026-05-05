@@ -3,8 +3,7 @@
 use std::sync::Mutex;
 
 use async_trait::async_trait;
-use bytes::Bytes;
-use crawlrs_core::{ParsedDocument, Result, Store};
+use crawlrs_core::{ParsedDocument, Result, Store, StoreRecord};
 
 /// Records every `ParsedDocument` written to it. `urls()` returns the
 /// list of URLs whose docs landed; `documents()` returns clones of the
@@ -48,9 +47,9 @@ impl InMemoryStore {
 
 #[async_trait]
 impl Store for InMemoryStore {
-    async fn write(&self, doc: &ParsedDocument, _raw_body: Option<&Bytes>) -> Result<String> {
-        let blob_path = format!("memory://{}", doc.url.as_str());
-        self.written.lock().unwrap().push(doc.clone());
+    async fn write(&self, record: &StoreRecord<'_>) -> Result<String> {
+        let blob_path = format!("memory://{}", record.doc.url.as_str());
+        self.written.lock().unwrap().push(record.doc.clone());
         Ok(blob_path)
     }
     async fn flush(&self) -> Result<()> {

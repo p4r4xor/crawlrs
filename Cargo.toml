@@ -33,6 +33,10 @@ http        = "1"
 humantime-serde = "1"
 lol_html    = "2.8"
 moka        = { version = "0.12", features = ["sync"] }
+arrow       = { version = "54", default-features = false }
+parquet     = { version = "54", default-features = false, features = ["arrow", "zstd"] }
+object_store = { version = "0.11", default-features = false, features = ["aws"] }
+flate2      = "1"
 postcard    = { version = "1", features = ["use-std"] }
 redis       = { version = "1.2", default-features = false, features = ["tokio-comp", "streams"] }
 serde       = { version = "1", features = ["derive"] }
@@ -48,7 +52,8 @@ wreq-util   = "=3.0.0-rc.10"
 
 # Test-only.
 testcontainers         = "0.27"
-testcontainers-modules = { version = "0.15", features = ["redis", "postgres"] }
+testcontainers-modules = { version = "0.15", features = ["redis", "postgres", "minio"] }
+tempfile               = "3"
 
 # Workspace-internal crates (referenced from sub-crates by name).
 crawlrs-core            = { path = "crates/crawlrs-core",            version = "0.0.1" }
@@ -58,4 +63,5 @@ crawlrs-frontier-redis  = { path = "crates/crawlrs-frontier-redis",  version = "
 crawlrs-politeness      = { path = "crates/crawlrs-politeness",      version = "0.0.1" }
 crawlrs-runtime         = { path = "crates/crawlrs-runtime",         version = "0.0.1" }
 crawlrs-metadata        = { path = "crates/crawlrs-metadata",        version = "0.0.1" }
+crawlrs-store           = { path = "crates/crawlrs-store",           version = "0.0.1" }
 crawlrs-testing         = { path = "crates/crawlrs-testing",         version = "0.0.1" }

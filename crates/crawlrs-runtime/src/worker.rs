@@ -17,8 +17,8 @@ use std::sync::Arc;
 
 use crawlrs_core::{
     CanonicalUrl, FailureKind, FetchRequest, FetchResponse, Fetcher, Frontier, MetadataStore,
-    ParsedDocument, Parser, PoliteDecision, Politeness, SiteAdapterRegistry, Store, UrlEntry,
-    UrlStatus, content_hash,
+    ParsedDocument, Parser, PoliteDecision, Politeness, ShardingPolicy, SiteAdapterRegistry, Store,
+    StoreRecord, UrlEntry, UrlStatus, content_hash,
 };
 use tokio::sync::watch;
 use tokio::time::Instant as TokioInstant;
@@ -43,6 +43,13 @@ pub struct WorkerDeps {
     /// was last touched by run Y." Must be stable for the lifetime of
     /// the `Crawler`.
     pub run_id: String,
+    /// Sharding policy used to derive a URL's shard at storage time
+    /// (per ADR-0013, the blob store's path layout includes the
+    /// shard component for Hive-partitioned downstream pruning).
+    /// Must agree with whatever the frontier impl is using internally;
+    /// the runtime defaults to `HostHashShardPolicy::new(8)` per
+    /// ADR-0010 unless the operator overrides via the builder.
+    pub sharding_policy: Arc<dyn ShardingPolicy>,
 }
 
 /// Drive one worker until shutdown. Loops:
@@ -374,7 +381,16 @@ impl UrlPipeline {
     /// failure path acks anyway to avoid hot-looping; the URL stays
     /// `InProgress` in the ledger so a future run can pick it up.
     async fn finalize(&self, resp: &FetchResponse, doc: &ParsedDocument) {
-        let blob_path = match self.deps.store.write(doc, Some(&resp.body)).await {
+        let body_hash = content_hash(&resp.body);
+        let record = StoreRecord {
+            doc,
+            resp,
+            run_id: &self.deps.run_id,
+            shard: self.deps.sharding_policy.shard_key(self.url()),
+            depth: self.entry.depth,
+            content_hash: body_hash,
+        };
+        let blob_path = match self.deps.store.write(&record).await {
             Ok(p) => p,
             Err(e) => {
                 warn!(url = %self.url(), error = %e, "store write failed; acking anyway to avoid hot loop");
@@ -383,7 +399,6 @@ impl UrlPipeline {
             }
         };
 
-        let body_hash = content_hash(&resp.body);
         if let Err(e) = self
             .deps
             .metadata
@@ -451,7 +466,8 @@ mod tests {
             "adapters",
             "config",
             "run_id",
+            "sharding_policy",
         ];
-        assert_eq!(names.len(), 9);
+        assert_eq!(names.len(), 10);
     }
 }

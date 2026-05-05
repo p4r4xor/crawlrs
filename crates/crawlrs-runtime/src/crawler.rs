@@ -4,7 +4,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crawlrs_core::{
-    Fetcher, Frontier, MetadataStore, Parser, Politeness, SiteAdapterRegistry, Store,
+    Fetcher, Frontier, HostHashShardPolicy, MetadataStore, Parser, Politeness, ShardingPolicy,
+    SiteAdapterRegistry, Store,
 };
 use thiserror::Error;
 use tokio::sync::watch;
@@ -182,6 +183,7 @@ pub struct CrawlerBuilder {
     store: Option<Arc<dyn Store>>,
     metadata: Option<Arc<dyn MetadataStore>>,
     adapters: Option<Arc<SiteAdapterRegistry>>,
+    sharding_policy: Option<Arc<dyn ShardingPolicy>>,
     config: Option<CrawlerConfig>,
     run_id: Option<String>,
 }
@@ -215,6 +217,10 @@ impl CrawlerBuilder {
         self.adapters = Some(a);
         self
     }
+    pub fn sharding_policy(mut self, p: Arc<dyn ShardingPolicy>) -> Self {
+        self.sharding_policy = Some(p);
+        self
+    }
     pub fn config(mut self, c: CrawlerConfig) -> Self {
         self.config = Some(c);
         self
@@ -237,6 +243,12 @@ impl CrawlerBuilder {
         let adapters = self
             .adapters
             .unwrap_or_else(|| Arc::new(SiteAdapterRegistry::new()));
+        // Default mirrors ADR-0010's HostHashShardPolicy(8). Operators
+        // running SingleShard (typical for tests) override via the builder
+        // and must pass the same policy they wired into the frontier.
+        let sharding_policy = self
+            .sharding_policy
+            .unwrap_or_else(|| Arc::new(HostHashShardPolicy::new(8)));
         let config = self.config.unwrap_or_default();
 
         let deps = Arc::new(WorkerDeps {
@@ -249,6 +261,7 @@ impl CrawlerBuilder {
             adapters,
             config,
             run_id,
+            sharding_policy,
         });
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Ok(Crawler {
