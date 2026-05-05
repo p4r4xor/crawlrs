@@ -1,0 +1,45 @@
+crawlrs has been deployed.
+
+Chart      : {{ include "crawlrs.chart" . }}
+Release    : {{ .Release.Name }} (namespace {{ .Release.Namespace }})
+Image      : {{ include "crawlrs.image" . }}
+Replicas   : {{ .Values.replicaCount }}
+Run ID     : {{ .Values.runId }}
+Listen     : {{ .Values.server.listen }}
+
+# Pod readiness
+kubectl get pods -n {{ .Release.Namespace }} \
+  -l app.kubernetes.io/instance={{ .Release.Name }}
+
+# Tail logs
+kubectl logs -n {{ .Release.Namespace }} \
+  -l app.kubernetes.io/instance={{ .Release.Name }} -f
+
+# Probe a single pod's /readyz (after pods are Ready):
+kubectl exec -n {{ .Release.Namespace }} \
+  {{ include "crawlrs.fullname" . }}-0 -- \
+  wget -qO- http://localhost:{{ .Values.server.port }}/readyz
+
+# Scrape /metrics from one pod:
+kubectl exec -n {{ .Release.Namespace }} \
+  {{ include "crawlrs.fullname" . }}-0 -- \
+  wget -qO- http://localhost:{{ .Values.server.port }}/metrics | head
+
+# Per-pod stable DNS (for vmsingle scrape config in Phase 6c):
+{{- range $i, $_ := until (int .Values.replicaCount) }}
+  {{ include "crawlrs.fullname" $ }}-{{ $i }}.{{ include "crawlrs.headlessServiceName" $ }}.{{ $.Release.Namespace }}.svc.cluster.local:{{ $.Values.server.port }}
+{{- end }}
+
+{{- if eq .Values.store.backend.kind "local" }}
+
+NOTE: store.backend.kind=local with the default emptyDir scratch
+volume means crawled blobs are LOST on pod restart. Acceptable for
+sandboxes; for production set store.backend.kind=s3.
+{{- end }}
+
+{{- if .Values.secrets.create }}
+
+NOTE: secrets.create=true rendered a Secret with values from the
+chart's values.yaml. For production switch to an externally-managed
+Secret via secrets.existingSecret.
+{{- end }}

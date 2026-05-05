@@ -1,0 +1,333 @@
+//! `crawl.toml` schema + parsing.
+//!
+//! Top-level layout (see `examples/crawl.toml` for a fully-commented
+//! template):
+//!
+//! ```toml
+//! run_id = "monthly-2026-05"
+//!
+//! [redis]
+//! url = "redis://localhost:6379"
+//! pool_size = 16
+//!
+//! [postgres]
+//! url = "postgres://crawlrs:crawlrs@localhost/crawlrs"
+//! pool_size = 8
+//!
+//! [fetch]
+//! max_body_bytes = 10485760
+//! user_agent = "crawlrs/0.0.1 (+https://github.com/p4r4xor/crawlrs)"
+//!
+//! [politeness]
+//! min_delay = "1s"
+//! honor_robots_txt = true
+//! robots_cache_ttl = "24h"
+//!
+//! [politeness.backoff]
+//! initial_backoff = "30s"
+//! max_backoff = "10m"
+//! multiplier = 2.0
+//! circuit_open_after_failures = 10
+//!
+//! [runtime]
+//! workers = 4
+//! max_depth = 5
+//! max_retries = 5
+//! cross_run_dedup = true
+//!
+//! [store]
+//! parquet = true
+//! warc    = true
+//!
+//! [store.backend]
+//! kind = "local"
+//! local_path = "/var/lib/crawlrs/data"
+//!
+//! [server]
+//! listen = "0.0.0.0:9090"
+//!
+//! [sharding]
+//! num_shards = 8
+//! ```
+//!
+//! Env-var overlay: a small set of high-impact knobs accept env
+//! overrides so an operator can tweak a deployment without rewriting
+//! the ConfigMap. Documented inline in `apply_env_overlay`.
+
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+use std::time::Duration;
+
+use anyhow::{Context, Result};
+use serde::Deserialize;
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CrawlrsConfig {
+    pub run_id: String,
+    pub redis: RedisConfig,
+    pub postgres: PostgresConfig,
+    #[serde(default)]
+    pub fetch: FetchConfig,
+    #[serde(default)]
+    pub politeness: PolitenessConfig,
+    #[serde(default)]
+    pub runtime: RuntimeConfig,
+    #[serde(default)]
+    pub store: StoreConfig,
+    #[serde(default)]
+    pub server: ServerConfig,
+    #[serde(default)]
+    pub sharding: ShardingConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RedisConfig {
+    /// `redis://...` or `redis-sentinel://service-name@sentinel-host:port,...`
+    pub url: String,
+    #[serde(default = "default_redis_pool_size")]
+    pub pool_size: u32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PostgresConfig {
+    /// `postgres://user:pass@host/db`
+    pub url: String,
+    #[serde(default = "default_postgres_pool_size")]
+    pub pool_size: u32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct FetchConfig {
+    pub max_body_bytes: u64,
+    pub user_agent: String,
+    #[serde(with = "humantime_serde")]
+    pub default_timeout: Duration,
+}
+
+impl Default for FetchConfig {
+    fn default() -> Self {
+        Self {
+            max_body_bytes: 10 * 1024 * 1024,
+            user_agent: "crawlrs/0.0.1 (+https://github.com/p4r4xor/crawlrs)".into(),
+            default_timeout: Duration::from_secs(30),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct PolitenessConfig {
+    #[serde(with = "humantime_serde")]
+    pub min_delay: Duration,
+    pub honor_robots_txt: bool,
+    #[serde(with = "humantime_serde")]
+    pub robots_cache_ttl: Duration,
+    pub user_agent: Option<String>,
+    pub backoff: BackoffPolicy,
+    #[serde(default)]
+    pub manual_excludes: HashSet<String>,
+    #[serde(default)]
+    pub per_domain: HashMap<String, PerDomainOverride>,
+}
+
+impl Default for PolitenessConfig {
+    fn default() -> Self {
+        Self {
+            min_delay: Duration::from_secs(1),
+            honor_robots_txt: true,
+            robots_cache_ttl: Duration::from_secs(24 * 60 * 60),
+            user_agent: None,
+            backoff: BackoffPolicy::default(),
+            manual_excludes: HashSet::new(),
+            per_domain: HashMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct BackoffPolicy {
+    #[serde(with = "humantime_serde")]
+    pub initial_backoff: Duration,
+    #[serde(with = "humantime_serde")]
+    pub max_backoff: Duration,
+    pub multiplier: f64,
+    pub circuit_open_after_failures: u32,
+}
+
+impl Default for BackoffPolicy {
+    fn default() -> Self {
+        Self {
+            initial_backoff: Duration::from_secs(30),
+            max_backoff: Duration::from_secs(600),
+            multiplier: 2.0,
+            circuit_open_after_failures: 10,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct PerDomainOverride {
+    #[serde(with = "humantime_serde::option")]
+    pub min_delay: Option<Duration>,
+    pub honor_robots_txt: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct RuntimeConfig {
+    pub workers: usize,
+    pub max_depth: Option<u32>,
+    pub max_retries: u32,
+    pub cross_run_dedup: bool,
+}
+
+impl Default for RuntimeConfig {
+    fn default() -> Self {
+        Self {
+            workers: 4,
+            max_depth: Some(5),
+            max_retries: 5,
+            cross_run_dedup: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct StoreConfig {
+    pub parquet: bool,
+    pub warc: bool,
+    pub backend: StoreBackend,
+    pub base_prefix: String,
+    pub worker_id: Option<String>,
+}
+
+impl Default for StoreConfig {
+    fn default() -> Self {
+        Self {
+            parquet: true,
+            warc: true,
+            backend: StoreBackend::default(),
+            base_prefix: "crawlrs".into(),
+            worker_id: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum StoreBackend {
+    Local {
+        path: PathBuf,
+    },
+    S3 {
+        endpoint: Option<String>,
+        bucket: String,
+        region: String,
+        access_key_id: Option<String>,
+        secret_access_key: Option<String>,
+        #[serde(default)]
+        allow_http: bool,
+        #[serde(default)]
+        virtual_hosted_style_request: bool,
+    },
+}
+
+impl Default for StoreBackend {
+    fn default() -> Self {
+        Self::Local {
+            path: PathBuf::from("/var/lib/crawlrs/data"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct ServerConfig {
+    pub listen: String,
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            listen: "0.0.0.0:9090".into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct ShardingConfig {
+    pub num_shards: u32,
+    /// `None` means "owned shards derived from POD_NAME ordinal";
+    /// explicit list overrides the auto-derivation (useful for
+    /// single-pod testing).
+    pub owned_shards: Option<Vec<u32>>,
+}
+
+impl Default for ShardingConfig {
+    fn default() -> Self {
+        Self {
+            num_shards: 8,
+            owned_shards: None,
+        }
+    }
+}
+
+const fn default_redis_pool_size() -> u32 {
+    16
+}
+const fn default_postgres_pool_size() -> u32 {
+    8
+}
+
+impl CrawlrsConfig {
+    /// Parse a TOML config from disk, then apply env-var overlay.
+    pub fn load(path: &std::path::Path) -> Result<Self> {
+        let contents = std::fs::read_to_string(path)
+            .with_context(|| format!("reading config file {}", path.display()))?;
+        let mut config: Self = toml::from_str(&contents)
+            .with_context(|| format!("parsing TOML config {}", path.display()))?;
+        config.apply_env_overlay();
+        Ok(config)
+    }
+
+    /// Apply env-var overrides for high-impact knobs. Documented here
+    /// rather than scattered: any operator setting these expects them
+    /// to win over the TOML file.
+    fn apply_env_overlay(&mut self) {
+        if let Ok(v) = std::env::var("CRAWLRS_RUN_ID") {
+            self.run_id = v;
+        }
+        if let Ok(v) = std::env::var("CRAWLRS_REDIS_URL") {
+            self.redis.url = v;
+        }
+        if let Ok(v) = std::env::var("CRAWLRS_POSTGRES_URL") {
+            self.postgres.url = v;
+        }
+        if let Ok(v) = std::env::var("CRAWLRS_LISTEN") {
+            self.server.listen = v;
+        }
+        if let Ok(v) = std::env::var("CRAWLRS_WORKERS")
+            && let Ok(n) = v.parse::<usize>()
+        {
+            self.runtime.workers = n;
+        }
+    }
+
+    /// One-line summary used by `crawlrs validate`.
+    pub fn summary(&self) -> String {
+        format!(
+            "run_id={} workers={} shards={} parquet={} warc={} listen={}",
+            self.run_id,
+            self.runtime.workers,
+            self.sharding.num_shards,
+            self.store.parquet,
+            self.store.warc,
+            self.server.listen,
+        )
+    }
+}

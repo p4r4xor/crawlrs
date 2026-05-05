@@ -1,0 +1,28 @@
+apiVersion: v2
+name: crawlrs
+description: |
+  Distributed web crawler. Deploys the crawler as a StatefulSet (stable
+  per-pod ordinals; per-pod DNS via headless Service). Phase 6b ships
+  the crawler-only chart; Phase 6c adds bundled vmsingle + Grafana for
+  the self-contained observability stack (per ADR-0014).
+type: application
+
+# `version` is the chart version, bumped on template / values changes.
+# `appVersion` is the crawlrs binary version, follows the crate version.
+# Tag in the registry should match appVersion.
+version: 0.0.1
+appVersion: "0.0.1"
+
+home: https://github.com/p4r4xor/crawlrs
+sources:
+  - https://github.com/p4r4xor/crawlrs
+
+keywords:
+  - crawler
+  - web-crawler
+  - distributed
+  - rust
+
+maintainers:
+  - name: p4r4xor
+    url: https://github.com/p4r4xor

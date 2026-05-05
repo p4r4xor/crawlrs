@@ -1,0 +1,51 @@
+[package]
+name        = "crawlrs-bin"
+description = "The `crawlrs` CLI binary: clap surface, config loading, axum host for /metrics + health probes, maintenance loop, graceful shutdown. Wires every other workspace crate together."
+version.workspace    = true
+edition.workspace    = true
+license.workspace    = true
+repository.workspace = true
+authors.workspace    = true
+
+[[bin]]
+name = "crawlrs"
+path = "src/main.rs"
+
+[dependencies]
+crawlrs-core.workspace           = true
+crawlrs-fetch.workspace          = true
+crawlrs-frontier-redis.workspace = true
+crawlrs-metadata.workspace       = true
+crawlrs-parse.workspace          = true
+crawlrs-politeness.workspace     = true
+crawlrs-runtime.workspace        = true
+crawlrs-store.workspace          = true
+
+anyhow.workspace                       = true
+async-trait.workspace                  = true
+axum.workspace                         = true
+bb8.workspace                          = true
+bb8-redis.workspace                    = true
+bytes.workspace                        = true
+chrono.workspace                       = true
+clap.workspace                         = true
+humantime-serde.workspace              = true
+metrics.workspace                      = true
+metrics-exporter-prometheus.workspace  = true
+object_store.workspace                 = true
+redis.workspace                        = true
+serde.workspace                        = true
+sqlx.workspace                         = true
+thiserror.workspace                    = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "fs"] }
+toml.workspace                         = true
+tracing.workspace                      = true
+tracing-subscriber.workspace           = true
+
+[dev-dependencies]
+tempfile.workspace               = true
+testcontainers.workspace         = true
+testcontainers-modules.workspace = true
+
+[lints]
+workspace = true

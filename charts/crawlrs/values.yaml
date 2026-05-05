@@ -1,0 +1,166 @@
+# Default values for the crawlrs chart. Override via
+# `helm install ... -f my-values.yaml` or `--set key=val`.
+#
+# Required overrides for any non-trivial deploy:
+#   redis.url, postgres.url, store.backend.*
+
+# ---- Image -----------------------------------------------------------
+image:
+  repository: ghcr.io/p4r4xor/crawlrs
+  # If empty, the chart uses Chart.appVersion as the tag.
+  tag: ""
+  pullPolicy: IfNotPresent
+  pullSecrets: []
+
+# ---- Replicas + sharding --------------------------------------------
+# Per ADR-0010 the default sharding policy is HostHashShardPolicy(8).
+# replicaCount is independent: with N replicas + 8 shards, each pod
+# owns shards (ordinal, ordinal + N, ...) per the binary's
+# CRAWLRS_REPLICAS-aware logic in factory.rs.
+replicaCount: 1
+
+# ---- crawl.toml content ---------------------------------------------
+# These values are rendered into the ConfigMap as crawl.toml. The
+# binary reads /etc/crawlrs/crawl.toml at startup. Credentials live in
+# the Secret and are env-var-overlayed (CRAWLRS_REDIS_URL,
+# CRAWLRS_POSTGRES_URL).
+runId: "demo"
+
+redis:
+  # Read from the Secret as CRAWLRS_REDIS_URL. Set this to point at
+  # your Redis instance. `redis://...` URLs only; `redis-sentinel://`
+  # is rejected at startup until v1.x.
+  url: "redis://redis-master:6379"
+  poolSize: 16
+
+postgres:
+  # Read from the Secret as CRAWLRS_POSTGRES_URL. `postgres://...`
+  # connection string. Pool size sized to >= 2 * (workers per pod).
+  url: "postgres://crawlrs:crawlrs@postgres:5432/crawlrs"
+  poolSize: 8
+
+fetch:
+  maxBodyBytes: 10485760
+  userAgent: "crawlrs/0.0.1 (+https://github.com/p4r4xor/crawlrs)"
+  defaultTimeout: "30s"
+
+politeness:
+  minDelay: "1s"
+  honorRobotsTxt: true
+  robotsCacheTtl: "24h"
+  backoff:
+    initialBackoff: "30s"
+    maxBackoff: "10m"
+    multiplier: 2.0
+    circuitOpenAfterFailures: 10
+
+runtime:
+  workers: 4
+  maxDepth: 5
+  maxRetries: 5
+  crossRunDedup: true
+
+store:
+  parquet: true
+  warc: true
+  basePrefix: "crawlrs"
+  backend:
+    # kind: local | s3
+    kind: local
+    # Local FS path (used when kind=local). When kind=s3, the chart
+    # ignores this.
+    path: /var/lib/crawlrs/data
+    # S3 settings (used when kind=s3). access/secret pulled from the
+    # Secret (S3_ACCESS_KEY_ID / S3_SECRET_ACCESS_KEY).
+    s3:
+      endpoint: ""
+      bucket: ""
+      region: "us-east-1"
+      allowHttp: false
+      virtualHostedStyleRequest: true
+
+server:
+  listen: "0.0.0.0:9090"
+  port: 9090
+
+sharding:
+  numShards: 8
+
+# ---- Secret credentials ---------------------------------------------
+# Two modes:
+#   create=true:        chart renders a Secret from `values.secrets.values`
+#   existingSecret=...: chart references an externally-managed Secret
+secrets:
+  create: true
+  existingSecret: ""
+  # Plain values when create=true. Override these in production via
+  # --set-file or a values file checked into a private store; the
+  # defaults are sandbox-shape.
+  values:
+    redisUrl: "redis://redis-master:6379"
+    postgresUrl: "postgres://crawlrs:crawlrs@postgres:5432/crawlrs"
+    s3AccessKeyId: ""
+    s3SecretAccessKey: ""
+
+# ---- Pod / container shape ------------------------------------------
+resources:
+  requests:
+    cpu: 250m
+    memory: 256Mi
+  limits:
+    cpu: 2000m
+    memory: 2Gi
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+
+probes:
+  startup:
+    enabled: true
+    path: /livez
+    initialDelaySeconds: 0
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 30
+  liveness:
+    enabled: true
+    path: /livez
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readiness:
+    enabled: true
+    path: /readyz
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+podDisruptionBudget:
+  enabled: true
+  maxUnavailable: 1
+
+# Toggles whether the binary writes JSON-formatted logs (production)
+# or text logs (dev). The chart sets CRAWLRS_LOG_FORMAT accordingly.
+logFormat: json
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+podAnnotations: {}
+podLabels: {}
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}

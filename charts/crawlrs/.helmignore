@@ -1,0 +1,19 @@
+# Helm ignores these when packaging the chart. Same shape as the
+# default `helm create` output.
+.DS_Store
+.git/
+.gitignore
+.bzr/
+.bzrignore
+.hg/
+.hgignore
+.svn/
+*.swp
+*.bak
+*.tmp
+*.orig
+*~
+.project
+.idea/
+*.tmproj
+.vscode/

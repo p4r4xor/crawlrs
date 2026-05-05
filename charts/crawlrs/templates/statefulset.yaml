@@ -1,0 +1,147 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "crawlrs.fullname" . }}
+  labels:
+    {{- include "crawlrs.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "crawlrs.headlessServiceName" . }}
+  replicas: {{ .Values.replicaCount }}
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      {{- include "crawlrs.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "crawlrs.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        # Cache-bust the pod when crawl.toml changes; rolls the
+        # StatefulSet on `helm upgrade` if the rendered config diff
+        # produces a new sha256.
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "crawlrs.serviceAccountName" . }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      # Drain delay (per ADR-0014): SIGTERM -> /readyz unhealthy ->
+      # 5s drain -> frontier shutdown -> worker drain -> store flush
+      # -> exit. terminationGracePeriodSeconds caps total drain time.
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: crawlrs
+          image: {{ include "crawlrs.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - crawl
+            - --config
+            - /etc/crawlrs/crawl.toml
+          ports:
+            - name: http
+              containerPort: {{ .Values.server.port }}
+              protocol: TCP
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: CRAWLRS_REPLICAS
+              value: {{ .Values.replicaCount | quote }}
+            - name: CRAWLRS_LOG_FORMAT
+              value: {{ .Values.logFormat | quote }}
+            - name: CRAWLRS_LISTEN
+              value: {{ .Values.server.listen | quote }}
+            # Credentials sourced from the Secret. envFrom would pull
+            # *every* key in the Secret; explicit envs document the
+            # surface area.
+            - name: CRAWLRS_REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "crawlrs.secretName" . }}
+                  key: redisUrl
+            - name: CRAWLRS_POSTGRES_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "crawlrs.secretName" . }}
+                  key: postgresUrl
+            {{- if eq .Values.store.backend.kind "s3" }}
+            - name: CRAWLRS_S3_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "crawlrs.secretName" . }}
+                  key: s3AccessKeyId
+                  optional: true
+            - name: CRAWLRS_S3_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "crawlrs.secretName" . }}
+                  key: s3SecretAccessKey
+                  optional: true
+            {{- end }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/crawlrs
+              readOnly: true
+            {{- if eq .Values.store.backend.kind "local" }}
+            - name: store-data
+              mountPath: {{ .Values.store.backend.path }}
+            {{- end }}
+            # Writable scratch dir for tokio + temp files. Required
+            # because containerSecurityContext sets readOnlyRootFilesystem.
+            - name: scratch
+              mountPath: /tmp
+          {{- if .Values.probes.startup.enabled }}
+          startupProbe:
+            {{- include "crawlrs.probe" (dict "probe" .Values.probes.startup "port" .Values.server.port) | nindent 12 }}
+          {{- end }}
+          {{- if .Values.probes.liveness.enabled }}
+          livenessProbe:
+            {{- include "crawlrs.probe" (dict "probe" .Values.probes.liveness "port" .Values.server.port) | nindent 12 }}
+          {{- end }}
+          {{- if .Values.probes.readiness.enabled }}
+          readinessProbe:
+            {{- include "crawlrs.probe" (dict "probe" .Values.probes.readiness "port" .Values.server.port) | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "crawlrs.configMapName" . }}
+        - name: scratch
+          emptyDir:
+            sizeLimit: 256Mi
+        {{- if and (eq .Values.store.backend.kind "local") (not (hasKey .Values "volumeClaimTemplates")) }}
+        # When the store backend is local FS, we provide a single
+        # emptyDir per pod by default. Operators wanting persistence
+        # across pod recreations should set
+        # `persistentStore.enabled: true` (TODO Phase 6c.x) or switch
+        # to backend.kind = s3.
+        - name: store-data
+          emptyDir:
+            sizeLimit: 10Gi
+        {{- end }}

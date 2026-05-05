@@ -1,0 +1,71 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "crawlrs.configMapName" . }}
+  labels:
+    {{- include "crawlrs.labels" . | nindent 4 }}
+data:
+  # Rendered crawl.toml. Credentials (redis url, postgres url) are
+  # placeholders here and overwritten via env-var overlay
+  # (CRAWLRS_REDIS_URL, CRAWLRS_POSTGRES_URL) sourced from the Secret.
+  # The binary's apply_env_overlay() makes the env values win.
+  crawl.toml: |
+    run_id = {{ .Values.runId | quote }}
+
+    [redis]
+    url = {{ .Values.redis.url | quote }}
+    pool_size = {{ .Values.redis.poolSize }}
+
+    [postgres]
+    url = {{ .Values.postgres.url | quote }}
+    pool_size = {{ .Values.postgres.poolSize }}
+
+    [fetch]
+    max_body_bytes  = {{ .Values.fetch.maxBodyBytes }}
+    user_agent      = {{ .Values.fetch.userAgent | quote }}
+    default_timeout = {{ .Values.fetch.defaultTimeout | quote }}
+
+    [politeness]
+    min_delay        = {{ .Values.politeness.minDelay | quote }}
+    honor_robots_txt = {{ .Values.politeness.honorRobotsTxt }}
+    robots_cache_ttl = {{ .Values.politeness.robotsCacheTtl | quote }}
+
+    [politeness.backoff]
+    initial_backoff             = {{ .Values.politeness.backoff.initialBackoff | quote }}
+    max_backoff                 = {{ .Values.politeness.backoff.maxBackoff | quote }}
+    multiplier                  = {{ .Values.politeness.backoff.multiplier }}
+    circuit_open_after_failures = {{ .Values.politeness.backoff.circuitOpenAfterFailures }}
+
+    [runtime]
+    workers          = {{ .Values.runtime.workers }}
+    max_depth        = {{ .Values.runtime.maxDepth }}
+    max_retries      = {{ .Values.runtime.maxRetries }}
+    cross_run_dedup  = {{ .Values.runtime.crossRunDedup }}
+
+    [store]
+    parquet     = {{ .Values.store.parquet }}
+    warc        = {{ .Values.store.warc }}
+    base_prefix = {{ .Values.store.basePrefix | quote }}
+
+    [store.backend]
+    kind = {{ .Values.store.backend.kind | quote }}
+    {{- if eq .Values.store.backend.kind "local" }}
+    path = {{ .Values.store.backend.path | quote }}
+    {{- else if eq .Values.store.backend.kind "s3" }}
+    {{- with .Values.store.backend.s3 }}
+    bucket                       = {{ .bucket | quote }}
+    region                       = {{ .region | quote }}
+    {{- if .endpoint }}
+    endpoint                     = {{ .endpoint | quote }}
+    {{- end }}
+    allow_http                   = {{ .allowHttp }}
+    virtual_hosted_style_request = {{ .virtualHostedStyleRequest }}
+    # access_key_id / secret_access_key arrive via env (the Secret).
+    {{- end }}
+    {{- end }}
+
+    [server]
+    listen = {{ .Values.server.listen | quote }}
+
+    [sharding]
+    num_shards = {{ .Values.sharding.numShards }}

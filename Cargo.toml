@@ -39,6 +39,12 @@ object_store = { version = "0.11", default-features = false, features = ["aws"] 
 flate2      = "1"
 metrics     = "0.24"
 metrics-util = { version = "0.18", features = ["debugging"] }
+metrics-exporter-prometheus = { version = "0.16", default-features = false, features = ["http-listener"] }
+clap        = { version = "4", features = ["derive", "env"] }
+axum        = { version = "0.8", default-features = false, features = ["tokio", "http1", "json"] }
+toml        = "0.8"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"] }
+anyhow      = "1"
 postcard    = { version = "1", features = ["use-std"] }
 redis       = { version = "1.2", default-features = false, features = ["tokio-comp", "streams"] }
 serde       = { version = "1", features = ["derive"] }
@@ -66,4 +72,5 @@ crawlrs-politeness      = { path = "crates/crawlrs-politeness",      version = "
 crawlrs-runtime         = { path = "crates/crawlrs-runtime",         version = "0.0.1" }
 crawlrs-metadata        = { path = "crates/crawlrs-metadata",        version = "0.0.1" }
 crawlrs-store           = { path = "crates/crawlrs-store",           version = "0.0.1" }
+crawlrs-bin             = { path = "crates/crawlrs-bin",             version = "0.0.1" }
 crawlrs-fakes           = { path = "crates/crawlrs-fakes",           version = "0.0.1" }
