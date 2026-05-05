@@ -39,6 +39,7 @@ impl LolHtmlParser {
 #[async_trait]
 impl Parser for LolHtmlParser {
     async fn parse(&self, response: &FetchResponse) -> Result<ParsedDocument> {
+        let started_at = std::time::Instant::now();
         let extracted = extract_html(&response.body)?;
 
         let effective_base = match &extracted.base_href {
@@ -62,6 +63,11 @@ impl Parser for LolHtmlParser {
                 Some(collapsed)
             }
         };
+
+        metrics::histogram!(crate::metrics::PARSE_SECONDS)
+            .record(started_at.elapsed().as_secs_f64());
+        metrics::histogram!(crate::metrics::PARSE_LINKS_DISCOVERED)
+            .record(outbound_links.len() as f64);
 
         Ok(ParsedDocument {
             url: response.url.clone(),

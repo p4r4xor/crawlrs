@@ -16,6 +16,7 @@ pub mod claims;
 pub mod codec;
 pub mod frontier;
 pub mod keys;
+pub mod metrics;
 pub mod pool;
 
 pub use claims::PendingClaims;

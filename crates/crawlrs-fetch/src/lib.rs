@@ -11,6 +11,7 @@
 
 pub mod config;
 pub mod fetcher;
+pub mod metrics;
 pub mod proxy;
 
 pub use config::WreqFetcherConfig;

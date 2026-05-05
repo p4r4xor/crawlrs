@@ -1,6 +1,6 @@
 [package]
-name        = "crawlrs-testing"
-description = "Test doubles for crawlrs ports: FakeFetcher, InMemoryStore, InMemoryMetadataStore. Used as a dev-dependency by crates that test runtime composition without real I/O backends."
+name        = "crawlrs-fakes"
+description = "Test doubles (fakes / stubs / in-memory impls) for crawlrs ports: FakeFetcher, InMemoryStore, InMemoryMetadataStore. Used as a dev-dependency by crates that test runtime composition without real I/O backends."
 version.workspace    = true
 edition.workspace    = true
 license.workspace    = true

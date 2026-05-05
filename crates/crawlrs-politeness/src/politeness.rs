@@ -148,6 +148,16 @@ impl RedisPoliteness {
         self.pool.state()
     }
 
+    /// Refresh the `crawlrs_politeness_pool_pending` gauge from the
+    /// bb8 pool's published state. Approximates "outstanding
+    /// connections" via `connections - idle_connections`. Called by
+    /// the binary's maintenance loop per scrape interval.
+    pub fn record_pool_metrics(&self) {
+        let state = self.pool.state();
+        let active = state.connections.saturating_sub(state.idle_connections);
+        metrics::gauge!(crate::metrics::POLITENESS_POOL_PENDING).set(active as f64);
+    }
+
     // --- internals -----------------------------------------------------
 
     async fn checkout(&self) -> LocalResult<bb8::PooledConnection<'_, RedisConnectionManager>> {
@@ -199,6 +209,7 @@ impl Politeness for RedisPoliteness {
     async fn check(&self, url: &CanonicalUrl) -> Result<PoliteDecision> {
         let host = self.host_of(url).map_err(Error::from)?;
         if self.is_excluded(host) {
+            record_check_decision(crate::metrics::DECISION_DISALLOW_EXCLUDED);
             return Ok(PoliteDecision::Disallow);
         }
 
@@ -213,6 +224,7 @@ impl Politeness for RedisPoliteness {
                 .await
                 .map_err(Error::from)?;
             if !allowed {
+                record_check_decision(crate::metrics::DECISION_DISALLOW_ROBOTS);
                 return Ok(PoliteDecision::Disallow);
             }
         }
@@ -227,6 +239,8 @@ impl Politeness for RedisPoliteness {
             .map_err(RedisPolitenessError::from)
             .map_err(Error::from)?;
         if failures.unwrap_or(0) >= self.config.backoff.circuit_open_after_failures {
+            metrics::counter!(crate::metrics::POLITENESS_CIRCUIT_OPEN_TOTAL).increment(1);
+            record_check_decision(crate::metrics::DECISION_DISALLOW_CIRCUIT);
             return Ok(PoliteDecision::Disallow);
         }
 
@@ -239,13 +253,18 @@ impl Politeness for RedisPoliteness {
             .map_err(Error::from)?;
         let now = SystemTime::now();
         match next {
-            None => Ok(PoliteDecision::Allow),
+            None => {
+                record_check_decision(crate::metrics::DECISION_ALLOW);
+                Ok(PoliteDecision::Allow)
+            }
             Some(score) => {
                 let when = score_to_wall(score);
                 if when <= now {
+                    record_check_decision(crate::metrics::DECISION_ALLOW);
                     Ok(PoliteDecision::Allow)
                 } else {
                     let delay = when.duration_since(now).unwrap_or_default();
+                    record_check_decision(crate::metrics::DECISION_DELAY);
                     Ok(PoliteDecision::Delay(delay))
                 }
             }
@@ -320,6 +339,24 @@ impl Politeness for RedisPoliteness {
         // recovery time more often than they over-estimate it, but
         // either way max() honors both bounds.
         let backoff = compute_backoff(new_failures, kind, retry_after, &self.config.backoff);
+        metrics::histogram!(crate::metrics::POLITENESS_BACKOFF_SECONDS)
+            .record(backoff.as_secs_f64());
+        // Source attribution: which input dominated the final value?
+        // Edge cases (computed == max_backoff exactly, hint == computed
+        // exactly) are rare; the classifier picks the dominant cause
+        // and is sufficient as an operational counter.
+        let source = if backoff >= self.config.backoff.max_backoff {
+            crate::metrics::SOURCE_CAPPED
+        } else if retry_after.is_some_and(|hint| hint == backoff) {
+            crate::metrics::SOURCE_SERVER_HINT
+        } else {
+            crate::metrics::SOURCE_COMPUTED
+        };
+        metrics::counter!(
+            crate::metrics::POLITENESS_BACKOFF_SOURCE_TOTAL,
+            "source" => source,
+        )
+        .increment(1);
         let until = SystemTime::now() + backoff;
         let until_score = wall_to_score(until);
 
@@ -381,6 +418,17 @@ impl RedisPoliteness {
 }
 
 // --- module-private helpers --------------------------------------------
+
+/// Emit the `crawlrs_politeness_check_total{decision}` counter. The
+/// decision label is one of the per-decision constants in the metrics
+/// module; bounded set, no cardinality concern.
+fn record_check_decision(decision: &'static str) {
+    metrics::counter!(
+        crate::metrics::POLITENESS_CHECK_TOTAL,
+        "decision" => decision,
+    )
+    .increment(1);
+}
 
 /// Encode a wall-clock moment as a Redis ZSET score (millis since
 /// the unix epoch). We trust system clocks to be NTP-synced across

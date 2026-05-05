@@ -132,10 +132,17 @@ async fn sleep_until_ready(deps: &Arc<WorkerDeps>, shutdown: &mut watch::Receive
 }
 
 /// Trace boundary for one URL's pipeline. Wraps [`UrlPipeline::run`]
-/// so the worker_id is in scope for every span the pipeline emits.
+/// so the worker_id is in scope for every span the pipeline emits,
+/// and so the per-URL metric envelope (workers_active gauge +
+/// pipeline_seconds histogram) lives in one place.
 #[tracing::instrument(skip(deps), fields(worker_id, url = %entry.url, depth = entry.depth))]
 async fn process_url(_worker_id: usize, deps: &Arc<WorkerDeps>, entry: UrlEntry) {
+    let started_at = tokio::time::Instant::now();
+    metrics::gauge!(crate::metrics::WORKERS_ACTIVE).increment(1.0);
     UrlPipeline::new(Arc::clone(deps), entry).run().await;
+    metrics::gauge!(crate::metrics::WORKERS_ACTIVE).decrement(1.0);
+    metrics::histogram!(crate::metrics::PIPELINE_SECONDS)
+        .record(started_at.elapsed().as_secs_f64());
 }
 
 // ---------------------------------------------------------------------------
@@ -209,11 +216,21 @@ impl UrlPipeline {
         match prior.status {
             UrlStatus::Succeeded => {
                 debug!(url = %self.url(), "cross-run dedup hit; acking without fetch");
+                metrics::counter!(
+                    crate::metrics::URLS_SKIPPED_TOTAL,
+                    "reason" => crate::metrics::SKIP_ALREADY_SUCCEEDED,
+                )
+                .increment(1);
                 let _ = self.deps.frontier.ack(self.url()).await;
                 true
             }
             UrlStatus::PermanentlyFailed => {
                 debug!(url = %self.url(), "URL is in DLQ; acking without fetch");
+                metrics::counter!(
+                    crate::metrics::URLS_SKIPPED_TOTAL,
+                    "reason" => crate::metrics::SKIP_ALREADY_DLQ,
+                )
+                .increment(1);
                 let _ = self.deps.frontier.ack(self.url()).await;
                 true
             }
@@ -230,6 +247,11 @@ impl UrlPipeline {
             Ok(PoliteDecision::Allow) => true,
             Ok(PoliteDecision::Disallow) => {
                 debug!(url = %self.url(), "politeness disallowed; acking");
+                metrics::counter!(
+                    crate::metrics::URLS_SKIPPED_TOTAL,
+                    "reason" => crate::metrics::SKIP_POLITENESS_DISALLOWED,
+                )
+                .increment(1);
                 let _ = self.deps.frontier.ack(self.url()).await;
                 false
             }
@@ -352,6 +374,22 @@ impl UrlPipeline {
         let max_depth = self.deps.config.max_depth;
         let new_depth = self.entry.depth + 1;
 
+        // Count depth-limit drops: HTTP-shape outlinks that were
+        // filtered out because their depth exceeds the configured cap.
+        // Non-HTTP links (mailto:, tel:, javascript:) are silently
+        // dropped without a metric since they're scheme-mismatch, not
+        // a crawler decision worth surfacing.
+        if max_depth.is_some_and(|limit| new_depth > limit) {
+            let dropped = doc.outbound_links.iter().filter(|u| u.is_http()).count();
+            if dropped > 0 {
+                metrics::counter!(
+                    crate::metrics::URLS_SKIPPED_TOTAL,
+                    "reason" => crate::metrics::SKIP_DEPTH_LIMIT,
+                )
+                .increment(dropped as u64);
+            }
+        }
+
         let candidates: Vec<UrlEntry> = doc
             .outbound_links
             .iter()
@@ -411,6 +449,8 @@ impl UrlPipeline {
         if let Err(e) = self.deps.frontier.ack(self.url()).await {
             warn!(url = %self.url(), error = %e, "frontier ack failed");
         }
+
+        metrics::counter!(crate::metrics::URLS_FETCHED_TOTAL).increment(1);
     }
 
     /// Common path for transport + HTTP-status failures: increment
@@ -418,6 +458,11 @@ impl UrlPipeline {
     /// exhausted, move to DLQ + ack so the URL stops cycling.
     /// Otherwise nack and let `XAUTOCLAIM` re-deliver later.
     async fn handle_failure(&self, kind: FailureKind, reason: &str) {
+        metrics::counter!(
+            crate::metrics::URLS_FAILED_TOTAL,
+            "kind" => crate::metrics::failure_kind_label(kind),
+        )
+        .increment(1);
         let new_count = match self.deps.metadata.mark_failed(self.url(), kind).await {
             Ok(c) => c,
             Err(e) => {

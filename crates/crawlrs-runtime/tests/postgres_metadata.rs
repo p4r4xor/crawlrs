@@ -5,7 +5,7 @@
 //! every run; this file is the "are we wiring the production
 //! impl correctly?" backstop.
 //!
-//! Test doubles come from `crawlrs-testing`; this file only owns the
+//! Test doubles come from `crawlrs-fakes`; this file only owns the
 //! Redis + Postgres testcontainer fixture.
 
 use std::sync::Arc;
@@ -17,12 +17,12 @@ use crawlrs_core::{
     CanonicalUrl, MetadataStore, ShardingPolicy, SingleShardPolicy, SiteAdapterRegistry, UrlEntry,
     UrlStatus,
 };
+use crawlrs_fakes::{FakeFetcher, InMemoryStore};
 use crawlrs_frontier_redis::RedisFrontier;
 use crawlrs_metadata::PostgresMetadataStore;
 use crawlrs_parse::LolHtmlParser;
 use crawlrs_politeness::{BackoffPolicy, PolitenessConfig, RedisPoliteness};
 use crawlrs_runtime::{Crawler, CrawlerConfig};
-use crawlrs_testing::{FakeFetcher, InMemoryStore};
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
 use testcontainers_modules::postgres::Postgres;

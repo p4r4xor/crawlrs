@@ -14,6 +14,7 @@
 
 use std::collections::HashMap;
 use std::sync::Mutex;
+use std::time::Instant;
 
 use crawlrs_core::{CanonicalUrl, ShardKey};
 
@@ -21,11 +22,13 @@ use crawlrs_core::{CanonicalUrl, ShardKey};
 pub type StreamEntryId = String;
 
 /// Information needed to `XACK` an entry: which shard it came from and
-/// its stream entry id.
+/// its stream entry id. `claimed_at` lets the in-flight latency
+/// histogram fire at ack/nack time.
 #[derive(Debug, Clone)]
 pub struct ClaimRecord {
     pub shard: ShardKey,
     pub entry_id: StreamEntryId,
+    pub claimed_at: Instant,
 }
 
 /// Concurrent map of URLs currently in-flight on this `RedisFrontier`.
@@ -48,7 +51,11 @@ impl PendingClaims {
     /// can happen after `XAUTOCLAIM` reclaims a stranded entry while
     /// the original consumer is silent).
     pub fn record(&self, url: CanonicalUrl, shard: ShardKey, entry_id: StreamEntryId) {
-        let record = ClaimRecord { shard, entry_id };
+        let record = ClaimRecord {
+            shard,
+            entry_id,
+            claimed_at: Instant::now(),
+        };
         self.inner
             .lock()
             .expect("PendingClaims mutex poisoned")

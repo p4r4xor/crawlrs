@@ -13,8 +13,14 @@ crawlrs-core.workspace = true
 async-trait.workspace = true
 bytes.workspace       = true
 httpdate.workspace    = true
+metrics.workspace     = true
 thiserror.workspace   = true
-tokio.workspace       = true
+# `fs` enabled here (on top of the workspace defaults
+# rt-multi-thread/macros/time/sync) because the maintenance task
+# reads `/proc/self/{status,fd}` for the periodic process-health log
+# line. Without this feature `tokio::fs` is configured out and the
+# crate fails to compile.
+tokio = { workspace = true, features = ["fs"] }
 tracing.workspace     = true
 
 [dev-dependencies]
@@ -26,7 +32,9 @@ crawlrs-frontier-redis.workspace = true
 crawlrs-politeness.workspace     = true
 crawlrs-parse.workspace          = true
 crawlrs-metadata.workspace       = true
-crawlrs-testing.workspace        = true
+crawlrs-store.workspace          = true
+crawlrs-fakes.workspace        = true
+metrics-util.workspace           = true
 
 bb8.workspace                    = true
 bb8-redis.workspace              = true

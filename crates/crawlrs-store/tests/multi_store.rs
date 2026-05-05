@@ -8,8 +8,8 @@ use std::time::Duration;
 use bytes::Bytes;
 use chrono::Utc;
 use crawlrs_core::{CanonicalUrl, FetchResponse, ParsedDocument, Store, StoreRecord, content_hash};
+use crawlrs_fakes::InMemoryStore;
 use crawlrs_store::MultiStore;
-use crawlrs_testing::InMemoryStore;
 
 #[tokio::test]
 async fn fans_out_to_all_inner_stores_and_returns_primary_path() {

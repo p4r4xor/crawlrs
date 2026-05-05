@@ -17,6 +17,7 @@
 //! convention is one place.
 
 pub mod error;
+pub mod metrics;
 pub mod multi_store;
 pub mod parquet_store;
 pub mod path;

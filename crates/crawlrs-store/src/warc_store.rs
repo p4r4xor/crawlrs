@@ -94,6 +94,7 @@ impl WarcStore {
 impl Store for WarcStore {
     #[instrument(skip(self, record), fields(shard = record.shard, url = %record.doc.url))]
     async fn write(&self, record: &StoreRecord<'_>) -> Result<String> {
+        let started_at = std::time::Instant::now();
         // Encode off-lock; the result is independent of shared state.
         let response_bytes = encode_response(record);
         let raw_bytes = record.resp.body.len();
@@ -112,15 +113,43 @@ impl Store for WarcStore {
         let should_rotate =
             self.rotation
                 .should_rotate(active.rows, active.raw_bytes, active.opened_at);
+        let gz_bytes_now = active.gzipped.len();
+        let shard_label = record.shard.to_string();
 
-        if should_rotate {
+        let flush_result = if should_rotate {
             let active = state.remove(&record.shard).expect("just inserted");
             drop(state);
-            self.flush_one(record.shard, active).await?;
+            metrics::counter!(
+                crate::metrics::STORE_ROTATION_TOTAL,
+                "format" => crate::metrics::FORMAT_WARC,
+                "shard" => shard_label.clone(),
+            )
+            .increment(1);
+            metrics::gauge!(
+                crate::metrics::STORE_BUFFER_BYTES,
+                "format" => crate::metrics::FORMAT_WARC,
+                "shard" => shard_label.clone(),
+            )
+            .set(0.0);
+            self.flush_one(record.shard, active).await
         } else {
             drop(state);
-        }
+            metrics::gauge!(
+                crate::metrics::STORE_BUFFER_BYTES,
+                "format" => crate::metrics::FORMAT_WARC,
+                "shard" => shard_label.clone(),
+            )
+            .set(gz_bytes_now as f64);
+            Ok(planned_path.clone())
+        };
 
+        metrics::histogram!(
+            crate::metrics::STORE_WRITE_SECONDS,
+            "format" => crate::metrics::FORMAT_WARC,
+        )
+        .record(started_at.elapsed().as_secs_f64());
+
+        flush_result?;
         Ok(planned_path.to_string())
     }
 

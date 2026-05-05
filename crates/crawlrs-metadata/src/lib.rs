@@ -15,6 +15,7 @@
 //! plus the indexes the runtime relies on. Apply it with
 //! [`PostgresMetadataStore::migrate`] before constructing a store.
 
+pub mod metrics;
 pub mod store;
 
 pub use store::{PostgresMetadataError, PostgresMetadataStore};

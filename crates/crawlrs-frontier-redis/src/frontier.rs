@@ -384,6 +384,27 @@ impl RedisFrontier {
         Ok(depths)
     }
 
+    /// Refresh the periodic frontier gauges:
+    /// `crawlrs_frontier_pending_claims{shard}` (XLEN per shard) and
+    /// `crawlrs_frontier_pool_pending` (bb8 pool active count).
+    /// Called by the binary's maintenance loop per scrape interval
+    /// (Phase 6); not on the hot path because XLEN per shard per
+    /// claim would dominate Redis traffic at scale.
+    pub async fn record_pending_metrics(&self) -> Result<()> {
+        let depths = self.shard_depths().await?;
+        for (shard, depth) in depths {
+            metrics::gauge!(
+                crate::metrics::FRONTIER_PENDING_CLAIMS,
+                "shard" => shard.to_string(),
+            )
+            .set(depth as f64);
+        }
+        let state = self.pool.state();
+        let active = state.connections.saturating_sub(state.idle_connections);
+        metrics::gauge!(crate::metrics::FRONTIER_POOL_PENDING).set(active as f64);
+        Ok(())
+    }
+
     /// Reassign stranded entries (idle > `autoclaim_idle`) from
     /// other consumers to this one. Returns the total count reclaimed
     /// across all owned shards.
@@ -638,6 +659,15 @@ impl RedisFrontier {
         // we don't snatch in-flight entries from them in production).
         self.reclaim_one(shard).await
     }
+
+    fn record_claim_outcome(&self, shard: ShardKey, outcome: &'static str) {
+        metrics::counter!(
+            crate::metrics::FRONTIER_CLAIM_TOTAL,
+            "shard" => shard.to_string(),
+            "outcome" => outcome,
+        )
+        .increment(1);
+    }
 }
 
 #[async_trait]
@@ -647,13 +677,28 @@ impl Frontier for RedisFrontier {
         // One-element batch: same Lua script, chunk size 1. The
         // overhead is one Lua loop iteration; not worth a separate
         // code path.
-        let newly = self.enqueue(std::slice::from_ref(&entry)).await?;
-        Ok(newly == 1)
+        let started_at = std::time::Instant::now();
+        let result = self.enqueue(std::slice::from_ref(&entry)).await;
+        metrics::histogram!(
+            crate::metrics::FRONTIER_CALL_SECONDS,
+            "op" => crate::metrics::OP_SUBMIT_BATCH,
+        )
+        .record(started_at.elapsed().as_secs_f64());
+        Ok(result? == 1)
     }
 
     #[tracing::instrument(skip(self, entries), fields(n = entries.len()))]
     async fn submit_batch(&self, entries: Vec<UrlEntry>) -> Result<usize> {
-        Ok(self.enqueue(&entries).await?)
+        let started_at = std::time::Instant::now();
+        metrics::histogram!(crate::metrics::FRONTIER_SUBMIT_BATCH_SIZE)
+            .record(entries.len() as f64);
+        let result = self.enqueue(&entries).await;
+        metrics::histogram!(
+            crate::metrics::FRONTIER_CALL_SECONDS,
+            "op" => crate::metrics::OP_SUBMIT_BATCH,
+        )
+        .record(started_at.elapsed().as_secs_f64());
+        Ok(result?)
     }
 
     #[tracing::instrument(skip(self))]
@@ -662,15 +707,34 @@ impl Frontier for RedisFrontier {
         if n == 0 {
             return Ok(None);
         }
+        let started_at = std::time::Instant::now();
         let start = self.claim_cursor.fetch_add(1, Ordering::Relaxed) % n;
+        let mut result: Result<Option<UrlEntry>> = Ok(None);
         for offset in 0..n {
             let shard = self.owned_shards[(start + offset) % n];
-            if let Some((entry, entry_id)) = self.claim_from(shard).await? {
-                self.claims.record(entry.url.clone(), shard, entry_id);
-                return Ok(Some(entry));
+            match self.claim_from(shard).await {
+                Ok(Some((entry, entry_id))) => {
+                    self.record_claim_outcome(shard, crate::metrics::OUTCOME_CLAIMED);
+                    self.claims.record(entry.url.clone(), shard, entry_id);
+                    result = Ok(Some(entry));
+                    break;
+                }
+                Ok(None) => {
+                    self.record_claim_outcome(shard, crate::metrics::OUTCOME_EMPTY);
+                }
+                Err(e) => {
+                    self.record_claim_outcome(shard, crate::metrics::OUTCOME_ERROR);
+                    result = Err(e.into());
+                    break;
+                }
             }
         }
-        Ok(None)
+        metrics::histogram!(
+            crate::metrics::FRONTIER_CALL_SECONDS,
+            "op" => crate::metrics::OP_CLAIM,
+        )
+        .record(started_at.elapsed().as_secs_f64());
+        result
     }
 
     #[tracing::instrument(skip(self), fields(max))]
@@ -712,11 +776,60 @@ impl Frontier for RedisFrontier {
 
     #[tracing::instrument(skip(self), fields(url = %url))]
     async fn ack(&self, url: &CanonicalUrl) -> Result<()> {
-        let Some(ClaimRecord { shard, entry_id }) = self.claims.take(url) else {
+        let started_at = std::time::Instant::now();
+        let result = self.ack_inner(url).await;
+        metrics::histogram!(
+            crate::metrics::FRONTIER_CALL_SECONDS,
+            "op" => crate::metrics::OP_ACK,
+        )
+        .record(started_at.elapsed().as_secs_f64());
+        result
+    }
+
+    #[tracing::instrument(skip(self), fields(url = %url))]
+    async fn nack(&self, url: &CanonicalUrl) -> Result<()> {
+        let started_at = std::time::Instant::now();
+        // Drop our local tracking but leave the entry in our PEL on
+        // Redis. On the next claim, `read_one(... id="0")` will
+        // surface it again to this same worker (PEL re-read). Other
+        // workers can steal it via `reclaim_one` once idle past
+        // `autoclaim_idle`. Keeping nack synchronous and side-effect-
+        // light avoids races where a hot loop re-claims an entry
+        // before the original handler has fully released it.
+        if let Some(record) = self.claims.take(url) {
+            metrics::histogram!(crate::metrics::FRONTIER_IN_FLIGHT_SECONDS)
+                .record(record.claimed_at.elapsed().as_secs_f64());
+        }
+        debug!(url = url.as_str(), "nack");
+        metrics::histogram!(
+            crate::metrics::FRONTIER_CALL_SECONDS,
+            "op" => crate::metrics::OP_NACK,
+        )
+        .record(started_at.elapsed().as_secs_f64());
+        Ok(())
+    }
+
+    // No `tick()` override: workers self-rebalance via
+    // `reclaim_one` in the claim path (see ADR-0012). The trait
+    // default `Ok(0)` is fine. `reclaim_stranded` stays public for
+    // ad-hoc drains (e.g. graceful shutdown of an entire pool).
+}
+
+impl RedisFrontier {
+    /// Inner ack body, wrapped by the trait method with timing.
+    async fn ack_inner(&self, url: &CanonicalUrl) -> Result<()> {
+        let Some(ClaimRecord {
+            shard,
+            entry_id,
+            claimed_at,
+        }) = self.claims.take(url)
+        else {
             // Not in-flight: idempotent no-op.
             debug!(url = url.as_str(), "ack: url not in claims map; no-op");
             return Ok(());
         };
+        metrics::histogram!(crate::metrics::FRONTIER_IN_FLIGHT_SECONDS)
+            .record(claimed_at.elapsed().as_secs_f64());
         let queue_key = self.keys.queue(shard);
         let group = self.keys.consumer_group();
         let mut conn = self.checkout().await.map_err(Error::from)?;
@@ -731,25 +844,6 @@ impl Frontier for RedisFrontier {
         debug!(shard, url = url.as_str(), entry_id, "ack");
         Ok(())
     }
-
-    #[tracing::instrument(skip(self), fields(url = %url))]
-    async fn nack(&self, url: &CanonicalUrl) -> Result<()> {
-        // Drop our local tracking but leave the entry in our PEL on
-        // Redis. On the next claim, `read_one(... id="0")` will
-        // surface it again to this same worker (PEL re-read). Other
-        // workers can steal it via `reclaim_one` once idle past
-        // `autoclaim_idle`. Keeping nack synchronous and side-effect-
-        // light avoids races where a hot loop re-claims an entry
-        // before the original handler has fully released it.
-        let _ = self.claims.take(url);
-        debug!(url = url.as_str(), "nack");
-        Ok(())
-    }
-
-    // No `tick()` override: workers self-rebalance via
-    // `reclaim_one` in the claim path (see ADR-0012). The trait
-    // default `Ok(0)` is fine. `reclaim_stranded` stays public for
-    // ad-hoc drains (e.g. graceful shutdown of an entire pool).
 }
 
 // --- module-private helpers --------------------------------------------

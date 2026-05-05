@@ -4,7 +4,7 @@
 //! via testcontainers-rs.
 //!
 //! Test doubles (FakeFetcher, InMemoryStore, InMemoryMetadataStore)
-//! live in `crawlrs-testing` so this file stays focused on test
+//! live in `crawlrs-fakes` so this file stays focused on test
 //! scenarios rather than scaffolding.
 
 use std::collections::HashMap;
@@ -17,11 +17,11 @@ use crawlrs_core::{
     CanonicalUrl, MetadataStore, ShardingPolicy, SingleShardPolicy, SiteAdapterRegistry, UrlEntry,
     UrlStatus,
 };
+use crawlrs_fakes::{FakeFetcher, InMemoryMetadataStore, InMemoryStore};
 use crawlrs_frontier_redis::RedisFrontier;
 use crawlrs_parse::LolHtmlParser;
 use crawlrs_politeness::{PolitenessConfig, RedisPoliteness};
 use crawlrs_runtime::{Crawler, CrawlerConfig};
-use crawlrs_testing::{FakeFetcher, InMemoryMetadataStore, InMemoryStore};
 use testcontainers_modules::redis::Redis;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
 use testcontainers_modules::testcontainers::{ContainerAsync, ImageExt};

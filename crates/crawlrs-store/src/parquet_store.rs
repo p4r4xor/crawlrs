@@ -119,6 +119,7 @@ impl ParquetStore {
 impl Store for ParquetStore {
     #[instrument(skip(self, record), fields(shard = record.shard, url = %record.doc.url))]
     async fn write(&self, record: &StoreRecord<'_>) -> Result<String> {
+        let started_at = Instant::now();
         let row = OwnedRow::from_record(record);
         let raw_bytes = row.body.len();
 
@@ -140,15 +141,43 @@ impl Store for ParquetStore {
         let should_rotate =
             self.rotation
                 .should_rotate(entry.rows.len(), entry.raw_bytes, entry.opened_at);
+        let buffer_bytes_now = entry.raw_bytes;
+        let shard_label = record.shard.to_string();
 
-        if should_rotate {
+        let result = if should_rotate {
             let active = state.remove(&record.shard).expect("just inserted");
             drop(state);
-            self.flush_one(record.shard, active).await?;
+            metrics::counter!(
+                crate::metrics::STORE_ROTATION_TOTAL,
+                "format" => crate::metrics::FORMAT_PARQUET,
+                "shard" => shard_label.clone(),
+            )
+            .increment(1);
+            metrics::gauge!(
+                crate::metrics::STORE_BUFFER_BYTES,
+                "format" => crate::metrics::FORMAT_PARQUET,
+                "shard" => shard_label.clone(),
+            )
+            .set(0.0);
+            self.flush_one(record.shard, active).await
         } else {
             drop(state);
-        }
+            metrics::gauge!(
+                crate::metrics::STORE_BUFFER_BYTES,
+                "format" => crate::metrics::FORMAT_PARQUET,
+                "shard" => shard_label.clone(),
+            )
+            .set(buffer_bytes_now as f64);
+            Ok(planned_path.clone())
+        };
 
+        metrics::histogram!(
+            crate::metrics::STORE_WRITE_SECONDS,
+            "format" => crate::metrics::FORMAT_PARQUET,
+        )
+        .record(started_at.elapsed().as_secs_f64());
+
+        result?;
         Ok(planned_path.to_string())
     }
 

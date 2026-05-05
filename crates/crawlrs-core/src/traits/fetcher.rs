@@ -1,7 +1,7 @@
 //! `Fetcher` trait: HTTP transport.
 //!
 //! Concrete impl: `crawlrs-fetch::WreqFetcher`.
-//! Test double: `crawlrs-testing::FakeFetcher`.
+//! Test double: `crawlrs-fakes::FakeFetcher`.
 
 use async_trait::async_trait;
 

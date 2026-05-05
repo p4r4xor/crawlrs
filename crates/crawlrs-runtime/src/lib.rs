@@ -15,6 +15,7 @@
 pub mod crawler;
 pub mod failure;
 pub mod maintenance;
+pub mod metrics;
 pub mod worker;
 
 pub use crawler::{Crawler, CrawlerBuilder, CrawlerConfig, CrawlerError};

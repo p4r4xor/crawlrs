@@ -2,7 +2,7 @@
 //!
 //! Concrete impls: `crawlrs-store::{ParquetStore, WarcStore,
 //! MultiStore}` (Phase 5c, see ADR-0013).
-//! Test double: `crawlrs-testing::InMemoryStore`.
+//! Test double: `crawlrs-fakes::InMemoryStore`.
 
 use async_trait::async_trait;
 

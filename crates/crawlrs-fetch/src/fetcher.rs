@@ -53,6 +53,27 @@ impl WreqFetcher {
 #[async_trait]
 impl Fetcher for WreqFetcher {
     async fn fetch(&self, request: FetchRequest) -> Result<FetchResponse> {
+        let kind_label = crate::metrics::fetch_kind_label(&request.url);
+        let result = self.fetch_inner(request).await;
+        if let Ok(resp) = &result {
+            metrics::histogram!(
+                crate::metrics::FETCH_SECONDS,
+                "kind" => kind_label,
+            )
+            .record(resp.duration.as_secs_f64());
+            metrics::counter!(
+                crate::metrics::FETCH_RESPONSE_TOTAL,
+                "status_class" => crate::metrics::status_class_label(resp.status),
+            )
+            .increment(1);
+            metrics::histogram!(crate::metrics::FETCH_BODY_BYTES).record(resp.body.len() as f64);
+        }
+        result
+    }
+}
+
+impl WreqFetcher {
+    async fn fetch_inner(&self, request: FetchRequest) -> Result<FetchResponse> {
         let proxy_selection = self.config.proxy.resolve(&request).await?;
         let started_at = chrono::Utc::now();
         let start_instant = Instant::now();

@@ -121,7 +121,19 @@ impl PostgresMetadataStore {
             .fetch_one(&self.pool)
             .await
             .map_err(PostgresMetadataError::from)?;
+        metrics::gauge!(crate::metrics::DLQ_SIZE).set(count as f64);
         Ok(count as u64)
+    }
+
+    /// Refresh the `crawlrs_metadata_pool_pending` gauge from the
+    /// sqlx pool's published stats. Sqlx doesn't expose the
+    /// "currently-blocked acquire futures" count directly; we
+    /// approximate via `size - num_idle`, which is "currently
+    /// outstanding connections" and serves as a saturation indicator.
+    /// Called by the binary's maintenance loop per scrape interval.
+    pub fn record_pool_metrics(&self) {
+        let active = self.pool.size().saturating_sub(self.pool.num_idle() as u32);
+        metrics::gauge!(crate::metrics::METADATA_POOL_PENDING).set(active as f64);
     }
 
     /// Borrow the underlying pool. Exposed so the runtime can share
@@ -135,6 +147,7 @@ impl PostgresMetadataStore {
 impl MetadataStore for PostgresMetadataStore {
     #[tracing::instrument(skip(self), fields(url = %url))]
     async fn get(&self, url: &CanonicalUrl) -> Result<Option<UrlMetadata>> {
+        let _timer = crate::metrics::QueryTimer::new(crate::metrics::OP_GET);
         let row: Option<UrlRow> = sqlx::query_as::<_, UrlRow>(
             "SELECT url, status, retry_count, blob_path, content_hash, depth,
                     last_run_id, discovered_at, updated_at
@@ -151,6 +164,7 @@ impl MetadataStore for PostgresMetadataStore {
 
     #[tracing::instrument(skip(self), fields(url = %url, run_id = %run_id, depth))]
     async fn mark_attempting(&self, url: &CanonicalUrl, run_id: &str, depth: u32) -> Result<()> {
+        let _timer = crate::metrics::QueryTimer::new(crate::metrics::OP_MARK_ATTEMPTING);
         let mut tx = self
             .pool
             .begin()
@@ -170,6 +184,7 @@ impl MetadataStore for PostgresMetadataStore {
         blob_path: &str,
         content_hash: u64,
     ) -> Result<()> {
+        let _timer = crate::metrics::QueryTimer::new(crate::metrics::OP_MARK_SUCCEEDED);
         let mut tx = self
             .pool
             .begin()
@@ -204,6 +219,7 @@ impl MetadataStore for PostgresMetadataStore {
 
     #[tracing::instrument(skip(self), fields(url = %url, kind = ?kind))]
     async fn mark_failed(&self, url: &CanonicalUrl, kind: FailureKind) -> Result<u32> {
+        let _timer = crate::metrics::QueryTimer::new(crate::metrics::OP_MARK_FAILED);
         let mut tx = self
             .pool
             .begin()
@@ -234,6 +250,7 @@ impl MetadataStore for PostgresMetadataStore {
 
     #[tracing::instrument(skip(self), fields(url = %url, reason = %reason))]
     async fn mark_permanently_failed(&self, url: &CanonicalUrl, reason: &str) -> Result<()> {
+        let _timer = crate::metrics::QueryTimer::new(crate::metrics::OP_MARK_PERMANENTLY_FAILED);
         let mut tx = self
             .pool
             .begin()

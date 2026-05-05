@@ -27,6 +27,7 @@
 pub mod config;
 pub mod failure;
 pub mod keys;
+pub mod metrics;
 pub mod politeness;
 pub mod robots;
 
