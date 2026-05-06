@@ -13,7 +13,8 @@ use tokio::task::JoinSet;
 use tracing::{info, warn};
 
 use crate::maintenance::maintenance_loop;
-use crate::worker::{WorkerDeps, worker_loop};
+use crate::supervisor::supervise_worker;
+use crate::worker::WorkerDeps;
 
 #[derive(Debug, Error)]
 pub enum CrawlerError {
@@ -85,6 +86,14 @@ pub struct CrawlerConfig {
     /// suffix on `HOSTNAME` (`crawlrs-2` -> 2); single-process or test
     /// deployments use 0.
     pub pod_ordinal: u32,
+
+    /// Per-worker restart policy applied by the supervisor task. When
+    /// a worker panics or exits unexpectedly the supervisor respawns
+    /// it under this budget; once exhausted it gives up on that worker
+    /// and the pool runs degraded. Tune `max_restarts` up for hostile
+    /// corpora that crash parsers, down to limit blast radius from a
+    /// genuine crash-loop bug.
+    pub restart_policy: crate::supervisor::RestartPolicy,
 }
 
 impl Default for CrawlerConfig {
@@ -101,6 +110,7 @@ impl Default for CrawlerConfig {
             max_retries: 5,
             cross_run_dedup: true,
             pod_ordinal: 0,
+            restart_policy: crate::supervisor::RestartPolicy::default(),
         }
     }
 }
@@ -160,12 +170,20 @@ impl Crawler {
         // The identity flows into Frontier::claim as the Redis Streams
         // consumer name; stability across restarts is what makes
         // tier-1 PEL replay work without waiting for XAUTOCLAIM.
+        //
+        // We spawn one *supervisor* task per worker, not the worker
+        // directly. The supervisor owns the worker's lifecycle: a
+        // panic in the worker is caught by the supervisor and the
+        // worker is respawned under `restart_policy` instead of
+        // permanently shrinking the pool to W-1.
         let pod_ordinal = self.deps.config.pod_ordinal;
+        let restart_policy = self.deps.config.restart_policy.clone();
         for worker_index in 0..self.deps.config.workers {
             let identity = crawlrs_core::WorkerIdentity::new(pod_ordinal, worker_index as u32);
             let deps = self.deps.clone();
             let w_shutdown = self.shutdown_rx.clone();
-            tasks.spawn(worker_loop(identity, deps, w_shutdown));
+            let policy = restart_policy.clone();
+            tasks.spawn(supervise_worker(identity, deps, w_shutdown, policy));
         }
 
         // Drain.

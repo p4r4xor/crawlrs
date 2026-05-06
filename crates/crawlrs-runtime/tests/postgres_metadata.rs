@@ -152,6 +152,7 @@ async fn end_to_end_against_postgres_metadata_store() {
         max_retries: 3,
         cross_run_dedup: true,
         pod_ordinal: 0,
+        restart_policy: Default::default(),
     };
 
     let crawler = Crawler::builder()

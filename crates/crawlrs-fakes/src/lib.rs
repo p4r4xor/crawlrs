@@ -11,9 +11,11 @@
 //! enforce more invariants and live in their own adapter crates.
 
 pub mod fetcher;
+pub mod frontier;
 pub mod metadata_store;
 pub mod store;
 
 pub use fetcher::FakeFetcher;
+pub use frontier::InMemoryFrontier;
 pub use metadata_store::InMemoryMetadataStore;
 pub use store::InMemoryStore;

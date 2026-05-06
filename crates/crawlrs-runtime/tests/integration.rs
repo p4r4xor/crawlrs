@@ -137,6 +137,7 @@ fn fast_config() -> CrawlerConfig {
         max_retries: 3,
         cross_run_dedup: true,
         pod_ordinal: 0,
+        restart_policy: Default::default(),
     }
 }
 

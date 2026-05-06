@@ -19,6 +19,7 @@ pub const URLS_FAILED_TOTAL: &str = "crawlrs_urls_failed_total";
 pub const URLS_SKIPPED_TOTAL: &str = "crawlrs_urls_skipped_total";
 pub const WORKERS_ACTIVE: &str = "crawlrs_workers_active";
 pub const PIPELINE_SECONDS: &str = "crawlrs_pipeline_seconds";
+pub const WORKER_RESTARTS_TOTAL: &str = "crawlrs_worker_restarts_total";
 
 pub const SKIP_ALREADY_SUCCEEDED: &str = "already_succeeded";
 pub const SKIP_ALREADY_DLQ: &str = "already_dlq";
@@ -50,6 +51,12 @@ pub fn register() {
         PIPELINE_SECONDS,
         Unit::Seconds,
         "End-to-end per-URL pipeline duration: claim through ack."
+    );
+    describe_counter!(
+        WORKER_RESTARTS_TOTAL,
+        "Worker tasks respawned by the supervisor. Labelled by reason \
+         (panic / cancelled / exit_unexpected / join_error). Spike \
+         indicates a poison-URL crash loop or transient infra fault."
     );
 }
 

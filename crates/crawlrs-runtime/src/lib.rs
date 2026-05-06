@@ -16,9 +16,11 @@ pub mod crawler;
 pub mod failure;
 pub mod maintenance;
 pub mod metrics;
+pub mod supervisor;
 pub mod worker;
 
 pub use crawler::{Crawler, CrawlerBuilder, CrawlerConfig, CrawlerError};
 pub use failure::{
     classify_status, classify_transport_error, extract_retry_after, parse_retry_after,
 };
+pub use supervisor::{RestartPolicy, supervise_worker};
