@@ -15,7 +15,11 @@ use bb8::Pool;
 use bb8_redis::RedisConnectionManager;
 use crawlrs_core::{
     CanonicalUrl, Frontier, HostHashShardPolicy, ShardingPolicy, SingleShardPolicy, UrlEntry,
+    WorkerIdentity,
 };
+
+const TEST_IDENTITY_A: WorkerIdentity = WorkerIdentity::new(0, 0);
+const TEST_IDENTITY_B: WorkerIdentity = WorkerIdentity::new(0, 1);
 use crawlrs_frontier_redis::RedisFrontier;
 use testcontainers_modules::redis::Redis;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
@@ -85,11 +89,11 @@ async fn submit_then_claim_yields_same_url() {
     assert!(was_new, "first submit should be newly enqueued");
 
     let claimed = frontier
-        .claim()
+        .claim(&TEST_IDENTITY_A)
         .await
         .unwrap()
         .expect("queue should yield the entry");
-    assert_eq!(claimed.url.as_str(), "https://a.test/");
+    assert_eq!(claimed.entry.url.as_str(), "https://a.test/");
 }
 
 #[tokio::test]
@@ -134,14 +138,14 @@ async fn ack_after_claim_drops_pending_count() {
     let frontier = single_shard_frontier(&fx.pool).await;
 
     frontier.submit(entry("https://a.test/")).await.unwrap();
-    let claimed = frontier.claim().await.unwrap().unwrap();
+    let claimed = frontier.claim(&TEST_IDENTITY_A).await.unwrap().unwrap();
     assert_eq!(frontier.claim_count(), 1, "in-flight after claim");
 
-    frontier.ack(&claimed.url).await.unwrap();
+    frontier.ack(&claimed.attempt_id).await.unwrap();
     assert_eq!(frontier.claim_count(), 0, "drained after ack");
 
     // Idempotent: ack again is a no-op, not an error.
-    frontier.ack(&claimed.url).await.unwrap();
+    frontier.ack(&claimed.attempt_id).await.unwrap();
 }
 
 #[tokio::test]
@@ -150,10 +154,10 @@ async fn nack_clears_local_tracking_only() {
     let frontier = single_shard_frontier(&fx.pool).await;
 
     frontier.submit(entry("https://a.test/")).await.unwrap();
-    let claimed = frontier.claim().await.unwrap().unwrap();
+    let claimed = frontier.claim(&TEST_IDENTITY_A).await.unwrap().unwrap();
     assert_eq!(frontier.claim_count(), 1);
 
-    frontier.nack(&claimed.url).await.unwrap();
+    frontier.nack(&claimed.attempt_id).await.unwrap();
     assert_eq!(frontier.claim_count(), 0, "local tracking dropped");
 }
 
@@ -228,29 +232,29 @@ async fn xautoclaim_reclaims_stranded_entries_to_a_second_consumer() {
         .unwrap()
         .with_autoclaim_idle(Duration::ZERO);
     worker_a.submit(entry("https://a.test/")).await.unwrap();
-    let _claim_a = worker_a.claim().await.unwrap().unwrap();
+    let _claim_a = worker_a.claim(&TEST_IDENTITY_A).await.unwrap().unwrap();
     assert_eq!(worker_a.claim_count(), 1);
 
-    // Worker B starts up (different consumer id) and ticks autoclaim
-    // with idle_ms=0, which immediately reclaims A's pending entry.
+    // Worker B starts up (different identity) and ticks autoclaim with
+    // idle_ms=0, which immediately reclaims A's pending entry.
     let worker_b = RedisFrontier::new(fx.pool.clone(), policy.clone(), vec![0], rid)
         .await
         .unwrap()
         .with_autoclaim_idle(Duration::ZERO);
-    let reclaimed = worker_b.reclaim_stranded().await.unwrap();
+    let reclaimed = worker_b.reclaim_stranded(&TEST_IDENTITY_B).await.unwrap();
     assert_eq!(reclaimed, 1, "worker B should reclaim 1 stranded entry");
     assert_eq!(
         worker_b.claim_count(),
         1,
-        "B's claims map now holds the reclaimed entry"
+        "B's in-flight count now reflects the reclaimed entry"
     );
 
     // B's next claim returns the stranded URL (read from B's PEL).
-    let claimed_by_b = worker_b.claim().await.unwrap().unwrap();
-    assert_eq!(claimed_by_b.url.as_str(), "https://a.test/");
+    let claimed_by_b = worker_b.claim(&TEST_IDENTITY_B).await.unwrap().unwrap();
+    assert_eq!(claimed_by_b.entry.url.as_str(), "https://a.test/");
 
     // B acks; queue is empty.
-    worker_b.ack(&claimed_by_b.url).await.unwrap();
+    worker_b.ack(&claimed_by_b.attempt_id).await.unwrap();
     assert_eq!(worker_b.claim_count(), 0);
 }
 
@@ -272,10 +276,10 @@ async fn run_id_isolates_two_concurrent_crawls() {
     assert_eq!(crawl_one.len().await.unwrap(), 1);
     assert_eq!(crawl_two.len().await.unwrap(), 1);
 
-    let from_one = crawl_one.claim().await.unwrap().unwrap();
-    let from_two = crawl_two.claim().await.unwrap().unwrap();
-    assert_eq!(from_one.url.as_str(), "https://a.test/");
-    assert_eq!(from_two.url.as_str(), "https://b.test/");
+    let from_one = crawl_one.claim(&TEST_IDENTITY_A).await.unwrap().unwrap();
+    let from_two = crawl_two.claim(&TEST_IDENTITY_A).await.unwrap().unwrap();
+    assert_eq!(from_one.entry.url.as_str(), "https://a.test/");
+    assert_eq!(from_two.entry.url.as_str(), "https://b.test/");
 }
 
 #[tokio::test]

@@ -6,7 +6,7 @@ use async_trait::async_trait;
 
 use crate::error::Result;
 use crate::traits::politeness::FailureKind;
-use crate::types::UrlMetadata;
+use crate::types::{AttemptId, UrlMetadata};
 use crate::url::CanonicalUrl;
 
 /// Per-URL ledger across all crawl runs. Distinct from the data-plane
@@ -37,9 +37,17 @@ pub trait MetadataStore: Send + Sync {
     /// Successful fetch + persist. `status -> Succeeded`,
     /// `retry_count` reset to 0, `blob_path` and `content_hash`
     /// recorded, `updated_at` advanced.
+    ///
+    /// `attempt_id` is the correlation token from the `ClaimedMessage`
+    /// that drove this attempt. Implementations that maintain an
+    /// append-only history MUST treat `(url, attempt_id)` as the
+    /// uniqueness key on the history row so that re-delivery of the
+    /// same attempt (e.g. via `XAUTOCLAIM` after a stall between this
+    /// call and `frontier.ack`) does not duplicate ledger entries.
     async fn mark_succeeded(
         &self,
         url: &CanonicalUrl,
+        attempt_id: &AttemptId,
         blob_path: &str,
         content_hash: u64,
     ) -> Result<()>;

@@ -73,6 +73,18 @@ pub struct CrawlerConfig {
     /// metadata `get` per claim. Disable for runs that *want* to
     /// re-fetch (re-crawl mode, content-freshness validation).
     pub cross_run_dedup: bool,
+
+    /// StatefulSet pod ordinal for this process. Combined with each
+    /// worker's task index it forms the [`crawlrs_core::WorkerIdentity`]
+    /// rendered as the Redis Streams consumer name (`pod-N:M`). Stable
+    /// across process restarts so tier-1 PEL replay reattaches a
+    /// restarted worker to its own previously-in-flight entries
+    /// without waiting for the `XAUTOCLAIM` idle threshold.
+    ///
+    /// In a Kubernetes StatefulSet deployment this is the integer
+    /// suffix on `HOSTNAME` (`crawlrs-2` -> 2); single-process or test
+    /// deployments use 0.
+    pub pod_ordinal: u32,
 }
 
 impl Default for CrawlerConfig {
@@ -88,6 +100,7 @@ impl Default for CrawlerConfig {
             error_backoff: Duration::from_secs(1),
             max_retries: 5,
             cross_run_dedup: true,
+            pod_ordinal: 0,
         }
     }
 }
@@ -142,11 +155,17 @@ impl Crawler {
         let m_shutdown = self.shutdown_rx.clone();
         tasks.spawn(maintenance_loop(interval, m_shutdown));
 
-        // Worker pool.
-        for worker_id in 0..self.deps.config.workers {
+        // Worker pool. Each worker gets a stable WorkerIdentity built
+        // from the configured pod_ordinal + the per-pod worker index.
+        // The identity flows into Frontier::claim as the Redis Streams
+        // consumer name; stability across restarts is what makes
+        // tier-1 PEL replay work without waiting for XAUTOCLAIM.
+        let pod_ordinal = self.deps.config.pod_ordinal;
+        for worker_index in 0..self.deps.config.workers {
+            let identity = crawlrs_core::WorkerIdentity::new(pod_ordinal, worker_index as u32);
             let deps = self.deps.clone();
             let w_shutdown = self.shutdown_rx.clone();
-            tasks.spawn(worker_loop(worker_id, deps, w_shutdown));
+            tasks.spawn(worker_loop(identity, deps, w_shutdown));
         }
 
         // Drain.

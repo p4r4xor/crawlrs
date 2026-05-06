@@ -12,16 +12,20 @@
 //!   submitted. Submit-time dedup; checked atomically with the `XADD`
 //!   in one Lua script (`scripts/batch_submit.lua`).
 //! - **A consumer group** (`fetchers`) on the queue Stream. Each
-//!   *worker task* is its own consumer within that group, named
-//!   `<consumer_base>-<tokio::task::id()>`. Each consumer has a
-//!   private **Pending Entries List (PEL)**: entries it has been
-//!   delivered but hasn't acked yet.
+//!   *worker* is its own consumer within that group, named after the
+//!   worker's stable [`WorkerIdentity`] (`pod-<ordinal>:<index>`). Each
+//!   consumer has a private **Pending Entries List (PEL)**: entries it
+//!   has been delivered but hasn't acked yet.
 //!
-//! Crucially, **one worker = one tokio task = one Redis consumer**.
-//! Multiple workers in one process don't share a PEL. A shared
-//! consumer name lets a peer worker read another worker's pending
-//! entries via id `"0"`, which produces double-claims; per-task
-//! consumer names give each worker a private PEL.
+//! Crucially, **the consumer name is stable across process restarts**.
+//! When a pod restarts with the same StatefulSet ordinal, its workers
+//! re-attach to the same consumer names and pick up their own PEL
+//! entries via tier-1 (`XREADGROUP id "0"`) immediately, without
+//! waiting for the `XAUTOCLAIM` idle threshold. A shared base name
+//! across workers in one pod would let a peer worker read another
+//! worker's pending entries via id `"0"`, which produces double-claims;
+//! per-(pod, worker-index) consumer names give each worker a private
+//! PEL while keeping recovery instantaneous.
 //!
 //! # Production: cold start
 //!
@@ -30,16 +34,16 @@
 //!    [0..8], run_id)`.
 //! 2. The constructor:
 //!    - Validates each owned shard is in range.
-//!    - Generates `consumer_base = cuid2` (unique per `RedisFrontier`
-//!      instance - typically one per process).
 //!    - For each owned shard, runs `XGROUP CREATE
 //!      crawlrs:{run}:s{N}:queue fetchers $ MKSTREAM`. Creates the
 //!      Stream and the consumer group atomically. If the group
 //!      already exists (from a prior process for the same `run_id`),
 //!      Redis returns BUSYGROUP - we treat that as success.
 //! 3. Caller spawns N worker tasks, each holding the same
-//!    `Arc<dyn Frontier>`. Their consumer names are
-//!    `<base>-Id(1)`, `<base>-Id(2)`, … - distinct per task.
+//!    `Arc<dyn Frontier>` and its own [`WorkerIdentity`]
+//!    (`pod-<ordinal>:0` .. `pod-<ordinal>:N-1`). Identity is passed
+//!    on every `claim` so each worker acts as its own Redis Streams
+//!    consumer.
 //! 4. First `claim()` from any worker:
 //!    - Walks owned shards in round-robin order.
 //!    - For each shard, the three-tier ladder:
@@ -122,7 +126,10 @@ use std::time::Duration;
 use async_trait::async_trait;
 use bb8::Pool;
 use bb8_redis::RedisConnectionManager;
-use crawlrs_core::{CanonicalUrl, Error, Frontier, Result, ShardKey, ShardingPolicy, UrlEntry};
+use crawlrs_core::{
+    AttemptId, ClaimedMessage, Error, Frontier, Result, ShardKey, ShardingPolicy, UrlEntry,
+    WorkerIdentity,
+};
 use redis::AsyncCommands;
 use redis::streams::{
     StreamAutoClaimOptions, StreamAutoClaimReply, StreamReadOptions, StreamReadReply,
@@ -130,9 +137,32 @@ use redis::streams::{
 use thiserror::Error as ThisError;
 use tracing::{debug, info, warn};
 
-use crate::claims::{ClaimRecord, PendingClaims, StreamEntryId};
 use crate::codec::{self, STREAM_FIELD_BODY};
 use crate::keys::KeyPrefix;
+
+type StreamEntryId = String;
+
+/// Encode the (shard, redis-stream-entry-id) pair into the opaque
+/// `AttemptId` token that flows through the runtime. Format:
+/// `"<shard>|<entry-id>"`. The runtime treats this as opaque; only the
+/// Redis impl parses it back to route XACK to the right stream.
+fn encode_attempt(shard: ShardKey, entry_id: &str) -> AttemptId {
+    AttemptId::new(format!("{shard}|{entry_id}"))
+}
+
+/// Inverse of [`encode_attempt`]. Returns the shard plus the
+/// stream-entry-id substring (no allocation beyond the caller's owned
+/// `AttemptId`).
+fn decode_attempt(attempt: &AttemptId) -> LocalResult<(ShardKey, &str)> {
+    let raw = attempt.as_str();
+    let (shard_str, entry_id) = raw
+        .split_once('|')
+        .ok_or_else(|| RedisFrontierError::Codec(format!("malformed AttemptId: {raw}")))?;
+    let shard: ShardKey = shard_str
+        .parse()
+        .map_err(|_| RedisFrontierError::Codec(format!("malformed shard in AttemptId: {raw}")))?;
+    Ok((shard, entry_id))
+}
 
 /// Stranded URLs (claimed but unacked beyond this idle window) become
 /// candidates for `XAUTOCLAIM` reclaim by another worker. Five minutes
@@ -236,13 +266,6 @@ pub struct RedisFrontier {
     keys: KeyPrefix,
     sharding_policy: Arc<dyn ShardingPolicy>,
     owned_shards: Vec<ShardKey>,
-    /// Base name; the actual consumer used on every Redis call is
-    /// suffixed with the current `tokio::task::id()` so each worker
-    /// task acts as its own Redis Streams consumer. A shared consumer
-    /// name causes multiple workers to read each other's PEL via
-    /// `XREADGROUP id "0"`, double-claiming entries.
-    consumer_base: String,
-    claims: Arc<PendingClaims>,
 
     /// `XAUTOCLAIM` minimum-idle-time. Workers self-rebalance by
     /// stealing entries idle for at least this long from peer
@@ -260,6 +283,11 @@ pub struct RedisFrontier {
 
     /// Round-robin cursor for `claim` across owned shards.
     claim_cursor: AtomicUsize,
+
+    /// Best-effort in-flight count for metrics/operability. Increments
+    /// on every successful claim; decrements on every ack/nack call.
+    /// Authoritative truth lives in Redis (`XPENDING`).
+    in_flight: AtomicUsize,
 }
 
 impl std::fmt::Debug for RedisFrontier {
@@ -267,9 +295,8 @@ impl std::fmt::Debug for RedisFrontier {
         f.debug_struct("RedisFrontier")
             .field("run_id", &self.keys.run_id())
             .field("owned_shards", &self.owned_shards)
-            .field("consumer_base", &self.consumer_base)
             .field("autoclaim_idle", &self.autoclaim_idle)
-            .field("pending_claims", &self.claims.len())
+            .field("in_flight", &self.in_flight.load(Ordering::Relaxed))
             .finish()
     }
 }
@@ -282,10 +309,11 @@ impl RedisFrontier {
     /// 1. Validates each owned shard against `sharding_policy.shard_count()`.
     /// 2. Ensures the consumer group exists for each owned shard's
     ///    queue stream (idempotent: `BUSYGROUP` is treated as success).
-    /// 3. Generates a unique consumer id for this instance.
     ///
-    /// Pool, ack semantics, and key naming are described on the
-    /// individual methods.
+    /// Worker identity is supplied per call (`claim`/`claim_batch`),
+    /// so a single `RedisFrontier` instance backs every worker in the
+    /// pod. Consumer names are derived from the caller's
+    /// [`WorkerIdentity`] and are stable across process restarts.
     pub async fn new(
         pool: Pool<RedisConnectionManager>,
         sharding_policy: Arc<dyn ShardingPolicy>,
@@ -309,14 +337,11 @@ impl RedisFrontier {
             }
         }
 
-        let consumer_base = cuid2::create_id();
-
         // Ensure consumer group exists for each owned shard.
         ensure_consumer_groups(&pool, &keys, &owned_shards).await?;
 
         info!(
             run_id = keys.run_id(),
-            consumer_base = %consumer_base,
             owned_shards = ?owned_shards,
             "RedisFrontier ready",
         );
@@ -326,27 +351,20 @@ impl RedisFrontier {
             keys,
             sharding_policy,
             owned_shards,
-            consumer_base,
-            claims: Arc::new(PendingClaims::new()),
             autoclaim_idle: DEFAULT_AUTOCLAIM_IDLE,
             max_queue_depth: DEFAULT_MAX_QUEUE_DEPTH,
             claim_cursor: AtomicUsize::new(0),
+            in_flight: AtomicUsize::new(0),
         })
     }
 
-    /// Per-task Redis Streams consumer name. Each worker is its own
-    /// tokio task; suffixing the task id makes every worker a distinct
-    /// consumer with a private PEL.
-    fn consumer_name(&self) -> String {
-        match tokio::task::try_id() {
-            Some(id) => format!("{}-{:?}", self.consumer_base, id),
-            // Outside a tokio runtime (shouldn't happen on the worker
-            // hot path) we fall back to the base name. Better than
-            // panicking; the at-least-once-delivery guarantee
-            // degrades to the shared-consumer behavior in this corner
-            // (peer workers can read this PEL via id "0").
-            None => self.consumer_base.clone(),
-        }
+    /// Render `identity` as the Redis Streams consumer name. Stable
+    /// across process restarts: the same `(pod_ordinal, worker_index)`
+    /// pair always yields the same string, so tier-1 PEL replay
+    /// reattaches to the worker's own previous in-flight entries
+    /// without waiting for the `XAUTOCLAIM` idle threshold.
+    fn consumer_name(identity: &WorkerIdentity) -> String {
+        identity.to_string()
     }
 
     /// Override the per-shard `XADD MAXLEN ~ N` cap. Pass `0` to
@@ -365,10 +383,13 @@ impl RedisFrontier {
         self
     }
 
-    /// Number of URLs currently in-flight on this frontier instance.
-    /// Useful as a metric and for shutdown drain checks.
+    /// Best-effort count of URLs currently in-flight on this frontier
+    /// instance: incremented on every successful claim and decremented
+    /// on every ack/nack call. Useful for shutdown drain checks and
+    /// local sanity assertions in tests; the authoritative truth lives
+    /// in Redis (`XPENDING <queue> <group>`).
     pub fn claim_count(&self) -> usize {
-        self.claims.len()
+        self.in_flight.load(Ordering::Relaxed)
     }
 
     /// Snapshot of the bb8 pool's state (size, idle, in-use).
@@ -411,20 +432,21 @@ impl RedisFrontier {
         Ok(())
     }
 
-    /// Reassign stranded entries (idle > `autoclaim_idle`) from
-    /// other consumers to this one. Returns the total count reclaimed
-    /// across all owned shards.
+    /// Reassign stranded entries (idle > `autoclaim_idle`) from peer
+    /// consumers to `target`. Returns the total count reclaimed across
+    /// all owned shards.
     ///
-    /// The runtime should drive this on a regular cadence (e.g. every
-    /// 30s) and once during graceful shutdown to drain pending work
-    /// from a dying peer. Reclaimed entries are inserted into this
-    /// frontier's claims map and become visible on the next `claim`
-    /// (which reads the consumer's PEL first).
-    #[tracing::instrument(skip(self))]
-    pub async fn reclaim_stranded(&self) -> Result<usize> {
+    /// Reclaimed entries land in `target`'s PEL on the Redis side and
+    /// surface on `target`'s next `claim()` call via tier-1
+    /// (`XREADGROUP id "0"`). Callers commonly invoke this on
+    /// graceful-shutdown of a peer pod or on a periodic maintenance
+    /// cadence; on the hot path `claim()` already does a single-entry
+    /// `XAUTOCLAIM` per shard via tier-3.
+    #[tracing::instrument(skip(self), fields(target = %target))]
+    pub async fn reclaim_stranded(&self, target: &WorkerIdentity) -> Result<usize> {
         let mut total = 0_usize;
         let group = self.keys.consumer_group();
-        let consumer = self.consumer_name();
+        let consumer = Self::consumer_name(target);
 
         for &shard in &self.owned_shards {
             let queue_key = self.keys.queue(shard);
@@ -452,11 +474,7 @@ impl RedisFrontier {
                     deleted = reply.deleted_ids.len(),
                     "xautoclaim reclaimed stranded entries",
                 );
-                for stream_id in reply.claimed {
-                    let entry = decode_stream_entry(&stream_id)?;
-                    self.claims
-                        .record(entry.url.clone(), shard, stream_id.id.clone());
-                }
+                self.in_flight.fetch_add(reclaimed, Ordering::Relaxed);
             }
             total += reclaimed;
         }
@@ -606,14 +624,17 @@ impl RedisFrontier {
         unreachable!("loop returns or errors on every iteration")
     }
 
-    /// Try to steal one stranded entry from a peer consumer on `shard`.
-    /// Calls `XAUTOCLAIM` with this worker's consumer name as the
-    /// target; entries idle for at least `autoclaim_idle` move into
-    /// this worker's PEL. Returns the first reclaimed entry (if any).
-    async fn reclaim_one(&self, shard: ShardKey) -> LocalResult<Option<(UrlEntry, StreamEntryId)>> {
+    /// Try to steal one stranded entry from a peer consumer on `shard`
+    /// into `identity`. Entries idle for at least `autoclaim_idle` move
+    /// into `identity`'s PEL. Returns the first reclaimed entry (if any).
+    async fn reclaim_one(
+        &self,
+        shard: ShardKey,
+        identity: &WorkerIdentity,
+    ) -> LocalResult<Option<(UrlEntry, StreamEntryId)>> {
         let queue_key = self.keys.queue(shard);
         let group = self.keys.consumer_group();
-        let consumer = self.consumer_name();
+        let consumer = Self::consumer_name(identity);
         let mut conn = self.checkout().await?;
 
         let reply: StreamAutoClaimReply = conn
@@ -638,15 +659,20 @@ impl RedisFrontier {
         Ok(Some((entry, entry_id)))
     }
 
-    async fn claim_from(&self, shard: ShardKey) -> LocalResult<Option<(UrlEntry, StreamEntryId)>> {
+    async fn claim_from(
+        &self,
+        shard: ShardKey,
+        identity: &WorkerIdentity,
+    ) -> LocalResult<Option<(UrlEntry, StreamEntryId)>> {
         let queue_key = self.keys.queue(shard);
         let group = self.keys.consumer_group();
-        let consumer = self.consumer_name();
+        let consumer = Self::consumer_name(identity);
 
         // Step 1: this worker's own PEL (id "0"). Picks up entries
         // we previously claimed but haven't acked (e.g. after a
         // process restart, or because we already nacked them and
-        // are retrying).
+        // are retrying). Stable consumer names mean restart finds the
+        // PEL immediately rather than waiting for XAUTOCLAIM idle.
         let pel = self.read_one(&queue_key, group, &consumer, "0").await?;
         if let Some((entry, id)) = first_entry(&pel)? {
             return Ok(Some((entry, id)));
@@ -662,7 +688,7 @@ impl RedisFrontier {
         // stranded entry from a peer consumer (`autoclaim_idle` is
         // the safety threshold; healthy workers ack within ms, so
         // we don't snatch in-flight entries from them in production).
-        self.reclaim_one(shard).await
+        self.reclaim_one(shard, identity).await
     }
 
     fn record_claim_outcome(&self, shard: ShardKey, outcome: &'static str) {
@@ -706,22 +732,23 @@ impl Frontier for RedisFrontier {
         Ok(result?)
     }
 
-    #[tracing::instrument(skip(self))]
-    async fn claim(&self) -> Result<Option<UrlEntry>> {
+    #[tracing::instrument(skip(self), fields(identity = %identity))]
+    async fn claim(&self, identity: &WorkerIdentity) -> Result<Option<ClaimedMessage>> {
         let n = self.owned_shards.len();
         if n == 0 {
             return Ok(None);
         }
         let started_at = std::time::Instant::now();
         let start = self.claim_cursor.fetch_add(1, Ordering::Relaxed) % n;
-        let mut result: Result<Option<UrlEntry>> = Ok(None);
+        let mut result: Result<Option<ClaimedMessage>> = Ok(None);
         for offset in 0..n {
             let shard = self.owned_shards[(start + offset) % n];
-            match self.claim_from(shard).await {
+            match self.claim_from(shard, identity).await {
                 Ok(Some((entry, entry_id))) => {
                     self.record_claim_outcome(shard, crate::metrics::OUTCOME_CLAIMED);
-                    self.claims.record(entry.url.clone(), shard, entry_id);
-                    result = Ok(Some(entry));
+                    self.in_flight.fetch_add(1, Ordering::Relaxed);
+                    let attempt_id = encode_attempt(shard, &entry_id);
+                    result = Ok(Some(ClaimedMessage { entry, attempt_id }));
                     break;
                 }
                 Ok(None) => {
@@ -742,8 +769,12 @@ impl Frontier for RedisFrontier {
         result
     }
 
-    #[tracing::instrument(skip(self), fields(max))]
-    async fn claim_batch(&self, max: usize) -> Result<Vec<UrlEntry>> {
+    #[tracing::instrument(skip(self), fields(identity = %identity, max))]
+    async fn claim_batch(
+        &self,
+        identity: &WorkerIdentity,
+        max: usize,
+    ) -> Result<Vec<ClaimedMessage>> {
         let mut out = Vec::with_capacity(max.min(64));
         let n = self.owned_shards.len();
         if n == 0 || max == 0 {
@@ -758,10 +789,11 @@ impl Frontier for RedisFrontier {
         for offset in 0..n {
             let shard = self.owned_shards[(start + offset) % n];
             while out.len() < max {
-                match self.claim_from(shard).await? {
+                match self.claim_from(shard, identity).await? {
                     Some((entry, entry_id)) => {
-                        self.claims.record(entry.url.clone(), shard, entry_id);
-                        out.push(entry);
+                        self.in_flight.fetch_add(1, Ordering::Relaxed);
+                        let attempt_id = encode_attempt(shard, &entry_id);
+                        out.push(ClaimedMessage { entry, attempt_id });
                     }
                     None => break,
                 }
@@ -779,10 +811,19 @@ impl Frontier for RedisFrontier {
         Ok(depths.values().sum())
     }
 
-    #[tracing::instrument(skip(self), fields(url = %url))]
-    async fn ack(&self, url: &CanonicalUrl) -> Result<()> {
+    #[tracing::instrument(skip(self), fields(attempt = %attempt))]
+    async fn ack(&self, attempt: &AttemptId) -> Result<()> {
         let started_at = std::time::Instant::now();
-        let result = self.ack_inner(url).await;
+        let result = self.ack_inner(attempt).await;
+        if result.is_ok() {
+            // Saturating decrement: the counter is best-effort metrics,
+            // and a duplicate ack on an already-acked attempt should
+            // not underflow.
+            let prev = self.in_flight.load(Ordering::Relaxed);
+            if prev > 0 {
+                self.in_flight.fetch_sub(1, Ordering::Relaxed);
+            }
+        }
         metrics::histogram!(
             crate::metrics::FRONTIER_CALL_SECONDS,
             "op" => crate::metrics::OP_ACK,
@@ -791,21 +832,19 @@ impl Frontier for RedisFrontier {
         result
     }
 
-    #[tracing::instrument(skip(self), fields(url = %url))]
-    async fn nack(&self, url: &CanonicalUrl) -> Result<()> {
+    #[tracing::instrument(skip(self), fields(attempt = %attempt))]
+    async fn nack(&self, attempt: &AttemptId) -> Result<()> {
         let started_at = std::time::Instant::now();
-        // Drop our local tracking but leave the entry in our PEL on
-        // Redis. On the next claim, `read_one(... id="0")` will
-        // surface it again to this same worker (PEL re-read). Other
-        // workers can steal it via `reclaim_one` once idle past
-        // `autoclaim_idle`. Keeping nack synchronous and side-effect-
-        // light avoids races where a hot loop re-claims an entry
-        // before the original handler has fully released it.
-        if let Some(record) = self.claims.take(url) {
-            metrics::histogram!(crate::metrics::FRONTIER_IN_FLIGHT_SECONDS)
-                .record(record.claimed_at.elapsed().as_secs_f64());
+        // Leave the entry in this worker's PEL on Redis. On the next
+        // claim, tier-1 (`XREADGROUP id "0"`) surfaces it again. Peer
+        // workers can steal via `reclaim_one` once idle past
+        // `autoclaim_idle`. Nack is local-only on the Redis side; we
+        // just drop our in-flight tracking.
+        let prev = self.in_flight.load(Ordering::Relaxed);
+        if prev > 0 {
+            self.in_flight.fetch_sub(1, Ordering::Relaxed);
         }
-        debug!(url = url.as_str(), "nack");
+        debug!(attempt = %attempt, "nack");
         metrics::histogram!(
             crate::metrics::FRONTIER_CALL_SECONDS,
             "op" => crate::metrics::OP_NACK,
@@ -822,31 +861,20 @@ impl Frontier for RedisFrontier {
 
 impl RedisFrontier {
     /// Inner ack body, wrapped by the trait method with timing.
-    async fn ack_inner(&self, url: &CanonicalUrl) -> Result<()> {
-        let Some(ClaimRecord {
-            shard,
-            entry_id,
-            claimed_at,
-        }) = self.claims.take(url)
-        else {
-            // Not in-flight: idempotent no-op.
-            debug!(url = url.as_str(), "ack: url not in claims map; no-op");
-            return Ok(());
-        };
-        metrics::histogram!(crate::metrics::FRONTIER_IN_FLIGHT_SECONDS)
-            .record(claimed_at.elapsed().as_secs_f64());
+    async fn ack_inner(&self, attempt: &AttemptId) -> Result<()> {
+        let (shard, entry_id) = decode_attempt(attempt).map_err(Error::from)?;
         let queue_key = self.keys.queue(shard);
         let group = self.keys.consumer_group();
         let mut conn = self.checkout().await.map_err(Error::from)?;
         let _: i64 = redis::cmd("XACK")
             .arg(&queue_key)
             .arg(group)
-            .arg(&entry_id)
+            .arg(entry_id)
             .query_async(&mut *conn)
             .await
             .map_err(RedisFrontierError::from)
             .map_err(Error::from)?;
-        debug!(shard, url = url.as_str(), entry_id, "ack");
+        debug!(shard, attempt = %attempt, "ack");
         Ok(())
     }
 }

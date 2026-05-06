@@ -16,7 +16,7 @@ use std::time::SystemTime;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use crawlrs_core::{
-    CanonicalUrl, Error, FailureKind, MetadataStore, Result, UrlMetadata, UrlStatus,
+    AttemptId, CanonicalUrl, Error, FailureKind, MetadataStore, Result, UrlMetadata, UrlStatus,
 };
 use serde_json::json;
 use sqlx::postgres::{PgPool, PgPoolOptions};
@@ -171,16 +171,17 @@ impl MetadataStore for PostgresMetadataStore {
             .await
             .map_err(PostgresMetadataError::from)?;
         let id = upsert_attempting(&mut tx, url, run_id, depth as i32).await?;
-        insert_history(&mut tx, id, run_id, EVENT_ATTEMPTED, None).await?;
+        insert_history(&mut tx, id, run_id, EVENT_ATTEMPTED, None, None).await?;
         tx.commit().await.map_err(PostgresMetadataError::from)?;
         debug!(url = url.as_str(), "mark_attempting");
         Ok(())
     }
 
-    #[tracing::instrument(skip(self), fields(url = %url, blob_path = %blob_path))]
+    #[tracing::instrument(skip(self), fields(url = %url, attempt = %attempt_id, blob_path = %blob_path))]
     async fn mark_succeeded(
         &self,
         url: &CanonicalUrl,
+        attempt_id: &AttemptId,
         blob_path: &str,
         content_hash: u64,
     ) -> Result<()> {
@@ -211,7 +212,15 @@ impl MetadataStore for PostgresMetadataStore {
         let (id, last_run_id) =
             row.ok_or_else(|| PostgresMetadataError::Missing(url.as_str().to_string()))?;
         let detail = json!({ "blob_path": blob_path });
-        insert_history(&mut tx, id, &last_run_id, EVENT_SUCCEEDED, Some(detail)).await?;
+        insert_history(
+            &mut tx,
+            id,
+            &last_run_id,
+            EVENT_SUCCEEDED,
+            Some(detail),
+            Some(attempt_id.as_str()),
+        )
+        .await?;
         tx.commit().await.map_err(PostgresMetadataError::from)?;
         debug!(url = url.as_str(), "mark_succeeded");
         Ok(())
@@ -242,7 +251,7 @@ impl MetadataStore for PostgresMetadataStore {
         let (id, last_run_id, retry_count) =
             row.ok_or_else(|| PostgresMetadataError::Missing(url.as_str().to_string()))?;
         let detail = json!({ "kind": failure_kind_str(kind) });
-        insert_history(&mut tx, id, &last_run_id, EVENT_FAILED, Some(detail)).await?;
+        insert_history(&mut tx, id, &last_run_id, EVENT_FAILED, Some(detail), None).await?;
         tx.commit().await.map_err(PostgresMetadataError::from)?;
         debug!(url = url.as_str(), retry_count, "mark_failed");
         Ok(retry_count as u32)
@@ -278,6 +287,7 @@ impl MetadataStore for PostgresMetadataStore {
             &last_run_id,
             EVENT_PERMANENTLY_FAILED,
             Some(detail),
+            None,
         )
         .await?;
         tx.commit().await.map_err(PostgresMetadataError::from)?;
@@ -325,15 +335,23 @@ async fn insert_history(
     run_id: &str,
     event: &str,
     detail: Option<serde_json::Value>,
+    attempt_id: Option<&str>,
 ) -> LocalResult<()> {
+    // ON CONFLICT (url_id, attempt_id) DO NOTHING: redelivery of the
+    // same Frontier attempt (same stream entry id) is idempotent. The
+    // unique constraint allows multiple NULL attempt_id rows so legacy
+    // events without correlation tokens (e.g. the `attempted` event)
+    // continue to work.
     sqlx::query(
-        "INSERT INTO url_history (url_id, run_id, event, detail)
-         VALUES ($1, $2, $3, $4)",
+        "INSERT INTO url_history (url_id, run_id, event, detail, attempt_id)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (url_id, attempt_id) DO NOTHING",
     )
     .bind(url_id)
     .bind(run_id)
     .bind(event)
     .bind(detail)
+    .bind(attempt_id)
     .execute(&mut **tx)
     .await?;
     Ok(())

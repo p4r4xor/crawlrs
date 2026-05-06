@@ -20,7 +20,7 @@ use crawlrs_bin::config::{
     RuntimeConfig, ServerConfig, ShardingConfig, StoreBackend, StoreConfig,
 };
 use crawlrs_bin::factory;
-use crawlrs_core::{CanonicalUrl, Frontier, UrlEntry};
+use crawlrs_core::{CanonicalUrl, Frontier, UrlEntry, WorkerIdentity};
 use testcontainers::ImageExt;
 use testcontainers::core::{CmdWaitFor, ExecCommand};
 use testcontainers::runners::AsyncRunner;
@@ -112,15 +112,16 @@ async fn factory_builds_against_real_backends() {
         .expect("submit_batch");
     assert_eq!(n, 1, "exactly one URL should be newly inserted");
 
+    let identity = WorkerIdentity::new(0, 0);
     let claimed = built
         .frontier
-        .claim()
+        .claim(&identity)
         .await
         .expect("claim")
         .expect("frontier should yield the URL we just submitted");
-    assert_eq!(claimed.url, url);
+    assert_eq!(claimed.entry.url, url);
 
-    built.frontier.ack(&url).await.expect("ack");
+    built.frontier.ack(&claimed.attempt_id).await.expect("ack");
 
     // Smoke a Postgres write through the metadata layer; if migrations
     // didn't apply, this would fail with a missing-table error.

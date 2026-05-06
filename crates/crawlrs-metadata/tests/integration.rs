@@ -4,7 +4,7 @@
 //! URLs so they could share a container in the future without
 //! cross-test contamination.
 
-use crawlrs_core::{CanonicalUrl, FailureKind, MetadataStore, UrlStatus};
+use crawlrs_core::{AttemptId, CanonicalUrl, FailureKind, MetadataStore, UrlStatus};
 use crawlrs_metadata::PostgresMetadataStore;
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
@@ -126,7 +126,12 @@ async fn mark_succeeded_records_blob_and_content_hash() {
     store.mark_attempting(&url, "run-1", 0).await.unwrap();
 
     store
-        .mark_succeeded(&url, "s3://bucket/run-1/0.parquet", 0xabcd_1234_5678_9abc)
+        .mark_succeeded(
+            &url,
+            &AttemptId::new("attempt-1"),
+            "s3://bucket/run-1/0.parquet",
+            0xabcd_1234_5678_9abc,
+        )
         .await
         .unwrap();
 
@@ -175,7 +180,10 @@ async fn mark_succeeded_resets_retry_count() {
     store.mark_failed(&url, FailureKind::Timeout).await.unwrap();
     store.mark_failed(&url, FailureKind::Timeout).await.unwrap();
 
-    store.mark_succeeded(&url, "/data/0.warc", 1).await.unwrap();
+    store
+        .mark_succeeded(&url, &AttemptId::new("attempt-1"), "/data/0.warc", 1)
+        .await
+        .unwrap();
 
     let m = store.get(&url).await.unwrap().unwrap();
     assert_eq!(m.status, UrlStatus::Succeeded);
@@ -215,7 +223,12 @@ async fn cross_run_dedup_lookup_works() {
     // Run 1 finishes.
     store.mark_attempting(&url, "run-1", 0).await.unwrap();
     store
-        .mark_succeeded(&url, "/data/run-1.parquet", 42)
+        .mark_succeeded(
+            &url,
+            &AttemptId::new("attempt-1"),
+            "/data/run-1.parquet",
+            42,
+        )
         .await
         .unwrap();
 
@@ -235,7 +248,10 @@ async fn history_records_each_transition() {
     store.mark_attempting(&url, "run-1", 0).await.unwrap();
     store.mark_failed(&url, FailureKind::Timeout).await.unwrap();
     store.mark_failed(&url, FailureKind::Timeout).await.unwrap();
-    store.mark_succeeded(&url, "/data/0.warc", 7).await.unwrap();
+    store
+        .mark_succeeded(&url, &AttemptId::new("attempt-1"), "/data/0.warc", 7)
+        .await
+        .unwrap();
 
     let count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM url_history h

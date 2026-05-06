@@ -182,8 +182,25 @@ fn build_runtime_config(config: &CrawlrsConfig) -> CrawlerConfig {
         max_depth: config.runtime.max_depth,
         max_retries: config.runtime.max_retries,
         cross_run_dedup: config.runtime.cross_run_dedup,
+        pod_ordinal: pod_ordinal_from_env(),
         ..CrawlerConfig::default()
     }
+}
+
+/// Extract the StatefulSet pod ordinal from `HOSTNAME` (e.g.
+/// `crawlrs-2` -> 2). Falls back to 0 outside a StatefulSet (single-pod
+/// deployments, local dev, factory smoke tests).
+///
+/// The ordinal is the load-bearing input to [`crawlrs_core::WorkerIdentity`]
+/// at worker spawn time; stable identity is what makes Redis Streams
+/// tier-1 PEL replay reattach a restarted worker to its own previously
+/// in-flight entries without waiting for `XAUTOCLAIM` idle.
+fn pod_ordinal_from_env() -> u32 {
+    let hostname = std::env::var("HOSTNAME").unwrap_or_default();
+    hostname
+        .rsplit_once('-')
+        .and_then(|(_, suffix)| suffix.parse().ok())
+        .unwrap_or(0)
 }
 
 async fn build_store(config: &CrawlrsConfig) -> Result<Arc<dyn crawlrs_core::Store>> {

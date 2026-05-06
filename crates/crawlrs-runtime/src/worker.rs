@@ -16,9 +16,9 @@
 use std::sync::Arc;
 
 use crawlrs_core::{
-    CanonicalUrl, FailureKind, FetchRequest, FetchResponse, Fetcher, Frontier, MetadataStore,
-    ParsedDocument, Parser, PoliteDecision, Politeness, ShardingPolicy, SiteAdapterRegistry, Store,
-    StoreRecord, UrlEntry, UrlStatus, content_hash,
+    AttemptId, CanonicalUrl, ClaimedMessage, FailureKind, FetchRequest, FetchResponse, Fetcher,
+    Frontier, MetadataStore, ParsedDocument, Parser, PoliteDecision, Politeness, ShardingPolicy,
+    SiteAdapterRegistry, Store, StoreRecord, UrlEntry, UrlStatus, WorkerIdentity, content_hash,
 };
 use tokio::sync::watch;
 use tokio::time::Instant as TokioInstant;
@@ -55,14 +55,20 @@ pub struct WorkerDeps {
 /// Drive one worker until shutdown. Loops:
 ///   1. Sleep until the soonest host-wake-time the politeness layer
 ///      knows about, or a brief poll interval if no hosts are tracked.
-///   2. Claim a URL. If the queue is empty, sleep poll interval.
-///   3. Process the URL via [`UrlPipeline`].
+///   2. Claim a URL on behalf of `identity`. If the queue is empty,
+///      sleep poll interval.
+///   3. Process the [`ClaimedMessage`] via [`UrlPipeline`].
+///
+/// `identity` is constant for the lifetime of this task. Frontier impls
+/// MAY use it as the stable consumer name (e.g. Redis Streams), so the
+/// `(pod_ordinal, worker_index)` pair MUST be unique within the cluster
+/// and stable across process restarts.
 pub async fn worker_loop(
-    worker_id: usize,
+    identity: WorkerIdentity,
     deps: Arc<WorkerDeps>,
     mut shutdown: watch::Receiver<bool>,
 ) {
-    debug!(worker_id, "worker_loop started");
+    debug!(identity = %identity, "worker_loop started");
     // Successive empty-claim attempts back off exponentially up to
     // `max_idle_sleep`. Resets on any successful claim. Without this
     // a 100-worker idle pool burns ~200 RPS on Redis just polling.
@@ -73,10 +79,10 @@ pub async fn worker_loop(
             break;
         }
 
-        let entry = match deps.frontier.claim().await {
-            Ok(Some(e)) => {
+        let claimed = match deps.frontier.claim(&identity).await {
+            Ok(Some(c)) => {
                 empty_backoff = deps.config.empty_queue_poll;
-                e
+                c
             }
             Ok(None) => {
                 tokio::select! {
@@ -87,15 +93,15 @@ pub async fn worker_loop(
                 continue;
             }
             Err(e) => {
-                warn!(worker_id, error = %e, "frontier.claim failed");
+                warn!(identity = %identity, error = %e, "frontier.claim failed");
                 tokio::time::sleep(deps.config.error_backoff).await;
                 continue;
             }
         };
 
-        process_url(worker_id, &deps, entry).await;
+        process_url(identity, &deps, claimed).await;
     }
-    debug!(worker_id, "worker_loop exiting");
+    debug!(identity = %identity, "worker_loop exiting");
 }
 
 /// Sleep up to the next-ready instant the politeness layer reports.
@@ -132,17 +138,21 @@ async fn sleep_until_ready(deps: &Arc<WorkerDeps>, shutdown: &mut watch::Receive
 }
 
 /// Trace boundary for one URL's pipeline. Wraps [`UrlPipeline::run`]
-/// so the worker_id is in scope for every span the pipeline emits,
-/// and so the per-URL metric envelope (workers_active gauge +
+/// so the worker identity is in scope for every span the pipeline
+/// emits, and so the per-URL metric envelope (workers_active gauge +
 /// pipeline_seconds histogram) lives in one place.
-#[tracing::instrument(skip(deps), fields(worker_id, url = %entry.url, depth = entry.depth))]
-async fn process_url(_worker_id: usize, deps: &Arc<WorkerDeps>, entry: UrlEntry) {
+#[tracing::instrument(
+    skip(deps, claimed),
+    fields(identity = %identity, url = %claimed.entry.url, depth = claimed.entry.depth),
+)]
+async fn process_url(identity: WorkerIdentity, deps: &Arc<WorkerDeps>, claimed: ClaimedMessage) {
     let started_at = tokio::time::Instant::now();
     metrics::gauge!(crate::metrics::WORKERS_ACTIVE).increment(1.0);
-    UrlPipeline::new(Arc::clone(deps), entry).run().await;
+    UrlPipeline::new(Arc::clone(deps), claimed).run().await;
     metrics::gauge!(crate::metrics::WORKERS_ACTIVE).decrement(1.0);
     metrics::histogram!(crate::metrics::PIPELINE_SECONDS)
         .record(started_at.elapsed().as_secs_f64());
+    let _ = identity; // referenced via tracing fields
 }
 
 // ---------------------------------------------------------------------------
@@ -165,15 +175,24 @@ async fn process_url(_worker_id: usize, deps: &Arc<WorkerDeps>, entry: UrlEntry)
 struct UrlPipeline {
     deps: Arc<WorkerDeps>,
     entry: UrlEntry,
+    attempt_id: AttemptId,
 }
 
 impl UrlPipeline {
-    fn new(deps: Arc<WorkerDeps>, entry: UrlEntry) -> Self {
-        Self { deps, entry }
+    fn new(deps: Arc<WorkerDeps>, claimed: ClaimedMessage) -> Self {
+        Self {
+            deps,
+            entry: claimed.entry,
+            attempt_id: claimed.attempt_id,
+        }
     }
 
     fn url(&self) -> &CanonicalUrl {
         &self.entry.url
+    }
+
+    fn attempt(&self) -> &AttemptId {
+        &self.attempt_id
     }
 
     /// Top-level orchestration. Reads as a checklist: each step
@@ -221,7 +240,7 @@ impl UrlPipeline {
                     "reason" => crate::metrics::SKIP_ALREADY_SUCCEEDED,
                 )
                 .increment(1);
-                let _ = self.deps.frontier.ack(self.url()).await;
+                let _ = self.deps.frontier.ack(self.attempt()).await;
                 true
             }
             UrlStatus::PermanentlyFailed => {
@@ -231,7 +250,7 @@ impl UrlPipeline {
                     "reason" => crate::metrics::SKIP_ALREADY_DLQ,
                 )
                 .increment(1);
-                let _ = self.deps.frontier.ack(self.url()).await;
+                let _ = self.deps.frontier.ack(self.attempt()).await;
                 true
             }
             _ => false,
@@ -252,17 +271,17 @@ impl UrlPipeline {
                     "reason" => crate::metrics::SKIP_POLITENESS_DISALLOWED,
                 )
                 .increment(1);
-                let _ = self.deps.frontier.ack(self.url()).await;
+                let _ = self.deps.frontier.ack(self.attempt()).await;
                 false
             }
             Ok(PoliteDecision::Delay(d)) => {
                 debug!(url = %self.url(), delay_ms = d.as_millis() as u64, "politeness delay; nacking");
-                let _ = self.deps.frontier.nack(self.url()).await;
+                let _ = self.deps.frontier.nack(self.attempt()).await;
                 false
             }
             Err(e) => {
                 warn!(url = %self.url(), error = %e, "politeness.check failed");
-                let _ = self.deps.frontier.nack(self.url()).await;
+                let _ = self.deps.frontier.nack(self.attempt()).await;
                 false
             }
         }
@@ -364,7 +383,7 @@ impl UrlPipeline {
             .metadata
             .mark_permanently_failed(self.url(), &dlq_reason)
             .await;
-        let _ = self.deps.frontier.ack(self.url()).await;
+        let _ = self.deps.frontier.ack(self.attempt()).await;
     }
 
     /// Filter outbound links by scheme + max-depth, then submit the
@@ -432,7 +451,7 @@ impl UrlPipeline {
             Ok(p) => p,
             Err(e) => {
                 warn!(url = %self.url(), error = %e, "store write failed; acking anyway to avoid hot loop");
-                let _ = self.deps.frontier.ack(self.url()).await;
+                let _ = self.deps.frontier.ack(self.attempt()).await;
                 return;
             }
         };
@@ -440,13 +459,13 @@ impl UrlPipeline {
         if let Err(e) = self
             .deps
             .metadata
-            .mark_succeeded(self.url(), &blob_path, body_hash)
+            .mark_succeeded(self.url(), self.attempt(), &blob_path, body_hash)
             .await
         {
             warn!(url = %self.url(), error = %e, "metadata.mark_succeeded failed; acking anyway");
         }
 
-        if let Err(e) = self.deps.frontier.ack(self.url()).await {
+        if let Err(e) = self.deps.frontier.ack(self.attempt()).await {
             warn!(url = %self.url(), error = %e, "frontier ack failed");
         }
 
@@ -467,7 +486,7 @@ impl UrlPipeline {
             Ok(c) => c,
             Err(e) => {
                 warn!(url = %self.url(), error = %e, "metadata.mark_failed failed; nacking conservatively");
-                let _ = self.deps.frontier.nack(self.url()).await;
+                let _ = self.deps.frontier.nack(self.attempt()).await;
                 return;
             }
         };
@@ -480,10 +499,10 @@ impl UrlPipeline {
                 .metadata
                 .mark_permanently_failed(self.url(), &dlq_reason)
                 .await;
-            let _ = self.deps.frontier.ack(self.url()).await;
+            let _ = self.deps.frontier.ack(self.attempt()).await;
         } else {
             debug!(url = %self.url(), retry_count = new_count, "retry budget remaining; nacking");
-            let _ = self.deps.frontier.nack(self.url()).await;
+            let _ = self.deps.frontier.nack(self.attempt()).await;
         }
     }
 }

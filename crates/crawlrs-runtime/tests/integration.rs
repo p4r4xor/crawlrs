@@ -14,8 +14,8 @@ use std::time::Duration;
 use bb8::Pool;
 use bb8_redis::RedisConnectionManager;
 use crawlrs_core::{
-    CanonicalUrl, MetadataStore, ShardingPolicy, SingleShardPolicy, SiteAdapterRegistry, UrlEntry,
-    UrlStatus,
+    AttemptId, CanonicalUrl, MetadataStore, ShardingPolicy, SingleShardPolicy, SiteAdapterRegistry,
+    UrlEntry, UrlStatus,
 };
 use crawlrs_fakes::{FakeFetcher, InMemoryMetadataStore, InMemoryStore};
 use crawlrs_frontier_redis::RedisFrontier;
@@ -136,6 +136,7 @@ fn fast_config() -> CrawlerConfig {
         error_backoff: Duration::from_millis(200),
         max_retries: 3,
         cross_run_dedup: true,
+        pod_ordinal: 0,
     }
 }
 
@@ -424,7 +425,12 @@ async fn cross_run_dedup_skips_previously_succeeded_url() {
         .await
         .unwrap();
     metadata
-        .mark_succeeded(&already_done, "memory://prior", 0xdead_beef)
+        .mark_succeeded(
+            &already_done,
+            &AttemptId::new("prior-attempt"),
+            "memory://prior",
+            0xdead_beef,
+        )
         .await
         .unwrap();
 

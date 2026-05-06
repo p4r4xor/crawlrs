@@ -117,6 +117,37 @@ profile](https://kubernetes.io/docs/concepts/security/pod-security-standards/#re
 Override `podSecurityContext` / `containerSecurityContext` if your
 base image needs different UIDs.
 
+## Required S3 bucket lifecycle rule (production)
+
+When `store.backend.kind=s3`, the bucket MUST have an
+`AbortIncompleteMultipartUpload` lifecycle rule configured. Without it,
+multipart uploads abandoned by a crashed worker (e.g. a pod OOM
+mid-rotation of a 128 MB Parquet file) accumulate as billable storage
+parts that the application has no hook to clean up.
+
+The rule is one-time bucket configuration, set out-of-band before the
+first crawl runs. AWS CLI form:
+
+```bash
+aws s3api put-bucket-lifecycle-configuration \
+  --bucket "$BUCKET" \
+  --lifecycle-configuration '{
+    "Rules": [{
+      "ID": "abort-incomplete-multipart",
+      "Status": "Enabled",
+      "Filter": {"Prefix": ""},
+      "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": 1}
+    }]
+  }'
+```
+
+Equivalent settings exist on every S3-compatible store (MinIO, GCS via
+the XML API, Cloudflare R2, etc.); consult your provider's docs.
+
+The 1-day window is generous: completed multipart uploads are atomic,
+so no in-flight upload that's still progressing will be aborted.
+Anything sitting incomplete for a day is by definition orphaned.
+
 ## Persistence (local store backend)
 
 When `store.backend.kind=local` the chart provisions an `emptyDir`

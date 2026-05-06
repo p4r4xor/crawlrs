@@ -11,14 +11,12 @@
 //! Key naming, run-id, and ACK semantics are documented on the inherent
 //! methods.
 
-pub mod claims;
 pub mod codec;
 pub mod frontier;
 pub mod keys;
 pub mod metrics;
 pub mod pool;
 
-pub use claims::PendingClaims;
 pub use frontier::{RedisFrontier, RedisFrontierError};
 pub use keys::KeyPrefix;
 pub use pool::{PoolSizeError, validate_pool_size};
