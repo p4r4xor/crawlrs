@@ -28,7 +28,6 @@ use std::time::Duration;
 
 use crawlrs_core::WorkerIdentity;
 use tokio::sync::watch;
-use tokio::time::Instant;
 use tracing::{error, warn};
 
 use crate::worker::{WorkerDeps, worker_loop};
@@ -110,7 +109,7 @@ pub async fn supervise_worker(
             );
         }
 
-        match state.decide_restart(Instant::now()) {
+        match state.decide_restart(deps.clock.now_ms()) {
             RestartDecision::Restart(backoff) => {
                 metrics::counter!(
                     crate::metrics::WORKER_RESTARTS_TOTAL,
@@ -154,13 +153,18 @@ fn classify_exit(exit: &Result<(), tokio::task::JoinError>) -> &'static str {
 
 /// Restart-budget state. Pulled out of [`supervise_worker`] so it can
 /// be unit-tested without spawning real tasks or sleeping real time.
+///
+/// Time is carried as epoch-millis (the same unit `Clock::now_ms`
+/// returns) rather than `Instant`, so a test driving the supervisor
+/// with a `ManualClock` and a test driving the in-memory frontier
+/// with the same clock observe a consistent timeline.
 #[derive(Debug)]
 struct RestartState {
     policy: RestartPolicy,
     /// Restarts inside the current window. Reset to 0 once the
     /// last_restart age exceeds `policy.reset_window`.
     restart_count: u32,
-    last_restart: Option<Instant>,
+    last_restart_ms: Option<u64>,
 }
 
 impl RestartState {
@@ -168,18 +172,19 @@ impl RestartState {
         Self {
             policy,
             restart_count: 0,
-            last_restart: None,
+            last_restart_ms: None,
         }
     }
 
-    fn decide_restart(&mut self, now: Instant) -> RestartDecision {
+    fn decide_restart(&mut self, now_ms: u64) -> RestartDecision {
         // If the worker had been stable for at least `reset_window`,
         // consider this a fresh failure event and reset the counter
         // before applying the budget. Without this rule a worker that
         // panics rarely (once every few hours) would still eventually
         // exhaust the budget over its lifetime.
-        if let Some(last) = self.last_restart
-            && now.duration_since(last) > self.policy.reset_window
+        let reset_window_ms = self.policy.reset_window.as_millis() as u64;
+        if let Some(last_ms) = self.last_restart_ms
+            && now_ms.saturating_sub(last_ms) > reset_window_ms
         {
             self.restart_count = 0;
         }
@@ -189,7 +194,7 @@ impl RestartState {
         }
 
         self.restart_count += 1;
-        self.last_restart = Some(now);
+        self.last_restart_ms = Some(now_ms);
 
         // Exponential backoff capped at `max_backoff`. `2^(n-1)` so the
         // first restart has 1x base, the second 2x, etc. Use
@@ -233,36 +238,36 @@ mod tests {
     #[test]
     fn restart_decision_scales_backoff_exponentially_until_cap() {
         let mut state = RestartState::new(policy(10, 100, 1_000, 300));
-        let t0 = Instant::now();
+        let now = 1_000_000u64;
 
         // 1st restart: 100ms (base * 2^0)
         assert_eq!(
-            state.decide_restart(t0),
+            state.decide_restart(now),
             RestartDecision::Restart(Duration::from_millis(100)),
         );
         // 2nd: 200ms (base * 2^1)
         assert_eq!(
-            state.decide_restart(t0),
+            state.decide_restart(now),
             RestartDecision::Restart(Duration::from_millis(200)),
         );
         // 3rd: 400ms (base * 2^2)
         assert_eq!(
-            state.decide_restart(t0),
+            state.decide_restart(now),
             RestartDecision::Restart(Duration::from_millis(400)),
         );
         // 4th: 800ms (base * 2^3)
         assert_eq!(
-            state.decide_restart(t0),
+            state.decide_restart(now),
             RestartDecision::Restart(Duration::from_millis(800)),
         );
         // 5th: would be 1600ms but cap is 1000ms.
         assert_eq!(
-            state.decide_restart(t0),
+            state.decide_restart(now),
             RestartDecision::Restart(Duration::from_millis(1_000)),
         );
         // 6th: still capped.
         assert_eq!(
-            state.decide_restart(t0),
+            state.decide_restart(now),
             RestartDecision::Restart(Duration::from_millis(1_000)),
         );
     }
@@ -270,41 +275,42 @@ mod tests {
     #[test]
     fn restart_decision_gives_up_after_max_restarts() {
         let mut state = RestartState::new(policy(3, 100, 1_000, 300));
-        let t0 = Instant::now();
+        let now = 1_000_000u64;
         assert!(matches!(
-            state.decide_restart(t0),
+            state.decide_restart(now),
             RestartDecision::Restart(_)
         ));
         assert!(matches!(
-            state.decide_restart(t0),
+            state.decide_restart(now),
             RestartDecision::Restart(_)
         ));
         assert!(matches!(
-            state.decide_restart(t0),
+            state.decide_restart(now),
             RestartDecision::Restart(_)
         ));
-        assert_eq!(state.decide_restart(t0), RestartDecision::GiveUp);
+        assert_eq!(state.decide_restart(now), RestartDecision::GiveUp);
     }
 
     #[test]
     fn restart_counter_resets_after_reset_window() {
         let mut state = RestartState::new(policy(2, 100, 1_000, 60));
-        let t0 = Instant::now();
+        let now = 1_000_000u64;
 
         // Exhaust the budget.
         assert!(matches!(
-            state.decide_restart(t0),
+            state.decide_restart(now),
             RestartDecision::Restart(_)
         ));
         assert!(matches!(
-            state.decide_restart(t0),
+            state.decide_restart(now),
             RestartDecision::Restart(_)
         ));
-        assert_eq!(state.decide_restart(t0), RestartDecision::GiveUp);
+        assert_eq!(state.decide_restart(now), RestartDecision::GiveUp);
 
         // ... but a worker stable for longer than reset_window earns
-        // a fresh budget on its next failure.
-        let later = t0 + Duration::from_secs(120);
+        // a fresh budget on its next failure. reset_window=60s, so
+        // 120s later is well past it.
+        let later = now + 120_000;
         assert!(matches!(
             state.decide_restart(later),
             RestartDecision::Restart(_)

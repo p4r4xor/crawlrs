@@ -16,10 +16,10 @@
 use std::sync::Arc;
 
 use crawlrs_core::{
-    AttemptId, CanonicalUrl, ClaimedMessage, FailureKind, FetchRequest, FetchResponse, Fetcher,
-    Frontier, MetadataStore, ParsedDocument, Parser, PoliteDecision, Politeness, ShardingPolicy,
-    SiteAdapterRegistry, Store, StoreRecord, SuccessRecord, UrlEntry, UrlStatus, WorkerIdentity,
-    content_hash,
+    AttemptId, CanonicalUrl, ClaimedMessage, Clock, FailureKind, FetchRequest, FetchResponse,
+    Fetcher, Frontier, MetadataStore, ParsedDocument, Parser, PoliteDecision, Politeness,
+    ShardingPolicy, SiteAdapterRegistry, Store, StoreRecord, SuccessRecord, UrlEntry, UrlStatus,
+    WorkerIdentity, content_hash,
 };
 use tokio::sync::watch;
 use tokio::time::Instant as TokioInstant;
@@ -51,6 +51,10 @@ pub struct WorkerDeps {
     /// `HostHashShardPolicy::new(8)` unless the operator overrides
     /// via the builder.
     pub sharding_policy: Arc<dyn ShardingPolicy>,
+    /// Wall-clock source. The supervisor uses this for restart-budget
+    /// timing; tests can swap a `ManualClock` to drive restart-window
+    /// math deterministically. The runtime defaults to `SystemClock`.
+    pub clock: Arc<dyn Clock>,
 }
 
 /// Drive one worker until shutdown. Loops:
@@ -539,8 +543,9 @@ mod tests {
             "config",
             "run_id",
             "sharding_policy",
+            "clock",
         ];
-        assert_eq!(names.len(), 10);
+        assert_eq!(names.len(), 11);
     }
 
     fn parent_at(depth: u32) -> UrlEntry {

@@ -4,8 +4,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crawlrs_core::{
-    Fetcher, Frontier, HostHashShardPolicy, MetadataStore, OutboxReader, Parser, Politeness,
-    ShardingPolicy, SiteAdapterRegistry, Store,
+    Clock, Fetcher, Frontier, HostHashShardPolicy, MetadataStore, OutboxReader, Parser, Politeness,
+    ShardingPolicy, SiteAdapterRegistry, Store, SystemClock,
 };
 use thiserror::Error;
 use tokio::sync::watch;
@@ -251,6 +251,7 @@ pub struct CrawlerBuilder {
     outbox: Option<Arc<dyn OutboxReader>>,
     adapters: Option<Arc<SiteAdapterRegistry>>,
     sharding_policy: Option<Arc<dyn ShardingPolicy>>,
+    clock: Option<Arc<dyn Clock>>,
     config: Option<CrawlerConfig>,
     run_id: Option<String>,
 }
@@ -295,6 +296,13 @@ impl CrawlerBuilder {
         self.sharding_policy = Some(p);
         self
     }
+    /// Inject a custom [`Clock`]. Defaults to [`SystemClock`]. Tests
+    /// pass a `ManualClock` to drive supervisor restart-window math
+    /// deterministically.
+    pub fn clock(mut self, c: Arc<dyn Clock>) -> Self {
+        self.clock = Some(c);
+        self
+    }
     pub fn config(mut self, c: CrawlerConfig) -> Self {
         self.config = Some(c);
         self
@@ -326,6 +334,7 @@ impl CrawlerBuilder {
         let sharding_policy = self
             .sharding_policy
             .unwrap_or_else(|| Arc::new(HostHashShardPolicy::new(8)));
+        let clock: Arc<dyn Clock> = self.clock.unwrap_or_else(|| Arc::new(SystemClock));
         let config = self.config.unwrap_or_default();
 
         let deps = Arc::new(WorkerDeps {
@@ -339,6 +348,7 @@ impl CrawlerBuilder {
             config,
             run_id,
             sharding_policy,
+            clock,
         });
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Ok(Crawler {
