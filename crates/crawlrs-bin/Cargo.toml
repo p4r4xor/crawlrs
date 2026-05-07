@@ -22,21 +22,16 @@ crawlrs-runtime.workspace        = true
 crawlrs-store.workspace          = true
 
 anyhow.workspace                       = true
-async-trait.workspace                  = true
 axum.workspace                         = true
 bb8.workspace                          = true
 bb8-redis.workspace                    = true
-bytes.workspace                        = true
-chrono.workspace                       = true
 clap.workspace                         = true
 humantime-serde.workspace              = true
-metrics.workspace                      = true
 metrics-exporter-prometheus.workspace  = true
 object_store.workspace                 = true
 redis.workspace                        = true
 serde.workspace                        = true
 sqlx.workspace                         = true
-thiserror.workspace                    = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "fs"] }
 toml.workspace                         = true
 tracing.workspace                      = true

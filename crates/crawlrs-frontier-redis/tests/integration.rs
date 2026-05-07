@@ -162,6 +162,36 @@ async fn nack_clears_local_tracking_only() {
 }
 
 #[tokio::test]
+async fn nacked_entry_resurfaces_via_tier_1_and_re_counts() {
+    // After nack, the entry stays in this consumer's Redis-side PEL.
+    // The next claim() surfaces it via tier-1 and the local in-flight
+    // tracking must reflect that the worker is once again actively
+    // processing the entry. A subsequent ack drains the count cleanly.
+    let fx = fixture().await;
+    let frontier = single_shard_frontier(&fx.pool).await;
+
+    frontier.submit(entry("https://a.test/")).await.unwrap();
+    let first = frontier.claim(&TEST_IDENTITY_A).await.unwrap().unwrap();
+    assert_eq!(frontier.claim_count(), 1);
+    frontier.nack(&first.attempt_id).await.unwrap();
+    assert_eq!(frontier.claim_count(), 0, "nack drops local tracking");
+
+    let resurfaced = frontier.claim(&TEST_IDENTITY_A).await.unwrap().unwrap();
+    assert_eq!(
+        resurfaced.attempt_id, first.attempt_id,
+        "tier-1 PEL replay must hand back the same AttemptId",
+    );
+    assert_eq!(
+        frontier.claim_count(),
+        1,
+        "post-nack reclaim re-counts the entry as in-flight",
+    );
+
+    frontier.ack(&resurfaced.attempt_id).await.unwrap();
+    assert_eq!(frontier.claim_count(), 0, "ack drains the count");
+}
+
+#[tokio::test]
 async fn host_hash_policy_routes_same_host_to_same_shard() {
     // Build a fresh frontier per shard, both pointing at the same Redis,
     // with a HostHashShardPolicy of width 4.

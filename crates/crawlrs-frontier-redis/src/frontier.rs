@@ -118,9 +118,9 @@
 //!   pending entries across all consumers. Steady state ≈ N workers
 //!   in flight; ballooning means workers are stuck.
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -284,10 +284,16 @@ pub struct RedisFrontier {
     /// Round-robin cursor for `claim` across owned shards.
     claim_cursor: AtomicUsize,
 
-    /// Best-effort in-flight count for metrics/operability. Increments
-    /// on every successful claim; decrements on every ack/nack call.
-    /// Authoritative truth lives in Redis (`XPENDING`).
-    in_flight: AtomicUsize,
+    /// Local mirror of this consumer's in-flight set. Holds the
+    /// [`AttemptId`] of every entry we've claimed (or that
+    /// `reclaim_stranded` parked into our PEL) and not yet acked or
+    /// nacked. Inserts are idempotent on the AttemptId, so a tier-1
+    /// PEL replay of an already-tracked entry is a no-op; an entry
+    /// that was previously nacked-out and resurfaces via tier-1 is
+    /// re-inserted naturally. The authoritative truth still lives in
+    /// Redis (`XPENDING <queue> <group> <consumer>`); this is a fast
+    /// local approximation for shutdown drain checks and tests.
+    in_flight: Mutex<HashSet<AttemptId>>,
 }
 
 impl std::fmt::Debug for RedisFrontier {
@@ -296,7 +302,7 @@ impl std::fmt::Debug for RedisFrontier {
             .field("run_id", &self.keys.run_id())
             .field("owned_shards", &self.owned_shards)
             .field("autoclaim_idle", &self.autoclaim_idle)
-            .field("in_flight", &self.in_flight.load(Ordering::Relaxed))
+            .field("in_flight", &self.in_flight.lock().unwrap().len())
             .finish()
     }
 }
@@ -354,7 +360,7 @@ impl RedisFrontier {
             autoclaim_idle: DEFAULT_AUTOCLAIM_IDLE,
             max_queue_depth: DEFAULT_MAX_QUEUE_DEPTH,
             claim_cursor: AtomicUsize::new(0),
-            in_flight: AtomicUsize::new(0),
+            in_flight: Mutex::new(HashSet::new()),
         })
     }
 
@@ -391,12 +397,12 @@ impl RedisFrontier {
     }
 
     /// Best-effort count of URLs currently in-flight on this frontier
-    /// instance: incremented on every successful claim and decremented
-    /// on every ack/nack call. Useful for shutdown drain checks and
+    /// instance. Tracks the local mirror of the consumer's PEL: claim
+    /// inserts, ack/nack remove. Useful for shutdown drain checks and
     /// local sanity assertions in tests; the authoritative truth lives
     /// in Redis (`XPENDING <queue> <group>`).
     pub fn claim_count(&self) -> usize {
-        self.in_flight.load(Ordering::Relaxed)
+        self.in_flight.lock().unwrap().len()
     }
 
     /// Snapshot of the bb8 pool's state (size, idle, in-use).
@@ -481,7 +487,10 @@ impl RedisFrontier {
                     deleted = reply.deleted_ids.len(),
                     "xautoclaim reclaimed stranded entries",
                 );
-                self.in_flight.fetch_add(reclaimed, Ordering::Relaxed);
+                let mut tracking = self.in_flight.lock().unwrap();
+                for stream_id in &reply.claimed {
+                    tracking.insert(encode_attempt(shard, &stream_id.id));
+                }
             }
             total += reclaimed;
         }
@@ -677,9 +686,10 @@ impl RedisFrontier {
 
         // Step 1: this worker's own PEL (id "0"). Picks up entries
         // we previously claimed but haven't acked (e.g. after a
-        // process restart, or because we already nacked them and
-        // are retrying). Stable consumer names mean restart finds the
-        // PEL immediately rather than waiting for XAUTOCLAIM idle.
+        // process restart, after a prior nack, or because
+        // `reclaim_stranded` parked the entry here). Stable consumer
+        // names mean restart finds the PEL immediately rather than
+        // waiting for XAUTOCLAIM idle.
         let pel = self.read_one(&queue_key, group, &consumer, "0").await?;
         if let Some((entry, id)) = first_entry(&pel)? {
             return Ok(Some((entry, id)));
@@ -753,8 +763,13 @@ impl Frontier for RedisFrontier {
             match self.claim_from(shard, identity).await {
                 Ok(Some((entry, entry_id))) => {
                     self.record_claim_outcome(shard, crate::metrics::OUTCOME_CLAIMED);
-                    self.in_flight.fetch_add(1, Ordering::Relaxed);
                     let attempt_id = encode_attempt(shard, &entry_id);
+                    // Idempotent insert: a tier-1 replay of an
+                    // already-tracked entry is a no-op; a tier-1
+                    // replay of an entry previously removed by nack
+                    // re-inserts cleanly. The set's cardinality is
+                    // the local mirror of this consumer's PEL.
+                    self.in_flight.lock().unwrap().insert(attempt_id.clone());
                     result = Ok(Some(ClaimedMessage { entry, attempt_id }));
                     break;
                 }
@@ -798,8 +813,8 @@ impl Frontier for RedisFrontier {
             while out.len() < max {
                 match self.claim_from(shard, identity).await? {
                     Some((entry, entry_id)) => {
-                        self.in_flight.fetch_add(1, Ordering::Relaxed);
                         let attempt_id = encode_attempt(shard, &entry_id);
+                        self.in_flight.lock().unwrap().insert(attempt_id.clone());
                         out.push(ClaimedMessage { entry, attempt_id });
                     }
                     None => break,
@@ -839,13 +854,9 @@ impl Frontier for RedisFrontier {
         .await;
         if result.is_ok() {
             debug!(shard, attempt = %attempt, "ack");
-            // Saturating decrement: the counter is best-effort metrics,
-            // and a duplicate ack on an already-acked attempt should
-            // not underflow.
-            let prev = self.in_flight.load(Ordering::Relaxed);
-            if prev > 0 {
-                self.in_flight.fetch_sub(1, Ordering::Relaxed);
-            }
+            // Drop from the in-flight set. Idempotent: a duplicate
+            // ack on an already-removed AttemptId is a HashSet no-op.
+            self.in_flight.lock().unwrap().remove(attempt);
         }
         metrics::histogram!(
             crate::metrics::FRONTIER_CALL_SECONDS,
@@ -862,11 +873,9 @@ impl Frontier for RedisFrontier {
         // claim, tier-1 (`XREADGROUP id "0"`) surfaces it again. Peer
         // workers can steal via `reclaim_one` once idle past
         // `autoclaim_idle`. Nack is local-only on the Redis side; we
-        // just drop our in-flight tracking.
-        let prev = self.in_flight.load(Ordering::Relaxed);
-        if prev > 0 {
-            self.in_flight.fetch_sub(1, Ordering::Relaxed);
-        }
+        // just drop our in-flight tracking. A subsequent tier-1
+        // claim of the same entry will re-insert it.
+        self.in_flight.lock().unwrap().remove(attempt);
         debug!(attempt = %attempt, "nack");
         metrics::histogram!(
             crate::metrics::FRONTIER_CALL_SECONDS,

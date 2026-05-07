@@ -11,13 +11,35 @@ all-features = true
 [advisories]
 version    = 2
 yanked     = "warn"
-ignore     = []
+ignore     = [
+    # `paste` is unmaintained per RUSTSEC-2024-0436. It's pulled in
+    # transitively via parquet; the advisory is "no longer
+    # maintained", not a vulnerability. The recommended drop-in
+    # replacement (`pastey`) is at version 0.2.x while parquet
+    # requires `paste = "1.0"`, so cargo's `[patch.crates-io]` won't
+    # substitute across the major-version gap without us forking
+    # pastey to publish a 1.x. Track until parquet itself migrates.
+    "RUSTSEC-2024-0436",
+    # `atomic-polyfill` is unmaintained per RUSTSEC-2023-0089. It's
+    # pulled in transitively via `postcard -> heapless 0.7`. heapless
+    # 0.8 dropped the dep, but postcard 1.1.x (the latest) still pins
+    # heapless 0.7 for backward compat. Track until postcard
+    # migrates; advisory is unmaintained-only, not a vulnerability.
+    "RUSTSEC-2023-0089",
+]
 db-path    = "~/.cargo/advisory-db"
 db-urls    = ["https://github.com/RustSec/advisory-db"]
 
 # ---------------------------------------------------------------------------
 # License policy
 # ---------------------------------------------------------------------------
+#
+# Globally allowed: permissive licenses that are compatible with most
+# distribution scenarios and don't impose copyleft obligations.
+# A license that's only used by a small set of named crates lives in
+# `[[licenses.exceptions]]` below, not here, so a future dep can't
+# silently arrive under the same license without explicit review.
+
 [licenses]
 version = 2
 allow = [
@@ -30,12 +52,81 @@ allow = [
     "ISC",
     "MPL-2.0",
     "Unicode-3.0",
-    "Unicode-DFS-2016",
     "Zlib",
-    "OpenSSL",
     "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.8
+
+# Per-crate license exceptions. Each entry opts a single crate
+# into a license not in the global allow list. Adding a new
+# exception is a deliberate, reviewable act; a future dep that
+# brings in the same license without an entry here will still
+# fail the deny check.
+#
+# crawlrs is GPL-3.0-only. The 10 workspace crates inherit the
+# license from `[workspace.package]` (`license.workspace = true`)
+# and are each listed below. We don't blanket-allow GPL-3.0-only
+# globally so a third-party GPL dep would still be flagged here
+# instead of slipping in under our own project's license.
+
+[[licenses.exceptions]]
+name = "crawlrs-bin"
+allow = ["GPL-3.0-only"]
+
+[[licenses.exceptions]]
+name = "crawlrs-core"
+allow = ["GPL-3.0-only"]
+
+[[licenses.exceptions]]
+name = "crawlrs-fakes"
+allow = ["GPL-3.0-only"]
+
+[[licenses.exceptions]]
+name = "crawlrs-fetch"
+allow = ["GPL-3.0-only"]
+
+[[licenses.exceptions]]
+name = "crawlrs-frontier-redis"
+allow = ["GPL-3.0-only"]
+
+[[licenses.exceptions]]
+name = "crawlrs-metadata"
+allow = ["GPL-3.0-only"]
+
+[[licenses.exceptions]]
+name = "crawlrs-parse"
+allow = ["GPL-3.0-only"]
+
+[[licenses.exceptions]]
+name = "crawlrs-politeness"
+allow = ["GPL-3.0-only"]
+
+[[licenses.exceptions]]
+name = "crawlrs-runtime"
+allow = ["GPL-3.0-only"]
+
+[[licenses.exceptions]]
+name = "crawlrs-store"
+allow = ["GPL-3.0-only"]
+
+# tiny-keccak: pulled in transitively via ahash -> const-random ->
+# const-random-macro (used by arrow, parquet, cuid2, wreq, schnellru).
+# CC0-1.0 is a public-domain dedication; FSF Free/Libre. The
+# exception is on tiny-keccak specifically rather than allowing CC0
+# globally so any other dep arriving under CC0 surfaces here for
+# review.
+[[licenses.exceptions]]
+name = "tiny-keccak"
+allow = ["CC0-1.0"]
+
+# wreq-util: declares LGPL-3.0 (deprecated SPDX identifier; the
+# modern form is LGPL-3.0-only). LGPL is compatible with our
+# GPL-3.0 project. We allow the deprecated spelling because that's
+# what the crate's Cargo.toml currently uses; if it migrates to the
+# modern form, this entry will need to update.
+[[licenses.exceptions]]
+name = "wreq-util"
+allow = ["LGPL-3.0"]
 
 # ---------------------------------------------------------------------------
 # Crate bans / duplicates

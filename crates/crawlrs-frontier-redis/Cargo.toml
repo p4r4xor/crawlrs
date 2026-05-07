@@ -17,7 +17,6 @@ futures.workspace     = true
 metrics.workspace     = true
 postcard.workspace    = true
 redis.workspace       = true
-serde.workspace       = true
 thiserror.workspace   = true
 tokio.workspace       = true
 tracing.workspace     = true
