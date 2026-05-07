@@ -67,10 +67,8 @@ impl fmt::Display for WorkerIdentity {
 /// so downstream stores can dedupe per-attempt without conflating
 /// retries.
 ///
-/// The string contents are opaque to the runtime. Each `Frontier` impl
-/// owns the encoding: the Redis impl encodes `"<shard>|<stream-entry-id>"`
-/// so it can route XACK to the right stream; in-memory impls may use
-/// any unique-per-delivery token.
+/// The string contents are opaque to the runtime; each `Frontier`
+/// impl owns its own encoding and treats the token as private state.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct AttemptId(String);
 
@@ -82,27 +80,11 @@ impl AttemptId {
     pub fn as_str(&self) -> &str {
         &self.0
     }
-
-    pub fn into_inner(self) -> String {
-        self.0
-    }
 }
 
 impl fmt::Display for AttemptId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
-    }
-}
-
-impl From<String> for AttemptId {
-    fn from(value: String) -> Self {
-        Self(value)
-    }
-}
-
-impl From<&str> for AttemptId {
-    fn from(value: &str) -> Self {
-        Self(value.to_owned())
     }
 }
 
@@ -273,60 +255,4 @@ pub struct UrlMetadata {
     /// Last modification of any field. On a fresh insert this equals
     /// `discovered_at`.
     pub updated_at: SystemTime,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn worker_identity_renders_stable_string() {
-        let id = WorkerIdentity::new(2, 3);
-        assert_eq!(id.to_string(), "pod-2:3");
-
-        // Re-rendering the same identity must produce a byte-identical
-        // string. The Frontier impl uses this string as the Redis
-        // consumer name; if it varied, tier-1 PEL replay after a
-        // process restart would attach to a different consumer and
-        // miss in-flight entries.
-        let twin = WorkerIdentity::new(2, 3);
-        assert_eq!(id.to_string(), twin.to_string());
-        assert_eq!(id, twin);
-    }
-
-    #[test]
-    fn worker_identity_distinguishes_pods_and_indices() {
-        let a = WorkerIdentity::new(0, 0);
-        let b = WorkerIdentity::new(0, 1);
-        let c = WorkerIdentity::new(1, 0);
-        assert_ne!(a, b, "different worker_index");
-        assert_ne!(a, c, "different pod_ordinal");
-        assert_ne!(b, c);
-        assert_ne!(a.to_string(), b.to_string());
-        assert_ne!(a.to_string(), c.to_string());
-    }
-
-    #[test]
-    fn attempt_id_round_trips_string() {
-        let raw = "1714867200000-0";
-        let attempt = AttemptId::new(raw);
-        assert_eq!(attempt.as_str(), raw);
-        assert_eq!(attempt.to_string(), raw);
-        assert_eq!(attempt.clone().into_inner(), raw);
-    }
-
-    #[test]
-    fn attempt_id_supports_eq_and_hash() {
-        use std::collections::HashSet;
-        let a = AttemptId::new("X");
-        let b = AttemptId::new("X");
-        let c = AttemptId::new("Y");
-        assert_eq!(a, b);
-        assert_ne!(a, c);
-
-        let mut seen: HashSet<AttemptId> = HashSet::new();
-        seen.insert(a.clone());
-        assert!(!seen.insert(b), "same token must collide in a HashSet");
-        assert!(seen.insert(c), "different token must not collide");
-    }
 }

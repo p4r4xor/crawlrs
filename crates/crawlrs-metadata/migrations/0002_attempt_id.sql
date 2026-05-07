@@ -3,9 +3,8 @@
 -- mark_succeeded and frontier.ack) cannot duplicate a history row.
 --
 -- attempt_id is opaque from the database's perspective: the runtime
--- supplies it from the AttemptId carried by each ClaimedMessage. The
--- Redis frontier impl encodes "<shard>|<stream-entry-id>"; an in-memory
--- frontier impl can use any unique-per-delivery token.
+-- supplies it from the AttemptId carried by each ClaimedMessage; each
+-- Frontier impl owns its own encoding for the token.
 --
 -- The column is NULLable for backfill compatibility with rows written
 -- by the v1 codepath. Postgres treats multiple NULLs as distinct under

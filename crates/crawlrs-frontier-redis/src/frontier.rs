@@ -814,8 +814,24 @@ impl Frontier for RedisFrontier {
     #[tracing::instrument(skip(self), fields(attempt = %attempt))]
     async fn ack(&self, attempt: &AttemptId) -> Result<()> {
         let started_at = std::time::Instant::now();
-        let result = self.ack_inner(attempt).await;
+        let (shard, entry_id) = decode_attempt(attempt).map_err(Error::from)?;
+        let queue_key = self.keys.queue(shard);
+        let group = self.keys.consumer_group();
+        let result: Result<()> = async {
+            let mut conn = self.checkout().await.map_err(Error::from)?;
+            let _: i64 = redis::cmd("XACK")
+                .arg(&queue_key)
+                .arg(group)
+                .arg(entry_id)
+                .query_async(&mut *conn)
+                .await
+                .map_err(RedisFrontierError::from)
+                .map_err(Error::from)?;
+            Ok(())
+        }
+        .await;
         if result.is_ok() {
+            debug!(shard, attempt = %attempt, "ack");
             // Saturating decrement: the counter is best-effort metrics,
             // and a duplicate ack on an already-acked attempt should
             // not underflow.
@@ -857,26 +873,6 @@ impl Frontier for RedisFrontier {
     // `reclaim_one` in the claim path. The trait
     // default `Ok(0)` is fine. `reclaim_stranded` stays public for
     // ad-hoc drains (e.g. graceful shutdown of an entire pool).
-}
-
-impl RedisFrontier {
-    /// Inner ack body, wrapped by the trait method with timing.
-    async fn ack_inner(&self, attempt: &AttemptId) -> Result<()> {
-        let (shard, entry_id) = decode_attempt(attempt).map_err(Error::from)?;
-        let queue_key = self.keys.queue(shard);
-        let group = self.keys.consumer_group();
-        let mut conn = self.checkout().await.map_err(Error::from)?;
-        let _: i64 = redis::cmd("XACK")
-            .arg(&queue_key)
-            .arg(group)
-            .arg(entry_id)
-            .query_async(&mut *conn)
-            .await
-            .map_err(RedisFrontierError::from)
-            .map_err(Error::from)?;
-        debug!(shard, attempt = %attempt, "ack");
-        Ok(())
-    }
 }
 
 // --- module-private helpers --------------------------------------------

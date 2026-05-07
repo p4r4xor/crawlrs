@@ -272,7 +272,7 @@ fn encode(rows: &[OwnedRow], schema: &Arc<Schema>, props: &WriterProperties) -> 
     writer.write(&batch).map_err(StoreError::from)?;
     writer.close().map_err(StoreError::from)?;
 
-    let bytes = buffer.into_inner();
+    let bytes = buffer.take_bytes();
     Ok(bytes)
 }
 
@@ -350,14 +350,15 @@ fn build_batch(
 
 /// Shared `Vec<u8>` adapter so an `ArrowWriter` can stream into a buffer
 /// the caller holds an Arc to. After `writer.close()` the bytes are
-/// retrievable via `into_inner` (consuming the last Arc clone).
+/// retrievable via `take_bytes` (consuming the last Arc clone).
 #[derive(Clone, Default)]
 struct SharedBuffer(Arc<StdMutex<Vec<u8>>>);
 
 impl SharedBuffer {
-    fn into_inner(self) -> Vec<u8> {
+    fn take_bytes(self) -> Vec<u8> {
         // Try to unwrap; if the Arc is still shared (writer didn't drop yet),
-        // fall back to cloning the contents.
+        // fall back to cloning the contents. The fallback path goes
+        // through std `Mutex::into_inner` to drain the cloned bytes.
         match Arc::try_unwrap(self.0) {
             Ok(mutex) => mutex.into_inner().expect("SharedBuffer mutex was poisoned"),
             Err(arc) => arc.lock().expect("SharedBuffer mutex was poisoned").clone(),

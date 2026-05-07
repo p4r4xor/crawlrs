@@ -61,7 +61,7 @@ const DEFAULT_AUTOCLAIM_IDLE: Duration = Duration::from_secs(300);
 pub struct InMemoryFrontier {
     sharding_policy: Arc<dyn ShardingPolicy>,
     owned_shards: Vec<ShardKey>,
-    inner: Mutex<Inner>,
+    state: Mutex<FrontierState>,
     clock: Arc<dyn Clock>,
     autoclaim_idle_ms: u64,
 }
@@ -76,7 +76,7 @@ impl std::fmt::Debug for InMemoryFrontier {
 }
 
 #[derive(Debug, Default)]
-struct Inner {
+struct FrontierState {
     shards: HashMap<ShardKey, ShardState>,
     /// Disambiguates entry IDs that share the same wall-clock millisecond.
     /// Reset on each new ms.
@@ -111,14 +111,14 @@ struct PelSlot {
 
 impl InMemoryFrontier {
     pub fn new(sharding_policy: Arc<dyn ShardingPolicy>, owned_shards: Vec<ShardKey>) -> Self {
-        let mut inner = Inner::default();
+        let mut state = FrontierState::default();
         for shard in &owned_shards {
-            inner.shards.insert(*shard, ShardState::default());
+            state.shards.insert(*shard, ShardState::default());
         }
         Self {
             sharding_policy,
             owned_shards,
-            inner: Mutex::new(inner),
+            state: Mutex::new(state),
             clock: Arc::new(SystemClock),
             autoclaim_idle_ms: DEFAULT_AUTOCLAIM_IDLE.as_millis() as u64,
         }
@@ -138,15 +138,15 @@ impl InMemoryFrontier {
         self
     }
 
-    fn next_entry_id(&self, inner: &mut Inner) -> String {
+    fn next_entry_id(&self, state: &mut FrontierState) -> String {
         let now_ms = self.clock.now_ms();
-        if now_ms == inner.last_id_ms {
-            inner.last_id_seq += 1;
+        if now_ms == state.last_id_ms {
+            state.last_id_seq += 1;
         } else {
-            inner.last_id_ms = now_ms;
-            inner.last_id_seq = 0;
+            state.last_id_ms = now_ms;
+            state.last_id_seq = 0;
         }
-        format!("{}-{}", now_ms, inner.last_id_seq)
+        format!("{}-{}", now_ms, state.last_id_seq)
     }
 
     fn assert_owned(&self, shard: ShardKey) -> Result<()> {
@@ -180,16 +180,16 @@ impl Frontier for InMemoryFrontier {
     async fn submit(&self, entry: UrlEntry) -> Result<bool> {
         let shard = self.sharding_policy.shard_key(&entry.url);
         self.assert_owned(shard)?;
-        let mut inner = self.inner.lock().unwrap();
-        let entry_id = self.next_entry_id(&mut inner);
-        let state = inner
+        let mut state = self.state.lock().unwrap();
+        let entry_id = self.next_entry_id(&mut state);
+        let shard_state = state
             .shards
             .get_mut(&shard)
             .expect("owned shard initialised at construction");
-        if !state.seen.insert(entry.url.as_str().to_string()) {
+        if !shard_state.seen.insert(entry.url.as_str().to_string()) {
             return Ok(false);
         }
-        state.stream.push(StreamEntry {
+        shard_state.stream.push(StreamEntry {
             id: entry_id,
             entry,
         });
@@ -213,9 +213,9 @@ impl Frontier for InMemoryFrontier {
         }
 
         let consumer = identity.to_string();
-        let mut inner = self.inner.lock().unwrap();
-        let start = inner.claim_cursor % n;
-        inner.claim_cursor = inner.claim_cursor.wrapping_add(1);
+        let mut state = self.state.lock().unwrap();
+        let start = state.claim_cursor % n;
+        state.claim_cursor = state.claim_cursor.wrapping_add(1);
 
         let now_ms = self.clock.now_ms();
         let idle_threshold = self.autoclaim_idle_ms;
@@ -223,7 +223,7 @@ impl Frontier for InMemoryFrontier {
         for offset in 0..n {
             let shard = self.owned_shards[(start + offset) % n];
             if let Some((entry, entry_id)) =
-                claim_from_shard(&mut inner, shard, &consumer, now_ms, idle_threshold)
+                claim_from_shard(&mut state, shard, &consumer, now_ms, idle_threshold)
             {
                 let attempt_id = encode_attempt(shard, &entry_id);
                 return Ok(Some(ClaimedMessage { entry, attempt_id }));
@@ -244,9 +244,9 @@ impl Frontier for InMemoryFrontier {
         }
 
         let consumer = identity.to_string();
-        let mut inner = self.inner.lock().unwrap();
-        let start = inner.claim_cursor % n;
-        inner.claim_cursor = inner.claim_cursor.wrapping_add(1);
+        let mut state = self.state.lock().unwrap();
+        let start = state.claim_cursor % n;
+        state.claim_cursor = state.claim_cursor.wrapping_add(1);
 
         let now_ms = self.clock.now_ms();
         let idle_threshold = self.autoclaim_idle_ms;
@@ -254,7 +254,7 @@ impl Frontier for InMemoryFrontier {
         for offset in 0..n {
             let shard = self.owned_shards[(start + offset) % n];
             while out.len() < max {
-                match claim_from_shard(&mut inner, shard, &consumer, now_ms, idle_threshold) {
+                match claim_from_shard(&mut state, shard, &consumer, now_ms, idle_threshold) {
                     Some((entry, entry_id)) => {
                         let attempt_id = encode_attempt(shard, &entry_id);
                         out.push(ClaimedMessage { entry, attempt_id });
@@ -270,14 +270,14 @@ impl Frontier for InMemoryFrontier {
     }
 
     async fn len(&self) -> Result<usize> {
-        let inner = self.inner.lock().unwrap();
-        Ok(inner.shards.values().map(|s| s.stream.len()).sum())
+        let state = self.state.lock().unwrap();
+        Ok(state.shards.values().map(|s| s.stream.len()).sum())
     }
 
     async fn ack(&self, attempt: &AttemptId) -> Result<()> {
         let (shard, entry_id) = decode_attempt(attempt)?;
-        let mut inner = self.inner.lock().unwrap();
-        let Some(state) = inner.shards.get_mut(&shard) else {
+        let mut state = self.state.lock().unwrap();
+        let Some(shard_state) = state.shards.get_mut(&shard) else {
             return Ok(()); // unknown shard: idempotent no-op
         };
         // Remove from any consumer's PEL (matches XACK semantics: the
@@ -286,13 +286,13 @@ impl Frontier for InMemoryFrontier {
         // remaining"; Redis itself doesn't trim on XACK but for the
         // purposes of in-memory tests, "acked == done" is the useful
         // invariant.
-        for pel in state.pel.values_mut() {
+        for pel in shard_state.pel.values_mut() {
             pel.retain(|slot| slot.entry_id != entry_id);
         }
-        state.stream.retain(|e| e.id != entry_id);
+        shard_state.stream.retain(|e| e.id != entry_id);
         // Also walk the next_undelivered cursor back if needed.
-        if state.next_undelivered > state.stream.len() {
-            state.next_undelivered = state.stream.len();
+        if shard_state.next_undelivered > shard_state.stream.len() {
+            shard_state.next_undelivered = shard_state.stream.len();
         }
         Ok(())
     }
@@ -307,32 +307,32 @@ impl Frontier for InMemoryFrontier {
 }
 
 /// Pull the body of `claim` out of the trait method so the borrowing
-/// gymnastics stay readable. `inner` is the locked cluster state;
+/// gymnastics stay readable. `state` is the locked frontier state;
 /// the function operates entirely under that single guard.
 fn claim_from_shard(
-    inner: &mut Inner,
+    state: &mut FrontierState,
     shard: ShardKey,
     consumer: &str,
     now_ms: u64,
     idle_threshold_ms: u64,
 ) -> Option<(UrlEntry, String)> {
-    let state = inner.shards.get_mut(&shard)?;
+    let shard_state = state.shards.get_mut(&shard)?;
 
     // Tier 1: this consumer's PEL. Entries we previously claimed but
     // haven't acked. Picked up immediately on a restarted consumer with
     // the same identity, which is the load-bearing property.
-    if let Some(pel) = state.pel.get(consumer)
+    if let Some(pel) = shard_state.pel.get(consumer)
         && let Some(slot) = pel.first()
-        && let Some(stream_entry) = state.stream.iter().find(|e| e.id == slot.entry_id)
+        && let Some(stream_entry) = shard_state.stream.iter().find(|e| e.id == slot.entry_id)
     {
         return Some((stream_entry.entry.clone(), slot.entry_id.clone()));
     }
 
     // Tier 2: a fresh entry never delivered to anyone.
-    if state.next_undelivered < state.stream.len() {
-        let stream_entry = state.stream[state.next_undelivered].clone();
-        state.next_undelivered += 1;
-        state
+    if shard_state.next_undelivered < shard_state.stream.len() {
+        let stream_entry = shard_state.stream[shard_state.next_undelivered].clone();
+        shard_state.next_undelivered += 1;
+        shard_state
             .pel
             .entry(consumer.to_string())
             .or_default()
@@ -346,7 +346,7 @@ fn claim_from_shard(
     // Tier 3: XAUTOCLAIM. Find any peer's PEL slot older than the idle
     // threshold and transfer it to `consumer`'s PEL.
     let mut victim: Option<(String, usize)> = None; // (peer_consumer, slot_index)
-    for (peer, pel) in state.pel.iter() {
+    for (peer, pel) in shard_state.pel.iter() {
         if peer == consumer {
             continue;
         }
@@ -361,12 +361,16 @@ fn claim_from_shard(
         }
     }
     if let Some((peer, i)) = victim {
-        let pel = state.pel.get_mut(&peer).expect("found above");
+        let pel = shard_state.pel.get_mut(&peer).expect("found above");
         let mut slot = pel.remove(i);
         slot.claimed_at_ms = now_ms;
         let entry_id = slot.entry_id.clone();
-        let stream_entry = state.stream.iter().find(|e| e.id == entry_id).cloned();
-        state
+        let stream_entry = shard_state
+            .stream
+            .iter()
+            .find(|e| e.id == entry_id)
+            .cloned();
+        shard_state
             .pel
             .entry(consumer.to_string())
             .or_default()
@@ -379,10 +383,10 @@ fn claim_from_shard(
     None
 }
 
-// Inline because: visibility-forced. These tests probe the `Inner`
-// shape (private fields, the per-shard `pel` map, the seen-set) to
-// assert that PEL replay and at-least-once semantics hold across
-// claim/ack/nack cycles. Splitting into `tests/` would require
+// Inline because: visibility-forced. These tests probe the
+// `FrontierState` shape (private fields, the per-shard `pel` map, the
+// seen-set) to assert that PEL replay and at-least-once semantics hold
+// across claim/ack/nack cycles. Splitting into `tests/` would require
 // publicising internal structure that has no place in the public API.
 #[cfg(test)]
 mod tests {
