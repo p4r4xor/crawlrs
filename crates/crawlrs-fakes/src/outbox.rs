@@ -13,7 +13,7 @@
 
 use std::collections::HashSet;
 
-use crawlrs_core::{AttemptId, CanonicalUrl, OutboxEntry, UrlEntry};
+use crawlrs_core::{AttemptId, CanonicalUrl, OutboxEntry, OutboxRowId, UrlEntry};
 
 /// All outbox rows plus the `(parent_url, parent_attempt_id, child_url)`
 /// dedupe set. `next_id` emulates Postgres BIGSERIAL so tests asserting
@@ -21,13 +21,13 @@ use crawlrs_core::{AttemptId, CanonicalUrl, OutboxEntry, UrlEntry};
 #[derive(Default)]
 pub(crate) struct OutboxState {
     pub(crate) rows: Vec<InMemoryOutboxRow>,
-    pub(crate) next_id: i64,
+    pub(crate) next_id: u64,
     pub(crate) dedupe: HashSet<(String, String, String)>,
 }
 
 #[derive(Clone)]
 pub(crate) struct InMemoryOutboxRow {
-    pub(crate) id: i64,
+    pub(crate) id: OutboxRowId,
     pub(crate) entry: UrlEntry,
     pub(crate) published: bool,
 }
@@ -51,9 +51,8 @@ pub(crate) fn record_outbound(
         return;
     }
     state.next_id += 1;
-    let id = state.next_id;
     state.rows.push(InMemoryOutboxRow {
-        id,
+        id: OutboxRowId::new(state.next_id),
         entry: child.clone(),
         published: false,
     });
@@ -77,7 +76,7 @@ pub(crate) fn fetch_unpublished(state: &OutboxState, max: usize) -> Vec<OutboxEn
 /// Flip the `published` flag on rows whose ids appear in `ids`.
 /// Idempotent: ids already published are silently skipped, matching
 /// the Postgres impl's `WHERE published_at IS NULL` filter.
-pub(crate) fn mark_published(state: &mut OutboxState, ids: &[i64]) {
+pub(crate) fn mark_published(state: &mut OutboxState, ids: &[OutboxRowId]) {
     if ids.is_empty() {
         return;
     }

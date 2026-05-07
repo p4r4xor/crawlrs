@@ -35,18 +35,40 @@
 //! pool; that's the production wiring.
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
 use crate::types::UrlEntry;
 
+/// Identifier for one row in the outbox table.
+///
+/// Newtype around `u64` so callers can't accidentally swap an outbox
+/// row id for some other numeric id flowing through the publisher
+/// pipeline (e.g. a depth, a content hash, a counter). Concrete impls
+/// translate to whatever the storage backend uses on the wire (the
+/// Postgres impl maps to BIGSERIAL); the trait surface stays in
+/// domain vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct OutboxRowId(u64);
+
+impl OutboxRowId {
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    pub const fn value(&self) -> u64 {
+        self.0
+    }
+}
+
 /// One row from the outbox table awaiting publish to the Frontier.
 ///
-/// The `id` is the Postgres row id; the publisher marks rows
+/// The `id` is the row's stable identifier; the publisher marks rows
 /// published by id after a successful Frontier submit. `entry` is the
 /// already-canonicalised `UrlEntry` ready for `Frontier::submit_batch`.
 #[derive(Debug, Clone)]
 pub struct OutboxEntry {
-    pub id: i64,
+    pub id: OutboxRowId,
     pub entry: UrlEntry,
 }
 
@@ -67,5 +89,5 @@ pub trait OutboxReader: Send + Sync {
     ///
     /// Must be idempotent: passing an id that's already published
     /// is a no-op, not an error.
-    async fn mark_published(&self, ids: &[i64]) -> Result<()>;
+    async fn mark_published(&self, ids: &[OutboxRowId]) -> Result<()>;
 }

@@ -16,8 +16,8 @@ use std::time::SystemTime;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use crawlrs_core::{
-    CanonicalUrl, Error, FailureKind, MetadataStore, OutboxEntry, OutboxReader, Result,
-    SuccessRecord, UrlEntry, UrlMetadata, UrlStatus,
+    CanonicalUrl, Error, FailureKind, MetadataStore, OutboxEntry, OutboxReader, OutboxRowId,
+    Result, SuccessRecord, UrlEntry, UrlMetadata, UrlStatus,
 };
 use serde_json::json;
 use sqlx::postgres::{PgPool, PgPoolOptions};
@@ -437,7 +437,11 @@ impl OutboxReader for PostgresMetadataStore {
                     ))
                 })?;
             out.push(OutboxEntry {
-                id: row.id,
+                // BIGSERIAL is non-negative in practice; the cast
+                // narrows to our domain newtype without risk of
+                // wraparound for any id within Postgres BIGSERIAL
+                // range.
+                id: OutboxRowId::new(row.id as u64),
                 entry: UrlEntry {
                     url,
                     depth: row.depth as u32,
@@ -449,10 +453,13 @@ impl OutboxReader for PostgresMetadataStore {
     }
 
     #[tracing::instrument(skip(self, ids), fields(n = ids.len()))]
-    async fn mark_published(&self, ids: &[i64]) -> Result<()> {
+    async fn mark_published(&self, ids: &[OutboxRowId]) -> Result<()> {
         if ids.is_empty() {
             return Ok(());
         }
+        // Convert the domain newtype to BIGINT for sqlx. The cast is
+        // safe within Postgres BIGSERIAL range (always non-negative).
+        let pg_ids: Vec<i64> = ids.iter().map(|id| id.value() as i64).collect();
         // Idempotent: a row already marked published gets its
         // published_at left alone (the WHERE clause filters it).
         sqlx::query(
@@ -461,7 +468,7 @@ impl OutboxReader for PostgresMetadataStore {
               WHERE id = ANY($1)
                 AND published_at IS NULL",
         )
-        .bind(ids)
+        .bind(&pg_ids)
         .execute(&self.pool)
         .await
         .map_err(PostgresMetadataError::from)?;

@@ -19,8 +19,8 @@ use std::time::SystemTime;
 
 use async_trait::async_trait;
 use crawlrs_core::{
-    CanonicalUrl, Error, FailureKind, MetadataStore, OutboxEntry, OutboxReader, Result,
-    SuccessRecord, UrlMetadata, UrlStatus,
+    CanonicalUrl, Error, FailureKind, MetadataStore, OutboxEntry, OutboxReader, OutboxRowId,
+    Result, SuccessRecord, UrlMetadata, UrlStatus,
 };
 
 use crate::outbox::{self, OutboxState};
@@ -186,7 +186,7 @@ impl OutboxReader for InMemoryMetadataStore {
         Ok(outbox::fetch_unpublished(&ledger.outbox, max))
     }
 
-    async fn mark_published(&self, ids: &[i64]) -> Result<()> {
+    async fn mark_published(&self, ids: &[OutboxRowId]) -> Result<()> {
         let mut ledger = self.ledger.lock().unwrap();
         outbox::mark_published(&mut ledger.outbox, ids);
         Ok(())

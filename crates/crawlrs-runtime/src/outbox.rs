@@ -40,7 +40,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crawlrs_core::{Frontier, OutboxReader, UrlEntry};
+use crawlrs_core::{Frontier, OutboxReader, OutboxRowId, UrlEntry};
 use tokio::sync::watch;
 use tracing::{debug, warn};
 
@@ -121,7 +121,7 @@ async fn drain_once(
         return 0;
     }
 
-    let ids: Vec<i64> = rows.iter().map(|r| r.id).collect();
+    let ids: Vec<OutboxRowId> = rows.iter().map(|r| r.id).collect();
     let entries: Vec<UrlEntry> = rows.into_iter().map(|r| r.entry).collect();
     let n = entries.len();
 
