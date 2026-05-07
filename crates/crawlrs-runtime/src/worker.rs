@@ -18,7 +18,8 @@ use std::sync::Arc;
 use crawlrs_core::{
     AttemptId, CanonicalUrl, ClaimedMessage, FailureKind, FetchRequest, FetchResponse, Fetcher,
     Frontier, MetadataStore, ParsedDocument, Parser, PoliteDecision, Politeness, ShardingPolicy,
-    SiteAdapterRegistry, Store, StoreRecord, UrlEntry, UrlStatus, WorkerIdentity, content_hash,
+    SiteAdapterRegistry, Store, StoreRecord, SuccessRecord, UrlEntry, UrlStatus, WorkerIdentity,
+    content_hash,
 };
 use tokio::sync::watch;
 use tokio::time::Instant as TokioInstant;
@@ -417,12 +418,14 @@ impl UrlPipeline {
             }
         };
 
-        if let Err(e) = self
-            .deps
-            .metadata
-            .mark_succeeded(self.url(), self.attempt(), &blob_path, body_hash, outbound)
-            .await
-        {
+        let success = SuccessRecord {
+            url: self.url(),
+            attempt_id: self.attempt(),
+            blob_path: &blob_path,
+            content_hash: body_hash,
+            outbound,
+        };
+        if let Err(e) = self.deps.metadata.mark_succeeded(&success).await {
             warn!(url = %self.url(), error = %e, "metadata.mark_succeeded failed; acking anyway");
         }
 

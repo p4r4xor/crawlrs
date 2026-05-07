@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use crawlrs_core::{
     AttemptId, CanonicalUrl, Frontier, MetadataStore, OutboxReader, ShardingPolicy,
-    SingleShardPolicy, UrlEntry, WorkerIdentity,
+    SingleShardPolicy, SuccessRecord, UrlEntry, WorkerIdentity,
 };
 use crawlrs_fakes::{InMemoryFrontier, InMemoryMetadataStore};
 use crawlrs_runtime::outbox_publisher;
@@ -72,14 +72,15 @@ async fn duplicate_mark_succeeded_for_same_attempt_appends_one_history_row() {
     store.mark_attempting(&url, "run-1", 0).await.unwrap();
 
     let attempt = AttemptId::new("0|1714867200000-0");
-    store
-        .mark_succeeded(&url, &attempt, "blob://1", 1, &[])
-        .await
-        .unwrap();
-    store
-        .mark_succeeded(&url, &attempt, "blob://1", 1, &[])
-        .await
-        .unwrap();
+    let record = SuccessRecord {
+        url: &url,
+        attempt_id: &attempt,
+        blob_path: "blob://1",
+        content_hash: 1,
+        outbound: &[],
+    };
+    store.mark_succeeded(&record).await.unwrap();
+    store.mark_succeeded(&record).await.unwrap();
 
     assert_eq!(
         store.succeeded_history_count(),
@@ -109,7 +110,13 @@ async fn full_recovery_round_trip_through_pipeline_states() {
     let first = frontier.claim(&identity).await.unwrap().unwrap();
     metadata.mark_attempting(&target, "run-1", 0).await.unwrap();
     metadata
-        .mark_succeeded(&target, &first.attempt_id, "blob://v1", 1, &[])
+        .mark_succeeded(&SuccessRecord {
+            url: &target,
+            attempt_id: &first.attempt_id,
+            blob_path: "blob://v1",
+            content_hash: 1,
+            outbound: &[],
+        })
         .await
         .unwrap();
     // Worker dies here, before frontier.ack(). The PEL still holds the
@@ -121,7 +128,13 @@ async fn full_recovery_round_trip_through_pipeline_states() {
 
     // Second pass through the pipeline (simulating the full re-run).
     metadata
-        .mark_succeeded(&target, &resumed.attempt_id, "blob://v1", 1, &[])
+        .mark_succeeded(&SuccessRecord {
+            url: &target,
+            attempt_id: &resumed.attempt_id,
+            blob_path: "blob://v1",
+            content_hash: 1,
+            outbound: &[],
+        })
         .await
         .unwrap();
     frontier.ack(&resumed.attempt_id).await.unwrap();
@@ -154,14 +167,15 @@ async fn outbox_dedupes_outbound_on_attempt_redelivery() {
         .map(|u| UrlEntry::seed(CanonicalUrl::parse(u).unwrap()))
         .collect();
 
-    metadata
-        .mark_succeeded(&parent, &attempt, "blob://1", 1, &outbound)
-        .await
-        .unwrap();
-    metadata
-        .mark_succeeded(&parent, &attempt, "blob://1", 1, &outbound)
-        .await
-        .unwrap();
+    let record = SuccessRecord {
+        url: &parent,
+        attempt_id: &attempt,
+        blob_path: "blob://1",
+        content_hash: 1,
+        outbound: &outbound,
+    };
+    metadata.mark_succeeded(&record).await.unwrap();
+    metadata.mark_succeeded(&record).await.unwrap();
 
     assert_eq!(
         metadata.outbox_row_count(),
@@ -189,14 +203,15 @@ async fn outbox_publisher_drains_into_frontier_atleast_once() {
         .into_iter()
         .map(|u| UrlEntry::seed(CanonicalUrl::parse(u).unwrap()))
         .collect();
+    let attempt = AttemptId::new("0|attempt-1");
     metadata
-        .mark_succeeded(
-            &parent,
-            &AttemptId::new("0|attempt-1"),
-            "blob://1",
-            1,
-            &outbound,
-        )
+        .mark_succeeded(&SuccessRecord {
+            url: &parent,
+            attempt_id: &attempt,
+            blob_path: "blob://1",
+            content_hash: 1,
+            outbound: &outbound,
+        })
         .await
         .unwrap();
 

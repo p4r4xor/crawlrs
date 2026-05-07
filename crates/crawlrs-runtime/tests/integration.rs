@@ -15,7 +15,7 @@ use bb8::Pool;
 use bb8_redis::RedisConnectionManager;
 use crawlrs_core::{
     AttemptId, CanonicalUrl, MetadataStore, ShardingPolicy, SingleShardPolicy, SiteAdapterRegistry,
-    UrlEntry, UrlStatus,
+    SuccessRecord, UrlEntry, UrlStatus,
 };
 use crawlrs_fakes::{FakeFetcher, InMemoryMetadataStore, InMemoryStore};
 use crawlrs_frontier_redis::RedisFrontier;
@@ -426,14 +426,15 @@ async fn cross_run_dedup_skips_previously_succeeded_url() {
         .mark_attempting(&already_done, "prior-run", 0)
         .await
         .unwrap();
+    let prior_attempt = AttemptId::new("prior-attempt");
     metadata
-        .mark_succeeded(
-            &already_done,
-            &AttemptId::new("prior-attempt"),
-            "memory://prior",
-            0xdead_beef,
-            &[],
-        )
+        .mark_succeeded(&SuccessRecord {
+            url: &already_done,
+            attempt_id: &prior_attempt,
+            blob_path: "memory://prior",
+            content_hash: 0xdead_beef,
+            outbound: &[],
+        })
         .await
         .unwrap();
 

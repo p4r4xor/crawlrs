@@ -19,8 +19,8 @@ use std::time::SystemTime;
 
 use async_trait::async_trait;
 use crawlrs_core::{
-    AttemptId, CanonicalUrl, Error, FailureKind, MetadataStore, OutboxEntry, OutboxReader, Result,
-    UrlEntry, UrlMetadata, UrlStatus,
+    CanonicalUrl, Error, FailureKind, MetadataStore, OutboxEntry, OutboxReader, Result,
+    SuccessRecord, UrlMetadata, UrlStatus,
 };
 
 use crate::outbox::{self, OutboxState};
@@ -119,31 +119,26 @@ impl MetadataStore for InMemoryMetadataStore {
         Ok(())
     }
 
-    async fn mark_succeeded(
-        &self,
-        url: &CanonicalUrl,
-        attempt_id: &AttemptId,
-        blob_path: &str,
-        content_hash: u64,
-        outbound: &[UrlEntry],
-    ) -> Result<()> {
+    async fn mark_succeeded(&self, record: &SuccessRecord<'_>) -> Result<()> {
         let mut ledger = self.ledger.lock().unwrap();
         let now = SystemTime::now();
 
-        let row = ledger
-            .rows
-            .get_mut(url.as_str())
-            .ok_or_else(|| Error::Metadata(format!("mark_succeeded: missing row for {url}")))?;
+        let row = ledger.rows.get_mut(record.url.as_str()).ok_or_else(|| {
+            Error::Metadata(format!("mark_succeeded: missing row for {}", record.url))
+        })?;
         row.status = UrlStatus::Succeeded;
         row.retry_count = 0;
-        row.blob_path = Some(blob_path.to_string());
-        row.content_hash = Some(content_hash);
+        row.blob_path = Some(record.blob_path.to_string());
+        row.content_hash = Some(record.content_hash);
         row.updated_at = now;
 
         // Mirror the Postgres `(url_id, attempt_id)` unique constraint:
         // only the first call per `(url, attempt_id)` appends a history
         // row. Redelivery of the same attempt is a no-op on history.
-        let history_key = (url.as_str().to_string(), attempt_id.as_str().to_string());
+        let history_key = (
+            record.url.as_str().to_string(),
+            record.attempt_id.as_str().to_string(),
+        );
         if ledger.succeeded_attempts.insert(history_key) {
             ledger.succeeded_history_count += 1;
         }
@@ -152,8 +147,8 @@ impl MetadataStore for InMemoryMetadataStore {
         // write so the two effects are atomic (the Postgres impl
         // achieves this via a transaction; the fake achieves it via
         // the lock).
-        for child in outbound {
-            outbox::record_outbound(&mut ledger.outbox, url, attempt_id, child);
+        for child in record.outbound {
+            outbox::record_outbound(&mut ledger.outbox, record.url, record.attempt_id, child);
         }
         Ok(())
     }
@@ -207,7 +202,7 @@ impl OutboxReader for InMemoryMetadataStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crawlrs_core::CanonicalUrl;
+    use crawlrs_core::{AttemptId, CanonicalUrl};
 
     #[tokio::test]
     async fn mark_succeeded_dedupes_by_attempt_id() {
@@ -218,7 +213,13 @@ mod tests {
         // First attempt: one history row.
         let first = AttemptId::new("attempt-1");
         store
-            .mark_succeeded(&url, &first, "blob://1", 1, &[])
+            .mark_succeeded(&SuccessRecord {
+                url: &url,
+                attempt_id: &first,
+                blob_path: "blob://1",
+                content_hash: 1,
+                outbound: &[],
+            })
             .await
             .unwrap();
         assert_eq!(store.succeeded_history_count(), 1);
@@ -226,7 +227,13 @@ mod tests {
         // Same attempt_id (re-delivered after a stall between
         // mark_succeeded and frontier.ack): MUST be idempotent.
         store
-            .mark_succeeded(&url, &first, "blob://1", 1, &[])
+            .mark_succeeded(&SuccessRecord {
+                url: &url,
+                attempt_id: &first,
+                blob_path: "blob://1",
+                content_hash: 1,
+                outbound: &[],
+            })
             .await
             .unwrap();
         assert_eq!(
@@ -239,7 +246,13 @@ mod tests {
         // re-discovered): a new history row IS expected.
         let second = AttemptId::new("attempt-2");
         store
-            .mark_succeeded(&url, &second, "blob://2", 2, &[])
+            .mark_succeeded(&SuccessRecord {
+                url: &url,
+                attempt_id: &second,
+                blob_path: "blob://2",
+                content_hash: 2,
+                outbound: &[],
+            })
             .await
             .unwrap();
         assert_eq!(

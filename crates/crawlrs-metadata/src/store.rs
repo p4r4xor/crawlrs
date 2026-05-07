@@ -16,8 +16,8 @@ use std::time::SystemTime;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use crawlrs_core::{
-    AttemptId, CanonicalUrl, Error, FailureKind, MetadataStore, OutboxEntry, OutboxReader, Result,
-    UrlEntry, UrlMetadata, UrlStatus,
+    CanonicalUrl, Error, FailureKind, MetadataStore, OutboxEntry, OutboxReader, Result,
+    SuccessRecord, UrlEntry, UrlMetadata, UrlStatus,
 };
 use serde_json::json;
 use sqlx::postgres::{PgPool, PgPoolOptions};
@@ -178,15 +178,8 @@ impl MetadataStore for PostgresMetadataStore {
         Ok(())
     }
 
-    #[tracing::instrument(skip(self, outbound), fields(url = %url, attempt = %attempt_id, blob_path = %blob_path, outbound_n = outbound.len()))]
-    async fn mark_succeeded(
-        &self,
-        url: &CanonicalUrl,
-        attempt_id: &AttemptId,
-        blob_path: &str,
-        content_hash: u64,
-        outbound: &[UrlEntry],
-    ) -> Result<()> {
+    #[tracing::instrument(skip(self, record), fields(url = %record.url, attempt = %record.attempt_id, blob_path = %record.blob_path, outbound_n = record.outbound.len()))]
+    async fn mark_succeeded(&self, record: &SuccessRecord<'_>) -> Result<()> {
         let _timer = crate::metrics::QueryTimer::new(crate::metrics::OP_MARK_SUCCEEDED);
         let mut tx = self
             .pool
@@ -198,25 +191,26 @@ impl MetadataStore for PostgresMetadataStore {
         // ledger update, the history append, and the outbox writes
         // commit atomically.
         let (id, last_run_id) =
-            update_url_to_succeeded(&mut tx, url, blob_path, content_hash).await?;
-        let detail = json!({ "blob_path": blob_path });
+            update_url_to_succeeded(&mut tx, record.url, record.blob_path, record.content_hash)
+                .await?;
+        let detail = json!({ "blob_path": record.blob_path });
         insert_history(
             &mut tx,
             id,
             &last_run_id,
             EVENT_SUCCEEDED,
             Some(detail),
-            Some(attempt_id.as_str()),
+            Some(record.attempt_id.as_str()),
         )
         .await?;
-        for child in outbound {
-            insert_outbox_row(&mut tx, id, attempt_id.as_str(), child).await?;
+        for child in record.outbound {
+            insert_outbox_row(&mut tx, id, record.attempt_id.as_str(), child).await?;
         }
 
         tx.commit().await.map_err(PostgresMetadataError::from)?;
         debug!(
-            url = url.as_str(),
-            outbound_n = outbound.len(),
+            url = record.url.as_str(),
+            outbound_n = record.outbound.len(),
             "mark_succeeded"
         );
         Ok(())
