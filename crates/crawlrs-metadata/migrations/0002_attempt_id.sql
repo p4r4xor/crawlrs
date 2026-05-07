@@ -6,7 +6,7 @@
 -- supplies it from the AttemptId carried by each ClaimedMessage; each
 -- Frontier impl owns its own encoding for the token.
 --
--- The column is NULLable for backfill compatibility with rows written
+-- The column is nullable for backfill compatibility with rows written
 -- by the v1 codepath. Postgres treats multiple NULLs as distinct under
 -- a UNIQUE constraint, so existing rows keep their independence.
 

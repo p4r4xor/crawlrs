@@ -25,7 +25,7 @@ replicaCount: 1
 # ---- crawl.toml content ---------------------------------------------
 # These values are rendered into the ConfigMap as crawl.toml. The
 # binary reads /etc/crawlrs/crawl.toml at startup. Credentials live in
-# the Secret and are env-var-overlayed (CRAWLRS_REDIS_URL,
+# the Secret and are env-var-overlaid (CRAWLRS_REDIS_URL,
 # CRAWLRS_POSTGRES_URL).
 runId: "demo"
 

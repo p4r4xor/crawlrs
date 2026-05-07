@@ -421,7 +421,7 @@ impl OutboxReader for PostgresMetadataStore {
             // notices, rather than silently dropping the row.
             let url = CanonicalUrl::parse(&row.url).map_err(|e| {
                 Error::Metadata(format!(
-                    "outbox row {} carries unparseable url {}: {e}",
+                    "outbox row {} carries unparsable url {}: {e}",
                     row.id, row.url
                 ))
             })?;
@@ -432,7 +432,7 @@ impl OutboxReader for PostgresMetadataStore {
                 .transpose()
                 .map_err(|e| {
                     Error::Metadata(format!(
-                        "outbox row {} carries unparseable discovered_from: {e}",
+                        "outbox row {} carries unparsable discovered_from: {e}",
                         row.id
                     ))
                 })?;

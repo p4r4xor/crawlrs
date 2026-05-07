@@ -84,7 +84,7 @@ pub fn parse_retry_after(value: &str) -> Option<Duration> {
 
 /// Convenience: pull the `Retry-After` header out of a response's
 /// header map and parse it. Header names are matched case-insensitively
-/// because the wire form varies. Returns `None` if absent or unparseable.
+/// because the wire form varies. Returns `None` if absent or unparsable.
 pub fn extract_retry_after(headers: &HashMap<String, String>) -> Option<Duration> {
     headers
         .iter()

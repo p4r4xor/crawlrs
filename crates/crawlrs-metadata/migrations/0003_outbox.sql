@@ -23,9 +23,9 @@ CREATE TABLE frontier_outbox (
 
 -- One outbox row per (parent fetch attempt, discovered URL). A
 -- redelivered attempt re-runs the post-fetch path; the second pass's
--- INSERTs collapse to no-ops via ON CONFLICT DO NOTHING in the
--- application layer, which lets the publisher drain a deterministic
--- set without worrying about double-publishes.
+-- INSERT statements collapse to no-ops via ON CONFLICT DO NOTHING in
+-- the application layer, which lets the publisher drain a
+-- deterministic set without worrying about double-publishes.
 ALTER TABLE frontier_outbox
     ADD CONSTRAINT frontier_outbox_unique_per_attempt
         UNIQUE (parent_url_id, parent_attempt_id, url);

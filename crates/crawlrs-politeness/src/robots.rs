@@ -320,7 +320,7 @@ pub(crate) fn evaluate_rules(body: &[u8], user_agent: &str, url: &str) -> bool {
     };
     match texting_robots::Robot::new(user_agent, body_str.as_bytes()) {
         Ok(robot) => robot.allowed(url),
-        Err(_) => true, // unparseable robots.txt; fail-open
+        Err(_) => true, // unparsable robots.txt; fail-open
     }
 }
 
