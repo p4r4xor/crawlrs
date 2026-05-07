@@ -5,7 +5,20 @@
 use async_trait::async_trait;
 
 use crate::error::Result;
-use crate::types::{AttemptId, ClaimedMessage, UrlEntry, WorkerIdentity};
+use crate::types::{AttemptId, UrlEntry, WorkerIdentity};
+
+/// A `UrlEntry` paired with the `AttemptId` of the delivery that
+/// surfaced it. Returned by [`Frontier::claim`] so the worker carries
+/// the correlation token through the pipeline alongside the URL
+/// itself.
+///
+/// Lives next to the trait per the project's "types tightly coupled
+/// to one trait live with the trait" rule.
+#[derive(Debug, Clone)]
+pub struct ClaimedMessage {
+    pub entry: UrlEntry,
+    pub attempt_id: AttemptId,
+}
 
 #[async_trait]
 #[allow(clippy::len_without_is_empty)] // `len` is a queue-depth metric, not a Collection contract

@@ -25,7 +25,7 @@ pub use error::{Error, Result};
 pub use hash::{content_hash, fnv1a_64};
 pub use traits::clock::{Clock, SystemClock, system_clock};
 pub use traits::fetcher::Fetcher;
-pub use traits::frontier::Frontier;
+pub use traits::frontier::{ClaimedMessage, Frontier};
 pub use traits::metadata::MetadataStore;
 pub use traits::outbox::{OutboxEntry, OutboxReader};
 pub use traits::parser::Parser;
@@ -35,7 +35,7 @@ pub use traits::sharding::{HostHashShardPolicy, ShardKey, ShardingPolicy, Single
 pub use traits::site_adapter::{SiteAdapter, SiteAdapterRegistry};
 pub use traits::store::Store;
 pub use types::{
-    AttemptId, ClaimedMessage, FetchRequest, FetchResponse, ParsedDocument, RedirectHop,
-    StoreRecord, UrlEntry, UrlMetadata, UrlStatus, WorkerIdentity,
+    AttemptId, FetchRequest, FetchResponse, ParsedDocument, RedirectHop, StoreRecord, UrlEntry,
+    UrlMetadata, UrlStatus, WorkerIdentity,
 };
 pub use url::CanonicalUrl;

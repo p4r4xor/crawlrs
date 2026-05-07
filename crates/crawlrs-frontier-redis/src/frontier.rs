@@ -363,8 +363,15 @@ impl RedisFrontier {
     /// pair always yields the same string, so tier-1 PEL replay
     /// reattaches to the worker's own previous in-flight entries
     /// without waiting for the `XAUTOCLAIM` idle threshold.
+    ///
+    /// The format is pinned here, in the adapter that owns the wire
+    /// contract; do NOT reach for `WorkerIdentity::Display` at call
+    /// sites. Display is a domain-level rendering (suitable for logs
+    /// and human output); coupling the Redis consumer name to it
+    /// would mean a future log-format change silently breaks PEL
+    /// replay against an existing Redis dataset.
     fn consumer_name(identity: &WorkerIdentity) -> String {
-        identity.to_string()
+        format!("pod-{}:{}", identity.pod_ordinal, identity.worker_index)
     }
 
     /// Override the per-shard `XADD MAXLEN ~ N` cap. Pass `0` to

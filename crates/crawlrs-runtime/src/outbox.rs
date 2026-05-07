@@ -109,6 +109,11 @@ async fn drain_once(
         Ok(r) => r,
         Err(e) => {
             warn!(error = %e, "outbox.fetch_unpublished failed");
+            metrics::counter!(
+                crate::metrics::OUTBOX_PUBLISHED_TOTAL,
+                "result" => crate::metrics::OUTBOX_RESULT_ERROR,
+            )
+            .increment(1);
             return 0;
         }
     };
@@ -126,6 +131,11 @@ async fn drain_once(
         // submits in the case where a partial batch DID get through
         // before the error surfaced.
         warn!(error = %e, n, "outbox -> frontier submit_batch failed");
+        metrics::counter!(
+            crate::metrics::OUTBOX_PUBLISHED_TOTAL,
+            "result" => crate::metrics::OUTBOX_RESULT_ERROR,
+        )
+        .increment(1);
         return 0;
     }
 
@@ -134,7 +144,16 @@ async fn drain_once(
         // re-XADD; Frontier dedup absorbs it. Surface the error so
         // operators notice; correctness is intact.
         warn!(error = %e, n, "outbox.mark_published failed");
+        metrics::counter!(
+            crate::metrics::OUTBOX_PUBLISHED_TOTAL,
+            "result" => crate::metrics::OUTBOX_RESULT_ERROR,
+        )
+        .increment(1);
     }
-    metrics::counter!(crate::metrics::OUTBOX_PUBLISHED_TOTAL).increment(n as u64);
+    metrics::counter!(
+        crate::metrics::OUTBOX_PUBLISHED_TOTAL,
+        "result" => crate::metrics::OUTBOX_RESULT_SUCCESS,
+    )
+    .increment(n as u64);
     n
 }

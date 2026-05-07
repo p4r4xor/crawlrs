@@ -102,7 +102,13 @@ pub async fn supervise_worker(
             return;
         }
 
-        let reason = classify_exit(&exit, identity);
+        let reason = classify_exit(&exit);
+        if matches!(exit, Ok(())) {
+            warn!(
+                identity = %identity,
+                "supervisor: worker exited Ok(()) without shutdown set; treating as anomaly"
+            );
+        }
 
         match state.decide_restart(Instant::now()) {
             RestartDecision::Restart(backoff) => {
@@ -135,19 +141,11 @@ pub async fn supervise_worker(
 }
 
 /// One-line classification of why the worker exited; becomes the
-/// `reason` label on `crawlrs_worker_restarts_total`.
-fn classify_exit(
-    exit: &Result<(), tokio::task::JoinError>,
-    identity: WorkerIdentity,
-) -> &'static str {
+/// `reason` label on `crawlrs_worker_restarts_total`. Pure function:
+/// the caller is responsible for any logging on top of the verdict.
+fn classify_exit(exit: &Result<(), tokio::task::JoinError>) -> &'static str {
     match exit {
-        Ok(()) => {
-            warn!(
-                identity = %identity,
-                "supervisor: worker exited Ok(()) without shutdown set; treating as anomaly"
-            );
-            "exit_unexpected"
-        }
+        Ok(()) => "exit_unexpected",
         Err(e) if e.is_panic() => "panic",
         Err(e) if e.is_cancelled() => "cancelled",
         Err(_) => "join_error",
@@ -327,7 +325,6 @@ mod tests {
         // covers the Ok(()) branch and the doc serves as the contract
         // for the others. The reason-string surface is exercised
         // indirectly by the supervise_worker integration path.
-        let identity = WorkerIdentity::new(0, 0);
-        assert_eq!(classify_exit(&Ok(()), identity), "exit_unexpected");
+        assert_eq!(classify_exit(&Ok(())), "exit_unexpected");
     }
 }

@@ -7,8 +7,10 @@
 //! - `UrlMetadata` / `UrlStatus`: per-URL ledger entry (cross-run state).
 //! - `WorkerIdentity`: stable identity for one worker across restarts.
 //! - `AttemptId`: opaque correlation token for one delivery of a URL.
-//! - `ClaimedMessage`: a `UrlEntry` paired with the `AttemptId` of the
-//!   delivery that surfaced it.
+//!
+//! `ClaimedMessage` (the `UrlEntry` + `AttemptId` pair returned by
+//! `Frontier::claim`) lives next to the trait it serves, in
+//! [`crate::traits::frontier`].
 
 use std::collections::HashMap;
 use std::fmt;
@@ -86,15 +88,6 @@ impl fmt::Display for AttemptId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
     }
-}
-
-/// A `UrlEntry` paired with the `AttemptId` of the delivery that
-/// surfaced it. Returned by `Frontier::claim` so the worker carries the
-/// correlation token through the pipeline alongside the URL itself.
-#[derive(Debug, Clone)]
-pub struct ClaimedMessage {
-    pub entry: UrlEntry,
-    pub attempt_id: AttemptId,
 }
 
 /// One item in the frontier: "this URL is queued to be fetched."

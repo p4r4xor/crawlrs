@@ -27,6 +27,15 @@ pub const SKIP_ALREADY_DLQ: &str = "already_dlq";
 pub const SKIP_POLITENESS_DISALLOWED: &str = "politeness_disallowed";
 pub const SKIP_DEPTH_LIMIT: &str = "depth_limit";
 
+/// Label values for `OUTBOX_PUBLISHED_TOTAL`. The two variants have
+/// different units: `success` counts rows shipped to the Frontier,
+/// `error` counts publish-error events observed in the drain loop
+/// (one increment per failure regardless of batch size). Operators
+/// alert on the error rate; throughput dashboards filter to
+/// `result=success`. Don't sum across labels.
+pub const OUTBOX_RESULT_SUCCESS: &str = "success";
+pub const OUTBOX_RESULT_ERROR: &str = "error";
+
 /// Attach descriptions (help text + units) to the runtime-layer
 /// metrics. Idempotent; safe to call multiple times in tests.
 pub fn register() {
@@ -61,10 +70,14 @@ pub fn register() {
     );
     describe_counter!(
         OUTBOX_PUBLISHED_TOTAL,
-        "Outbox rows shipped from the metadata store into the Frontier. \
-         The metadata mark_succeeded transaction writes outbound URLs \
-         to the outbox table; this publisher drains them. Steady-state \
-         should track the per-second outbound discovery rate."
+        "Outbox publisher activity, labelled by `result`. \
+         `result=success` counts rows successfully shipped from the \
+         metadata store into the Frontier (sums to outbound \
+         throughput). `result=error` counts publish-error events \
+         observed in the drain loop (fetch_unpublished, submit_batch, \
+         or mark_published failures); each event is one increment \
+         regardless of how many rows were involved. Don't sum across \
+         labels - the units differ."
     );
 }
 
