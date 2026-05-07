@@ -1,8 +1,8 @@
 //! End-to-end recovery scenarios composed against in-memory test
 //! doubles (no Docker, no real time).
 //!
-//! These are the architectural invariants captured by the
-//! `WorkerIdentity` + `AttemptId` work in ver.11:
+//! These are the architectural invariants the `WorkerIdentity` +
+//! `AttemptId` correlation pair must uphold:
 //!
 //! 1. A worker that crashes mid-pipeline, when respawned with the
 //!    same identity, reclaims its in-flight URLs immediately via
@@ -17,12 +17,15 @@
 //! threading, ON CONFLICT history dedupe) fail loudly here.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use crawlrs_core::{
-    AttemptId, CanonicalUrl, Frontier, MetadataStore, ShardingPolicy, SingleShardPolicy, UrlEntry,
-    WorkerIdentity,
+    AttemptId, CanonicalUrl, Frontier, MetadataStore, OutboxReader, ShardingPolicy,
+    SingleShardPolicy, UrlEntry, WorkerIdentity,
 };
 use crawlrs_fakes::{InMemoryFrontier, InMemoryMetadataStore};
+use crawlrs_runtime::outbox_publisher;
+use tokio::sync::watch;
 
 fn url(s: &str) -> CanonicalUrl {
     CanonicalUrl::parse(s).unwrap()
@@ -70,11 +73,11 @@ async fn duplicate_mark_succeeded_for_same_attempt_appends_one_history_row() {
 
     let attempt = AttemptId::new("0|1714867200000-0");
     store
-        .mark_succeeded(&url, &attempt, "blob://1", 1)
+        .mark_succeeded(&url, &attempt, "blob://1", 1, &[])
         .await
         .unwrap();
     store
-        .mark_succeeded(&url, &attempt, "blob://1", 1)
+        .mark_succeeded(&url, &attempt, "blob://1", 1, &[])
         .await
         .unwrap();
 
@@ -106,7 +109,7 @@ async fn full_recovery_round_trip_through_pipeline_states() {
     let first = frontier.claim(&identity).await.unwrap().unwrap();
     metadata.mark_attempting(&target, "run-1", 0).await.unwrap();
     metadata
-        .mark_succeeded(&target, &first.attempt_id, "blob://v1", 1)
+        .mark_succeeded(&target, &first.attempt_id, "blob://v1", 1, &[])
         .await
         .unwrap();
     // Worker dies here, before frontier.ack(). The PEL still holds the
@@ -118,7 +121,7 @@ async fn full_recovery_round_trip_through_pipeline_states() {
 
     // Second pass through the pipeline (simulating the full re-run).
     metadata
-        .mark_succeeded(&target, &resumed.attempt_id, "blob://v1", 1)
+        .mark_succeeded(&target, &resumed.attempt_id, "blob://v1", 1, &[])
         .await
         .unwrap();
     frontier.ack(&resumed.attempt_id).await.unwrap();
@@ -131,4 +134,93 @@ async fn full_recovery_round_trip_through_pipeline_states() {
         "redelivery of the same attempt must not duplicate ledger rows",
     );
     assert_eq!(frontier.len().await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn outbox_dedupes_outbound_on_attempt_redelivery() {
+    // The outbound side of attempt redelivery: when mark_succeeded is
+    // called twice with the same attempt_id and a non-empty outbound
+    // list, the outbox table must record exactly N rows, not 2N. The
+    // Postgres `(parent_url_id, parent_attempt_id, url)` UNIQUE
+    // constraint enforces this; the InMemoryMetadataStore mirrors the
+    // same invariant via its `dedupe` HashSet.
+    let metadata = InMemoryMetadataStore::new();
+    let parent = CanonicalUrl::parse("https://parent.test/").unwrap();
+    let attempt = AttemptId::new("0|attempt-1");
+    metadata.mark_attempting(&parent, "run-1", 0).await.unwrap();
+
+    let outbound: Vec<UrlEntry> = ["https://a.test/", "https://b.test/", "https://c.test/"]
+        .into_iter()
+        .map(|u| UrlEntry::seed(CanonicalUrl::parse(u).unwrap()))
+        .collect();
+
+    metadata
+        .mark_succeeded(&parent, &attempt, "blob://1", 1, &outbound)
+        .await
+        .unwrap();
+    metadata
+        .mark_succeeded(&parent, &attempt, "blob://1", 1, &outbound)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        metadata.outbox_row_count(),
+        3,
+        "the second mark_succeeded for the same (parent, attempt) is \
+         absorbed by the outbox UNIQUE constraint; we must not see 6 rows",
+    );
+}
+
+#[tokio::test]
+async fn outbox_publisher_drains_into_frontier_atleast_once() {
+    // End-to-end through the publisher task: after a worker pipeline
+    // commits outbound URLs via mark_succeeded, the publisher drains
+    // them into the Frontier on its first tick. If the publisher
+    // somehow ran twice, the Frontier seen-set would absorb the
+    // duplicates so the queue depth is exactly N.
+    let policy: Arc<dyn ShardingPolicy> = Arc::new(SingleShardPolicy);
+    let frontier: Arc<dyn Frontier> = Arc::new(InMemoryFrontier::new(policy, vec![0]));
+    let metadata = Arc::new(InMemoryMetadataStore::new());
+    let outbox: Arc<dyn OutboxReader> = metadata.clone();
+
+    let parent = CanonicalUrl::parse("https://parent.test/").unwrap();
+    metadata.mark_attempting(&parent, "run-1", 0).await.unwrap();
+    let outbound: Vec<UrlEntry> = ["https://a.test/", "https://b.test/", "https://c.test/"]
+        .into_iter()
+        .map(|u| UrlEntry::seed(CanonicalUrl::parse(u).unwrap()))
+        .collect();
+    metadata
+        .mark_succeeded(
+            &parent,
+            &AttemptId::new("0|attempt-1"),
+            "blob://1",
+            1,
+            &outbound,
+        )
+        .await
+        .unwrap();
+
+    // Spawn the publisher with a short interval; let it tick a few
+    // times; signal shutdown.
+    let (tx, rx) = watch::channel(false);
+    let publisher = tokio::spawn(outbox_publisher(
+        outbox.clone(),
+        frontier.clone(),
+        rx,
+        Duration::from_millis(20),
+    ));
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    tx.send(true).unwrap();
+    publisher.await.unwrap();
+
+    // Frontier holds exactly the three URLs (no duplicates from
+    // multiple drain cycles, no orphans from publisher missing rows).
+    assert_eq!(frontier.len().await.unwrap(), 3);
+
+    // No unpublished rows remain on the outbox side.
+    let still_unpublished = outbox.fetch_unpublished(100).await.unwrap();
+    assert!(
+        still_unpublished.is_empty(),
+        "publisher must mark drained rows so they don't reappear",
+    );
 }

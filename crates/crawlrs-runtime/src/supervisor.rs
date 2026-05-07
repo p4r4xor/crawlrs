@@ -9,11 +9,10 @@
 //! by `tokio::spawn`, leaving the pool degraded at `W-1` workers
 //! permanently. A poison URL or transient parser bug would leak the
 //! entire fleet over time. With supervision, the worker reattaches to
-//! its own PEL via stable [`crawlrs_core::WorkerIdentity`] (already
-//! ensured by ver.11) so respawn is correctness-preserving: any URL
-//! that was in flight at the moment of panic is still in the
-//! consumer's PEL on the Redis side and gets re-delivered on the
-//! restarted worker's next `claim()`.
+//! its own PEL via stable [`crawlrs_core::WorkerIdentity`] so respawn
+//! is correctness-preserving: any URL that was in flight at the moment
+//! of panic is still in the consumer's PEL on the Redis side and gets
+//! re-delivered on the restarted worker's next `claim()`.
 //!
 //! The supervisor runs as a tokio task (one per worker), distinct
 //! from the worker task it manages. Supervisor lifecycle:
@@ -213,6 +212,13 @@ enum RestartDecision {
     GiveUp,
 }
 
+// Inline because: visibility-forced. The tests exercise the private
+// `RestartState::decide_restart` state machine directly, which is the
+// pure-function core extracted out of `supervise_worker` so it can be
+// driven without spawning real tasks or sleeping real time. Promoting
+// `RestartState` to `pub` would leak an implementation detail of the
+// supervisor; keeping the tests inline keeps them coupled to the
+// state machine they're guarding.
 #[cfg(test)]
 mod tests {
     use super::*;

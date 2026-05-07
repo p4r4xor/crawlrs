@@ -83,6 +83,11 @@ pub async fn build(config: &CrawlrsConfig) -> Result<Built> {
         .parser(parser)
         .store(store)
         .metadata(metadata.clone())
+        // PostgresMetadataStore satisfies both MetadataStore (write
+        // path) and OutboxReader (publisher's drain path); the same
+        // Arc goes to both setters so the writer and the drain share
+        // one connection pool.
+        .outbox(metadata.clone())
         .sharding_policy(sharding_policy)
         .config(runtime_config)
         .run_id(&config.run_id)

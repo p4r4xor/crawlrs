@@ -215,8 +215,15 @@ impl UrlPipeline {
         let Some(doc) = self.extract(&resp).await else {
             return;
         };
-        self.submit_discovered(&doc).await;
-        self.finalize(&resp, &doc).await;
+        // Outbound URLs are computed here but NOT enqueued directly;
+        // they ride along as a parameter to mark_succeeded so the
+        // metadata + outbox writes commit in one Postgres transaction.
+        // A separate publisher task drains the outbox into the
+        // Frontier; the Frontier-side seen-set absorbs the
+        // at-least-once semantics if the publisher re-runs after a
+        // crash.
+        let outbound = compute_outbound(&self.entry, &doc, self.deps.config.max_depth);
+        self.finalize(&resp, &doc, &outbound).await;
     }
 
     /// Cross-run dedup. Returns `true` iff a prior run already
@@ -386,58 +393,12 @@ impl UrlPipeline {
         let _ = self.deps.frontier.ack(self.attempt()).await;
     }
 
-    /// Filter outbound links by scheme + max-depth, then submit the
-    /// batch to the frontier. Errors are logged; submit failure
-    /// doesn't abort the URL we're processing.
-    async fn submit_discovered(&self, doc: &ParsedDocument) {
-        let max_depth = self.deps.config.max_depth;
-        let new_depth = self.entry.depth + 1;
-
-        // Count depth-limit drops: HTTP-shape outlinks that were
-        // filtered out because their depth exceeds the configured cap.
-        // Non-HTTP links (mailto:, tel:, javascript:) are silently
-        // dropped without a metric since they're scheme-mismatch, not
-        // a crawler decision worth surfacing.
-        if max_depth.is_some_and(|limit| new_depth > limit) {
-            let dropped = doc.outbound_links.iter().filter(|u| u.is_http()).count();
-            if dropped > 0 {
-                metrics::counter!(
-                    crate::metrics::URLS_SKIPPED_TOTAL,
-                    "reason" => crate::metrics::SKIP_DEPTH_LIMIT,
-                )
-                .increment(dropped as u64);
-            }
-        }
-
-        let candidates: Vec<UrlEntry> = doc
-            .outbound_links
-            .iter()
-            .filter(|u| u.is_http())
-            .filter(|_| max_depth.is_none_or(|limit| new_depth <= limit))
-            .map(|u| UrlEntry {
-                url: u.clone(),
-                depth: new_depth,
-                discovered_from: Some(self.entry.url.clone()),
-            })
-            .collect();
-
-        if candidates.is_empty() {
-            return;
-        }
-
-        let _ = self
-            .deps
-            .frontier
-            .submit_batch(candidates)
-            .await
-            .map_err(|e| warn!(parent = %self.url(), error = %e, "submit_batch failed"));
-    }
-
     /// Persist the body via the store, record the blob path + content
-    /// hash on the metadata ledger, then ack the frontier. Each step's
-    /// failure path acks anyway to avoid hot-looping; the URL stays
-    /// `InProgress` in the ledger so a future run can pick it up.
-    async fn finalize(&self, resp: &FetchResponse, doc: &ParsedDocument) {
+    /// hash + outbound URLs on the metadata ledger (one Postgres
+    /// transaction), then ack the frontier. Each step's failure path
+    /// acks anyway to avoid hot-looping; the URL stays `InProgress`
+    /// in the ledger so a future run can pick it up.
+    async fn finalize(&self, resp: &FetchResponse, doc: &ParsedDocument, outbound: &[UrlEntry]) {
         let body_hash = content_hash(&resp.body);
         let record = StoreRecord {
             doc,
@@ -459,7 +420,7 @@ impl UrlPipeline {
         if let Err(e) = self
             .deps
             .metadata
-            .mark_succeeded(self.url(), self.attempt(), &blob_path, body_hash)
+            .mark_succeeded(self.url(), self.attempt(), &blob_path, body_hash, outbound)
             .await
         {
             warn!(url = %self.url(), error = %e, "metadata.mark_succeeded failed; acking anyway");
@@ -507,14 +468,58 @@ impl UrlPipeline {
     }
 }
 
-// Inline because: this is a *locality guard*, not a visibility-forced
-// test. Its job is to remind whoever edits `WorkerDeps` (a few
-// hundred lines above) to update the array; that reminder only
-// works if the test sits in the same file as the struct. Moving it
-// to `tests/` would make the array a number floating in space, no
-// longer tied to the thing it guards.
+/// Filter outbound links by scheme + max-depth and return them as
+/// `UrlEntry`s ready to ride along on the `mark_succeeded`
+/// transaction. Pure: no I/O. The actual enqueue into the Frontier
+/// happens via the outbox publisher (see
+/// [`crate::outbox::outbox_publisher`]) so that the Postgres commit
+/// and the queue write are atomic from the worker's perspective.
+fn compute_outbound(
+    parent: &UrlEntry,
+    doc: &ParsedDocument,
+    max_depth: Option<u32>,
+) -> Vec<UrlEntry> {
+    let new_depth = parent.depth + 1;
+
+    // Count depth-limit drops: HTTP-shape outlinks that were filtered
+    // out because their depth exceeds the configured cap. Non-HTTP
+    // links (mailto:, tel:, javascript:) are silently dropped without
+    // a metric since they're scheme-mismatch, not a crawler decision
+    // worth surfacing.
+    if max_depth.is_some_and(|limit| new_depth > limit) {
+        let dropped = doc.outbound_links.iter().filter(|u| u.is_http()).count();
+        if dropped > 0 {
+            metrics::counter!(
+                crate::metrics::URLS_SKIPPED_TOTAL,
+                "reason" => crate::metrics::SKIP_DEPTH_LIMIT,
+            )
+            .increment(dropped as u64);
+        }
+    }
+
+    doc.outbound_links
+        .iter()
+        .filter(|u| u.is_http())
+        .filter(|_| max_depth.is_none_or(|limit| new_depth <= limit))
+        .map(|u| UrlEntry {
+            url: u.clone(),
+            depth: new_depth,
+            discovered_from: Some(parent.url.clone()),
+        })
+        .collect()
+}
+
+// Inline because: locality guards. The first test ties an array of
+// field names to `WorkerDeps` so adding a field forces an update at
+// the construction site. The remaining tests pin the depth-limit
+// math in `compute_outbound` next to the function it guards;
+// promoting either to `tests/` would force `pub` on an internal
+// helper or array.
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crawlrs_core::{CanonicalUrl, ParsedDocument, UrlEntry};
+
     #[test]
     fn worker_deps_field_count_locked() {
         // If you add a field to WorkerDeps, update this and the
@@ -533,5 +538,69 @@ mod tests {
             "sharding_policy",
         ];
         assert_eq!(names.len(), 10);
+    }
+
+    fn parent_at(depth: u32) -> UrlEntry {
+        UrlEntry {
+            url: CanonicalUrl::parse("https://parent.test/").unwrap(),
+            depth,
+            discovered_from: None,
+        }
+    }
+
+    fn doc_with_links(urls: &[&str]) -> ParsedDocument {
+        ParsedDocument {
+            url: CanonicalUrl::parse("https://parent.test/").unwrap(),
+            status: 200,
+            title: None,
+            text: None,
+            outbound_links: urls
+                .iter()
+                .map(|u| CanonicalUrl::parse(u).unwrap())
+                .collect(),
+            fetched_at: chrono::Utc::now(),
+        }
+    }
+
+    #[test]
+    fn compute_outbound_with_no_cap_keeps_all_http_links() {
+        let parent = parent_at(0);
+        let doc = doc_with_links(&["https://a.test/", "https://b.test/"]);
+        let outbound = compute_outbound(&parent, &doc, None);
+        assert_eq!(outbound.len(), 2);
+        assert!(outbound.iter().all(|e| e.depth == 1));
+    }
+
+    #[test]
+    fn compute_outbound_drops_links_past_max_depth() {
+        let parent = parent_at(2);
+        let doc = doc_with_links(&["https://a.test/", "https://b.test/"]);
+        // max_depth=2 means a parent at depth 2 produces children at
+        // depth 3, which exceeds the cap; everything is filtered out.
+        let outbound = compute_outbound(&parent, &doc, Some(2));
+        assert!(outbound.is_empty());
+    }
+
+    #[test]
+    fn compute_outbound_keeps_children_exactly_at_max_depth() {
+        let parent = parent_at(2);
+        let doc = doc_with_links(&["https://a.test/"]);
+        // max_depth=3 means a parent at depth 2 produces children at
+        // depth 3 (exactly the cap); they must be kept, not treated
+        // as past-cap.
+        let outbound = compute_outbound(&parent, &doc, Some(3));
+        assert_eq!(outbound.len(), 1);
+        assert_eq!(outbound[0].depth, 3);
+    }
+
+    #[test]
+    fn compute_outbound_threads_parent_url_as_discovered_from() {
+        let parent = parent_at(0);
+        let doc = doc_with_links(&["https://a.test/"]);
+        let outbound = compute_outbound(&parent, &doc, None);
+        assert_eq!(
+            outbound[0].discovered_from.as_ref().map(|u| u.as_str()),
+            Some("https://parent.test/"),
+        );
     }
 }

@@ -115,6 +115,7 @@ async fn build_crawler(
         .parser(parser)
         .store(store.clone())
         .metadata(metadata.clone())
+        .outbox(metadata.clone())
         .adapters(adapters)
         .config(config)
         .run_id(rid)
@@ -431,6 +432,7 @@ async fn cross_run_dedup_skips_previously_succeeded_url() {
             &AttemptId::new("prior-attempt"),
             "memory://prior",
             0xdead_beef,
+            &[],
         )
         .await
         .unwrap();

@@ -20,6 +20,7 @@ pub const URLS_SKIPPED_TOTAL: &str = "crawlrs_urls_skipped_total";
 pub const WORKERS_ACTIVE: &str = "crawlrs_workers_active";
 pub const PIPELINE_SECONDS: &str = "crawlrs_pipeline_seconds";
 pub const WORKER_RESTARTS_TOTAL: &str = "crawlrs_worker_restarts_total";
+pub const OUTBOX_PUBLISHED_TOTAL: &str = "crawlrs_outbox_published_total";
 
 pub const SKIP_ALREADY_SUCCEEDED: &str = "already_succeeded";
 pub const SKIP_ALREADY_DLQ: &str = "already_dlq";
@@ -57,6 +58,13 @@ pub fn register() {
         "Worker tasks respawned by the supervisor. Labelled by reason \
          (panic / cancelled / exit_unexpected / join_error). Spike \
          indicates a poison-URL crash loop or transient infra fault."
+    );
+    describe_counter!(
+        OUTBOX_PUBLISHED_TOTAL,
+        "Outbox rows shipped from the metadata store into the Frontier. \
+         The metadata mark_succeeded transaction writes outbound URLs \
+         to the outbox table; this publisher drains them. Steady-state \
+         should track the per-second outbound discovery rate."
     );
 }
 

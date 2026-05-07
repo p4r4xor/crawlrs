@@ -4,8 +4,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crawlrs_core::{
-    Fetcher, Frontier, HostHashShardPolicy, MetadataStore, Parser, Politeness, ShardingPolicy,
-    SiteAdapterRegistry, Store,
+    Fetcher, Frontier, HostHashShardPolicy, MetadataStore, OutboxReader, Parser, Politeness,
+    ShardingPolicy, SiteAdapterRegistry, Store,
 };
 use thiserror::Error;
 use tokio::sync::watch;
@@ -13,6 +13,7 @@ use tokio::task::JoinSet;
 use tracing::{info, warn};
 
 use crate::maintenance::maintenance_loop;
+use crate::outbox::outbox_publisher;
 use crate::supervisor::supervise_worker;
 use crate::worker::WorkerDeps;
 
@@ -120,6 +121,12 @@ impl Default for CrawlerConfig {
 /// from a signal handler or admin command.
 pub struct Crawler {
     deps: Arc<WorkerDeps>,
+    /// Reader side of the transactional outbox. The atomic write
+    /// path runs through `MetadataStore::mark_succeeded`; this
+    /// handle drives the publisher task that drains the table into
+    /// the Frontier. Typically the same `Arc` as `deps.metadata`,
+    /// since the Postgres impl satisfies both traits.
+    outbox: Arc<dyn OutboxReader>,
     shutdown_tx: watch::Sender<bool>,
     shutdown_rx: watch::Receiver<bool>,
 }
@@ -164,6 +171,23 @@ impl Crawler {
         let interval = self.deps.config.maintenance_interval;
         let m_shutdown = self.shutdown_rx.clone();
         tasks.spawn(maintenance_loop(interval, m_shutdown));
+
+        // Outbox publisher: drains frontier_outbox rows written
+        // transactionally by the worker pipeline's mark_succeeded
+        // call into the Frontier. This is the consumer half of the
+        // transactional-outbox pattern: the worker commits the
+        // outbound URLs in the same Postgres transaction as the
+        // metadata write, and this task converts those committed
+        // rows into at-least-once Frontier writes.
+        let outbox = self.outbox.clone();
+        let frontier = self.deps.frontier.clone();
+        let p_shutdown = self.shutdown_rx.clone();
+        tasks.spawn(outbox_publisher(
+            outbox,
+            frontier,
+            p_shutdown,
+            crate::outbox::DEFAULT_PUBLISH_INTERVAL,
+        ));
 
         // Worker pool. Each worker gets a stable WorkerIdentity built
         // from the configured pod_ordinal + the per-pod worker index.
@@ -219,6 +243,12 @@ pub struct CrawlerBuilder {
     parser: Option<Arc<dyn Parser>>,
     store: Option<Arc<dyn Store>>,
     metadata: Option<Arc<dyn MetadataStore>>,
+    /// Outbox reader. Optional in the builder surface because the
+    /// production Postgres impl satisfies both `MetadataStore` and
+    /// `OutboxReader` and callers typically pass the same `Arc` to
+    /// both setters; if omitted at build time, we default-fall-back
+    /// to none and the publisher is spawned only when supplied.
+    outbox: Option<Arc<dyn OutboxReader>>,
     adapters: Option<Arc<SiteAdapterRegistry>>,
     sharding_policy: Option<Arc<dyn ShardingPolicy>>,
     config: Option<CrawlerConfig>,
@@ -250,6 +280,13 @@ impl CrawlerBuilder {
         self.metadata = Some(m);
         self
     }
+    /// Set the outbox reader. Production wiring usually passes the
+    /// same `Arc` here as in `metadata()` (PostgresMetadataStore
+    /// implements both traits).
+    pub fn outbox(mut self, o: Arc<dyn OutboxReader>) -> Self {
+        self.outbox = Some(o);
+        self
+    }
     pub fn adapters(mut self, a: Arc<SiteAdapterRegistry>) -> Self {
         self.adapters = Some(a);
         self
@@ -276,6 +313,7 @@ impl CrawlerBuilder {
         let parser = self.parser.ok_or(CrawlerError::MissingDep("parser"))?;
         let store = self.store.ok_or(CrawlerError::MissingDep("store"))?;
         let metadata = self.metadata.ok_or(CrawlerError::MissingDep("metadata"))?;
+        let outbox = self.outbox.ok_or(CrawlerError::MissingDep("outbox"))?;
         let run_id = self.run_id.ok_or(CrawlerError::MissingDep("run_id"))?;
         let adapters = self
             .adapters
@@ -305,6 +343,7 @@ impl CrawlerBuilder {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Ok(Crawler {
             deps,
+            outbox,
             shutdown_tx,
             shutdown_rx,
         })

@@ -16,6 +16,7 @@ pub mod crawler;
 pub mod failure;
 pub mod maintenance;
 pub mod metrics;
+pub mod outbox;
 pub mod supervisor;
 pub mod worker;
 
@@ -23,4 +24,5 @@ pub use crawler::{Crawler, CrawlerBuilder, CrawlerConfig, CrawlerError};
 pub use failure::{
     classify_status, classify_transport_error, extract_retry_after, parse_retry_after,
 };
+pub use outbox::{DEFAULT_PUBLISH_INTERVAL, outbox_publisher};
 pub use supervisor::{RestartPolicy, supervise_worker};

@@ -136,8 +136,12 @@ async fn end_to_end_against_postgres_metadata_store() {
     );
     let parser = Arc::new(LolHtmlParser);
     let store = Arc::new(InMemoryStore::new());
-    let metadata: Arc<dyn MetadataStore> =
-        Arc::new(PostgresMetadataStore::with_pool(fx.pg_pool.clone()));
+    // Build the concrete store first; the same Arc satisfies both
+    // MetadataStore (write-side) and OutboxReader (publisher's drain
+    // path) so writer and publisher share one connection pool.
+    let pg_store = Arc::new(PostgresMetadataStore::with_pool(fx.pg_pool.clone()));
+    let metadata: Arc<dyn MetadataStore> = pg_store.clone();
+    let outbox: Arc<dyn crawlrs_core::OutboxReader> = pg_store;
     let adapters = Arc::new(SiteAdapterRegistry::new());
 
     let config = CrawlerConfig {
@@ -162,6 +166,7 @@ async fn end_to_end_against_postgres_metadata_store() {
         .parser(parser)
         .store(store)
         .metadata(metadata.clone())
+        .outbox(outbox)
         .adapters(adapters)
         .config(config)
         .run_id(rid.clone())

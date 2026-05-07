@@ -6,7 +6,7 @@ use async_trait::async_trait;
 
 use crate::error::Result;
 use crate::traits::politeness::FailureKind;
-use crate::types::{AttemptId, UrlMetadata};
+use crate::types::{AttemptId, UrlEntry, UrlMetadata};
 use crate::url::CanonicalUrl;
 
 /// Per-URL ledger across all crawl runs. Distinct from the data-plane
@@ -44,12 +44,24 @@ pub trait MetadataStore: Send + Sync {
     /// uniqueness key on the history row so that re-delivery of the
     /// same attempt (e.g. via `XAUTOCLAIM` after a stall between this
     /// call and `frontier.ack`) does not duplicate ledger entries.
+    ///
+    /// `outbound` is the set of newly-discovered URLs to enqueue into
+    /// the Frontier. Implementations MUST persist these to the outbox
+    /// in the same transaction as the metadata write, so the two
+    /// effects are atomic from the caller's perspective. The
+    /// publisher (driven by [`crate::traits::outbox::OutboxReader`])
+    /// drains the outbox asynchronously and writes the URLs into the
+    /// Frontier at-least-once; per-URL dedupe at the Frontier side
+    /// absorbs the redelivery case. The same uniqueness rule applies:
+    /// a redelivered `(url, attempt_id)` MUST NOT duplicate outbox
+    /// rows.
     async fn mark_succeeded(
         &self,
         url: &CanonicalUrl,
         attempt_id: &AttemptId,
         blob_path: &str,
         content_hash: u64,
+        outbound: &[UrlEntry],
     ) -> Result<()>;
 
     /// Transient failure: `status -> FailedTransient`, `retry_count`

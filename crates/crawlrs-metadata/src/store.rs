@@ -16,7 +16,8 @@ use std::time::SystemTime;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use crawlrs_core::{
-    AttemptId, CanonicalUrl, Error, FailureKind, MetadataStore, Result, UrlMetadata, UrlStatus,
+    AttemptId, CanonicalUrl, Error, FailureKind, MetadataStore, OutboxEntry, OutboxReader, Result,
+    UrlEntry, UrlMetadata, UrlStatus,
 };
 use serde_json::json;
 use sqlx::postgres::{PgPool, PgPoolOptions};
@@ -177,13 +178,14 @@ impl MetadataStore for PostgresMetadataStore {
         Ok(())
     }
 
-    #[tracing::instrument(skip(self), fields(url = %url, attempt = %attempt_id, blob_path = %blob_path))]
+    #[tracing::instrument(skip(self, outbound), fields(url = %url, attempt = %attempt_id, blob_path = %blob_path, outbound_n = outbound.len()))]
     async fn mark_succeeded(
         &self,
         url: &CanonicalUrl,
         attempt_id: &AttemptId,
         blob_path: &str,
         content_hash: u64,
+        outbound: &[UrlEntry],
     ) -> Result<()> {
         let _timer = crate::metrics::QueryTimer::new(crate::metrics::OP_MARK_SUCCEEDED);
         let mut tx = self
@@ -191,26 +193,12 @@ impl MetadataStore for PostgresMetadataStore {
             .begin()
             .await
             .map_err(PostgresMetadataError::from)?;
-        let row: Option<(i64, String)> = sqlx::query_as(
-            "UPDATE url_metadata
-                SET status = $1,
-                    retry_count = 0,
-                    blob_path = $2,
-                    content_hash = $3,
-                    updated_at = NOW()
-              WHERE url = $4
-              RETURNING id, last_run_id",
-        )
-        .bind(STATUS_SUCCEEDED)
-        .bind(blob_path)
-        .bind(content_hash as i64)
-        .bind(url.as_str())
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(PostgresMetadataError::from)?;
 
+        // Three-step orchestration, all in one transaction so the
+        // ledger update, the history append, and the outbox writes
+        // commit atomically.
         let (id, last_run_id) =
-            row.ok_or_else(|| PostgresMetadataError::Missing(url.as_str().to_string()))?;
+            update_url_to_succeeded(&mut tx, url, blob_path, content_hash).await?;
         let detail = json!({ "blob_path": blob_path });
         insert_history(
             &mut tx,
@@ -221,8 +209,16 @@ impl MetadataStore for PostgresMetadataStore {
             Some(attempt_id.as_str()),
         )
         .await?;
+        for child in outbound {
+            insert_outbox_row(&mut tx, id, attempt_id.as_str(), child).await?;
+        }
+
         tx.commit().await.map_err(PostgresMetadataError::from)?;
-        debug!(url = url.as_str(), "mark_succeeded");
+        debug!(
+            url = url.as_str(),
+            outbound_n = outbound.len(),
+            "mark_succeeded"
+        );
         Ok(())
     }
 
@@ -300,6 +296,31 @@ impl MetadataStore for PostgresMetadataStore {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
+async fn update_url_to_succeeded(
+    tx: &mut Transaction<'_, Postgres>,
+    url: &CanonicalUrl,
+    blob_path: &str,
+    content_hash: u64,
+) -> LocalResult<(i64, String)> {
+    let row: Option<(i64, String)> = sqlx::query_as(
+        "UPDATE url_metadata
+            SET status = $1,
+                retry_count = 0,
+                blob_path = $2,
+                content_hash = $3,
+                updated_at = NOW()
+          WHERE url = $4
+          RETURNING id, last_run_id",
+    )
+    .bind(STATUS_SUCCEEDED)
+    .bind(blob_path)
+    .bind(content_hash as i64)
+    .bind(url.as_str())
+    .fetch_optional(&mut **tx)
+    .await?;
+    row.ok_or_else(|| PostgresMetadataError::Missing(url.as_str().to_string()))
+}
+
 async fn upsert_attempting(
     tx: &mut Transaction<'_, Postgres>,
     url: &CanonicalUrl,
@@ -355,6 +376,111 @@ async fn insert_history(
     .execute(&mut **tx)
     .await?;
     Ok(())
+}
+
+async fn insert_outbox_row(
+    tx: &mut Transaction<'_, Postgres>,
+    parent_url_id: i64,
+    parent_attempt_id: &str,
+    child: &UrlEntry,
+) -> LocalResult<()> {
+    // The unique (parent_url_id, parent_attempt_id, url) constraint
+    // catches a redelivered attempt's second pass: the second insert
+    // collapses to a no-op so the publisher drains a deterministic
+    // set of rows.
+    sqlx::query(
+        "INSERT INTO frontier_outbox
+            (url, depth, discovered_from, parent_url_id, parent_attempt_id)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (parent_url_id, parent_attempt_id, url) DO NOTHING",
+    )
+    .bind(child.url.as_str())
+    .bind(child.depth as i32)
+    .bind(child.discovered_from.as_ref().map(|u| u.as_str()))
+    .bind(parent_url_id)
+    .bind(parent_attempt_id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+#[async_trait]
+impl OutboxReader for PostgresMetadataStore {
+    #[tracing::instrument(skip(self), fields(max))]
+    async fn fetch_unpublished(&self, max: usize) -> Result<Vec<OutboxEntry>> {
+        let rows: Vec<OutboxRow> = sqlx::query_as::<_, OutboxRow>(
+            "SELECT id, url, depth, discovered_from
+             FROM frontier_outbox
+             WHERE published_at IS NULL
+             ORDER BY id
+             LIMIT $1",
+        )
+        .bind(max as i64)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(PostgresMetadataError::from)?;
+
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            // A malformed URL in the outbox means a corrupted parent
+            // write; we surface the parse error so the operator
+            // notices, rather than silently dropping the row.
+            let url = CanonicalUrl::parse(&row.url).map_err(|e| {
+                Error::Metadata(format!(
+                    "outbox row {} carries unparseable url {}: {e}",
+                    row.id, row.url
+                ))
+            })?;
+            let discovered_from = row
+                .discovered_from
+                .as_deref()
+                .map(CanonicalUrl::parse)
+                .transpose()
+                .map_err(|e| {
+                    Error::Metadata(format!(
+                        "outbox row {} carries unparseable discovered_from: {e}",
+                        row.id
+                    ))
+                })?;
+            out.push(OutboxEntry {
+                id: row.id,
+                entry: UrlEntry {
+                    url,
+                    depth: row.depth as u32,
+                    discovered_from,
+                },
+            });
+        }
+        Ok(out)
+    }
+
+    #[tracing::instrument(skip(self, ids), fields(n = ids.len()))]
+    async fn mark_published(&self, ids: &[i64]) -> Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        // Idempotent: a row already marked published gets its
+        // published_at left alone (the WHERE clause filters it).
+        sqlx::query(
+            "UPDATE frontier_outbox
+                SET published_at = NOW()
+              WHERE id = ANY($1)
+                AND published_at IS NULL",
+        )
+        .bind(ids)
+        .execute(&self.pool)
+        .await
+        .map_err(PostgresMetadataError::from)?;
+        Ok(())
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct OutboxRow {
+    id: i64,
+    url: String,
+    depth: i32,
+    discovered_from: Option<String>,
 }
 
 fn failure_kind_str(kind: FailureKind) -> &'static str {

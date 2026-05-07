@@ -1,4 +1,4 @@
--- crawlrs metadata schema (per ADR-0009).
+-- crawlrs metadata schema.
 --
 -- Two tables:
 --   url_metadata  one row per URL; current ledger snapshot. Mutable.

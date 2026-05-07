@@ -379,34 +379,16 @@ fn claim_from_shard(
     None
 }
 
+// Inline because: visibility-forced. These tests probe the `Inner`
+// shape (private fields, the per-shard `pel` map, the seen-set) to
+// assert that PEL replay and at-least-once semantics hold across
+// claim/ack/nack cycles. Splitting into `tests/` would require
+// publicising internal structure that has no place in the public API.
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::clock::ManualClock;
     use crawlrs_core::{CanonicalUrl, SingleShardPolicy, UrlEntry};
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    /// Test-local manual clock. Lives here rather than in a top-level
-    /// module so the in-memory frontier's tests don't pull in
-    /// dependencies on a separate clock crate.
-    #[derive(Debug)]
-    struct ManualClock {
-        ms: AtomicU64,
-    }
-    impl ManualClock {
-        fn new(start_ms: u64) -> Self {
-            Self {
-                ms: AtomicU64::new(start_ms),
-            }
-        }
-        fn advance_ms(&self, delta: u64) {
-            self.ms.fetch_add(delta, Ordering::Relaxed);
-        }
-    }
-    impl Clock for ManualClock {
-        fn now_ms(&self) -> u64 {
-            self.ms.load(Ordering::Relaxed)
-        }
-    }
 
     fn url(s: &str) -> CanonicalUrl {
         CanonicalUrl::parse(s).unwrap()

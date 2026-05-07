@@ -15,19 +15,19 @@
 //! - [`error`] - the crate-wide `Error` enum.
 //! - [`hash`] - pure helper functions for FNV-1a + content hashing.
 
-pub mod clock;
 pub mod error;
 pub mod hash;
 pub mod traits;
 pub mod types;
 pub mod url;
 
-pub use clock::{Clock, SystemClock, system_clock};
 pub use error::{Error, Result};
 pub use hash::{content_hash, fnv1a_64};
+pub use traits::clock::{Clock, SystemClock, system_clock};
 pub use traits::fetcher::Fetcher;
 pub use traits::frontier::Frontier;
 pub use traits::metadata::MetadataStore;
+pub use traits::outbox::{OutboxEntry, OutboxReader};
 pub use traits::parser::Parser;
 pub use traits::politeness::{FailureKind, PoliteDecision, Politeness};
 pub use traits::proxy::{ProxyOutcome, ProxyResolver, ProxySelection};
