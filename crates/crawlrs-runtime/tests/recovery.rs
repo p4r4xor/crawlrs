@@ -20,8 +20,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crawlrs_core::{
-    AttemptId, CanonicalUrl, Frontier, MetadataStore, OutboxReader, ShardingPolicy,
-    SingleShardPolicy, SuccessRecord, UrlEntry, WorkerIdentity,
+    AttemptId, CanonicalUrl, Frontier, MetadataStore, Outbox, ShardingPolicy, SingleShardPolicy,
+    SuccessRecord, UrlEntry, WorkerIdentity,
 };
 use crawlrs_fakes::{InMemoryFrontier, InMemoryMetadataStore};
 use crawlrs_runtime::outbox_publisher;
@@ -195,7 +195,7 @@ async fn outbox_publisher_drains_into_frontier_atleast_once() {
     let policy: Arc<dyn ShardingPolicy> = Arc::new(SingleShardPolicy);
     let frontier: Arc<dyn Frontier> = Arc::new(InMemoryFrontier::new(policy, vec![0]));
     let metadata = Arc::new(InMemoryMetadataStore::new());
-    let outbox: Arc<dyn OutboxReader> = metadata.clone();
+    let outbox: Arc<dyn Outbox> = metadata.clone();
 
     let parent = CanonicalUrl::parse("https://parent.test/").unwrap();
     metadata.mark_attempting(&parent, "run-1", 0).await.unwrap();
@@ -233,9 +233,9 @@ async fn outbox_publisher_drains_into_frontier_atleast_once() {
     assert_eq!(frontier.len().await.unwrap(), 3);
 
     // No unpublished rows remain on the outbox side.
-    let still_unpublished = outbox.fetch_unpublished(100).await.unwrap();
-    assert!(
-        still_unpublished.is_empty(),
+    assert_eq!(
+        metadata.unpublished_outbox_count(),
+        0,
         "publisher must mark drained rows so they don't reappear",
     );
 }

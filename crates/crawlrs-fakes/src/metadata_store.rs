@@ -19,8 +19,8 @@ use std::time::SystemTime;
 
 use async_trait::async_trait;
 use crawlrs_core::{
-    CanonicalUrl, Error, FailureKind, MetadataStore, OutboxEntry, OutboxReader, OutboxRowId,
-    Result, SuccessRecord, UrlMetadata, UrlStatus,
+    CanonicalUrl, Error, FailureKind, MetadataStore, Outbox, OutboxRowId, Result, ShipFn,
+    SuccessRecord, UrlMetadata, UrlStatus,
 };
 
 use crate::outbox::{self, OutboxState};
@@ -84,6 +84,20 @@ impl InMemoryMetadataStore {
     /// child_url)` UNIQUE level.
     pub fn outbox_row_count(&self) -> usize {
         self.ledger.lock().unwrap().outbox.rows.len()
+    }
+
+    /// Count of outbox rows that haven't yet been published (and aren't
+    /// currently leased). Test-only accessor; callers asserting on
+    /// "publisher drained everything" use this in place of the old
+    /// `OutboxReader::fetch_unpublished` snapshot.
+    pub fn unpublished_outbox_count(&self) -> usize {
+        let ledger = self.ledger.lock().unwrap();
+        ledger
+            .outbox
+            .rows
+            .iter()
+            .filter(|row| !row.published && !ledger.outbox.leased.contains(&row.id.value()))
+            .count()
     }
 }
 
@@ -180,16 +194,35 @@ impl MetadataStore for InMemoryMetadataStore {
 }
 
 #[async_trait]
-impl OutboxReader for InMemoryMetadataStore {
-    async fn fetch_unpublished(&self, max: usize) -> Result<Vec<OutboxEntry>> {
-        let ledger = self.ledger.lock().unwrap();
-        Ok(outbox::fetch_unpublished(&ledger.outbox, max))
-    }
+impl Outbox for InMemoryMetadataStore {
+    async fn publish(&self, max: usize, ship: ShipFn) -> Result<usize> {
+        // Lease under the lock, then release the lock before awaiting
+        // ship: peers can run concurrent publish calls and the lease
+        // set hides our rows from them. Mirrors the Postgres
+        // FOR UPDATE SKIP LOCKED contract; see ADR-0017.
+        let entries = {
+            let mut ledger = self.ledger.lock().unwrap();
+            outbox::lease_batch(&mut ledger.outbox, max)
+        };
+        if entries.is_empty() {
+            return Ok(0);
+        }
+        let ids: Vec<OutboxRowId> = entries.iter().map(|e| e.id).collect();
+        let n = entries.len();
 
-    async fn mark_published(&self, ids: &[OutboxRowId]) -> Result<()> {
+        let ship_result = ship(entries).await;
+
         let mut ledger = self.ledger.lock().unwrap();
-        outbox::mark_published(&mut ledger.outbox, ids);
-        Ok(())
+        match ship_result {
+            Ok(()) => {
+                outbox::finalize_lease(&mut ledger.outbox, &ids);
+                Ok(n)
+            }
+            Err(e) => {
+                outbox::release_lease(&mut ledger.outbox, &ids);
+                Err(e)
+            }
+        }
     }
 }
 

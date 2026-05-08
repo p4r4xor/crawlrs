@@ -27,7 +27,7 @@ pub use traits::clock::{Clock, SystemClock, system_clock};
 pub use traits::fetcher::Fetcher;
 pub use traits::frontier::{ClaimedMessage, Frontier};
 pub use traits::metadata::{MetadataStore, SuccessRecord};
-pub use traits::outbox::{OutboxEntry, OutboxReader, OutboxRowId};
+pub use traits::outbox::{Outbox, OutboxEntry, OutboxRowId, ShipFn, ShipFuture};
 pub use traits::parser::Parser;
 pub use traits::politeness::{FailureKind, PoliteDecision, Politeness};
 pub use traits::proxy::{ProxyOutcome, ProxyResolver, ProxySelection};

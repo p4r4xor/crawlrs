@@ -16,8 +16,8 @@ use std::time::SystemTime;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use crawlrs_core::{
-    CanonicalUrl, Error, FailureKind, MetadataStore, OutboxEntry, OutboxReader, OutboxRowId,
-    Result, SuccessRecord, UrlEntry, UrlMetadata, UrlStatus,
+    CanonicalUrl, Error, FailureKind, MetadataStore, Outbox, OutboxEntry, OutboxRowId, Result,
+    ShipFn, SuccessRecord, UrlEntry, UrlMetadata, UrlStatus,
 };
 use serde_json::json;
 use sqlx::postgres::{PgPool, PgPoolOptions};
@@ -399,26 +399,46 @@ async fn insert_outbox_row(
 }
 
 #[async_trait]
-impl OutboxReader for PostgresMetadataStore {
-    #[tracing::instrument(skip(self), fields(max))]
-    async fn fetch_unpublished(&self, max: usize) -> Result<Vec<OutboxEntry>> {
+impl Outbox for PostgresMetadataStore {
+    #[tracing::instrument(skip(self, ship), fields(max))]
+    async fn publish(&self, max: usize, ship: ShipFn) -> Result<usize> {
+        // One transaction holds the SELECT-acquired row locks until
+        // commit. Concurrent callers' SELECTs use SKIP LOCKED to step
+        // over our locked rows, so they receive disjoint batches. See
+        // ADR-0017.
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(PostgresMetadataError::from)?;
+
         let rows: Vec<OutboxRow> = sqlx::query_as::<_, OutboxRow>(
             "SELECT id, url, depth, discovered_from
              FROM frontier_outbox
              WHERE published_at IS NULL
              ORDER BY id
-             LIMIT $1",
+             LIMIT $1
+             FOR UPDATE SKIP LOCKED",
         )
         .bind(max as i64)
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await
         .map_err(PostgresMetadataError::from)?;
 
-        let mut out = Vec::with_capacity(rows.len());
+        if rows.is_empty() {
+            // No-op txn; drop releases without WAL overhead. Either
+            // the outbox is empty or contention with peers was total
+            // for this attempt; the caller should sleep and retry.
+            return Ok(0);
+        }
+
+        let mut entries = Vec::with_capacity(rows.len());
+        let mut ids = Vec::with_capacity(rows.len());
         for row in rows {
             // A malformed URL in the outbox means a corrupted parent
-            // write; we surface the parse error so the operator
-            // notices, rather than silently dropping the row.
+            // write; surface the parse error so the operator notices.
+            // Returning here drops the txn -> rollback -> locks
+            // released; the row stays unpublished.
             let url = CanonicalUrl::parse(&row.url).map_err(|e| {
                 Error::Metadata(format!(
                     "outbox row {} carries unparsable url {}: {e}",
@@ -436,7 +456,8 @@ impl OutboxReader for PostgresMetadataStore {
                         row.id
                     ))
                 })?;
-            out.push(OutboxEntry {
+            ids.push(row.id);
+            entries.push(OutboxEntry {
                 // BIGSERIAL is non-negative in practice; the cast
                 // narrows to our domain newtype without risk of
                 // wraparound for any id within Postgres BIGSERIAL
@@ -449,30 +470,25 @@ impl OutboxReader for PostgresMetadataStore {
                 },
             });
         }
-        Ok(out)
-    }
+        let n = entries.len();
 
-    #[tracing::instrument(skip(self, ids), fields(n = ids.len()))]
-    async fn mark_published(&self, ids: &[OutboxRowId]) -> Result<()> {
-        if ids.is_empty() {
-            return Ok(());
-        }
-        // Convert the domain newtype to BIGINT for sqlx. The cast is
-        // safe within Postgres BIGSERIAL range (always non-negative).
-        let pg_ids: Vec<i64> = ids.iter().map(|id| id.value() as i64).collect();
-        // Idempotent: a row already marked published gets its
-        // published_at left alone (the WHERE clause filters it).
+        // Hand the leased batch to the caller's ship closure. On
+        // error the `?` returns early; the txn drops uncommitted,
+        // releasing locks; the rows reappear for the next caller.
+        ship(entries).await?;
+
         sqlx::query(
             "UPDATE frontier_outbox
                 SET published_at = NOW()
-              WHERE id = ANY($1)
-                AND published_at IS NULL",
+              WHERE id = ANY($1)",
         )
-        .bind(&pg_ids)
-        .execute(&self.pool)
+        .bind(&ids)
+        .execute(&mut *tx)
         .await
         .map_err(PostgresMetadataError::from)?;
-        Ok(())
+
+        tx.commit().await.map_err(PostgresMetadataError::from)?;
+        Ok(n)
     }
 }
 

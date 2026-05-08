@@ -77,7 +77,7 @@ pub trait MetadataStore: Send + Sync {
     /// to the outbox in the same transaction as the metadata write,
     /// so the two effects are atomic from the caller's perspective.
     /// The publisher (driven by
-    /// [`crate::traits::outbox::OutboxReader`]) drains the outbox
+    /// [`crate::traits::outbox::Outbox`]) drains the outbox
     /// asynchronously and writes the URLs into the Frontier
     /// at-least-once; per-URL dedupe at the Frontier side absorbs
     /// the redelivery case. The same uniqueness rule applies: a

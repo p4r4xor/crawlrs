@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crawlrs_core::{
-    Clock, Fetcher, Frontier, HostHashShardPolicy, MetadataStore, OutboxReader, Parser, Politeness,
+    Clock, Fetcher, Frontier, HostHashShardPolicy, MetadataStore, Outbox, Parser, Politeness,
     ShardingPolicy, SiteAdapterRegistry, Store, SystemClock,
 };
 use thiserror::Error;
@@ -126,7 +126,7 @@ pub struct Crawler {
     /// handle drives the publisher task that drains the table into
     /// the Frontier. Typically the same `Arc` as `deps.metadata`,
     /// since the Postgres impl satisfies both traits.
-    outbox: Arc<dyn OutboxReader>,
+    outbox: Arc<dyn Outbox>,
     shutdown_tx: watch::Sender<bool>,
     shutdown_rx: watch::Receiver<bool>,
 }
@@ -245,10 +245,10 @@ pub struct CrawlerBuilder {
     metadata: Option<Arc<dyn MetadataStore>>,
     /// Outbox reader. Optional in the builder surface because the
     /// production Postgres impl satisfies both `MetadataStore` and
-    /// `OutboxReader` and callers typically pass the same `Arc` to
+    /// `Outbox` and callers typically pass the same `Arc` to
     /// both setters; if omitted at build time, we default-fall-back
     /// to none and the publisher is spawned only when supplied.
-    outbox: Option<Arc<dyn OutboxReader>>,
+    outbox: Option<Arc<dyn Outbox>>,
     adapters: Option<Arc<SiteAdapterRegistry>>,
     sharding_policy: Option<Arc<dyn ShardingPolicy>>,
     clock: Option<Arc<dyn Clock>>,
@@ -284,7 +284,7 @@ impl CrawlerBuilder {
     /// Set the outbox reader. Production wiring usually passes the
     /// same `Arc` here as in `metadata()` (PostgresMetadataStore
     /// implements both traits).
-    pub fn outbox(mut self, o: Arc<dyn OutboxReader>) -> Self {
+    pub fn outbox(mut self, o: Arc<dyn Outbox>) -> Self {
         self.outbox = Some(o);
         self
     }

@@ -1,7 +1,7 @@
-//! `OutboxReader` trait: the read-side of the transactional outbox
+//! `Outbox` trait: the publisher's view of the transactional-outbox
 //! pattern that decouples Frontier writes from Metadata writes.
 //!
-//! Pattern: Transactional Outbox + Producer / Consumer.
+//! Pattern: Transactional Outbox + Producer / Consumer + Lease.
 //!
 //! ## Why
 //!
@@ -20,19 +20,31 @@
 //! enqueue happen in the **same Postgres transaction** via
 //! [`crate::traits::metadata::MetadataStore::mark_succeeded`] taking
 //! `outbound: &[UrlEntry]`. A separate publisher task drains the
-//! outbox table and pushes the URLs into the Frontier, marking each
-//! drained row as published. If the publisher crashes mid-drain, the
-//! row stays unpublished; on restart it's re-drained. The Frontier
-//! impl's per-URL seen-set absorbs the second-time XADD as a no-op.
+//! outbox table and pushes the URLs into the Frontier; the trait
+//! below is what that publisher calls.
+//!
+//! ## Why a single `publish` method (not fetch + mark)
+//!
+//! At horizontal scale, two publishers querying "the next N
+//! unpublished rows by id" each receive the same prefix and
+//! double-publish. The Frontier-side seen-set absorbs the duplicate
+//! XADD into correctness, but the wasted DB+Redis work is real. The
+//! fix is a row-level lease (`SELECT ... FOR UPDATE SKIP LOCKED`
+//! inside one txn): concurrent callers receive disjoint batches.
+//! That requires the read and the mark to share a transaction, which
+//! requires them to share a method. See ADR-0017.
 //!
 //! ## Why a separate trait (and not just methods on MetadataStore)
 //!
 //! Conceptual separation: `MetadataStore` is the per-URL ledger
-//! abstraction; `OutboxReader` is the publisher's view of "outbound
-//! URLs awaiting enqueue." The publisher only needs the outbox
-//! methods, so it depends on the narrower interface. A single
-//! Postgres-backed struct can implement both traits and share the
-//! pool; that's the production wiring.
+//! abstraction; `Outbox` is the publisher's view of "outbound URLs
+//! awaiting enqueue." The publisher only needs the outbox method, so
+//! it depends on the narrower interface. A single Postgres-backed
+//! struct can implement both traits and share the pool; that's the
+//! production wiring.
+
+use std::future::Future;
+use std::pin::Pin;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -40,14 +52,33 @@ use serde::{Deserialize, Serialize};
 use crate::error::Result;
 use crate::types::UrlEntry;
 
+/// The future returned by an [`Outbox::publish`] ship closure.
+///
+/// Boxed + pinned so the trait method is dyn-compatible: a generic
+/// `Fut: Future` parameter would prevent `Arc<dyn Outbox>`. The
+/// runtime stores its outbox as a trait object, so this concrete
+/// future shape is the price of admission.
+pub type ShipFuture = Pin<Box<dyn Future<Output = Result<()>> + Send>>;
+
+/// The closure shape passed to [`Outbox::publish`].
+///
+/// Boxed for the same reason as [`ShipFuture`]: generics on the
+/// trait method break dyn-compat. Construct one with
+/// `Box::new(move |entries| Box::pin(async move { ... }))`.
+pub type ShipFn = Box<dyn FnOnce(Vec<OutboxEntry>) -> ShipFuture + Send>;
+
 /// Identifier for one row in the outbox table.
 ///
-/// Newtype around `u64` so callers can't accidentally swap an outbox
+/// Newtype around `u64` so impls can't accidentally swap an outbox
 /// row id for some other numeric id flowing through the publisher
 /// pipeline (e.g. a depth, a content hash, a counter). Concrete impls
 /// translate to whatever the storage backend uses on the wire (the
 /// Postgres impl maps to BIGSERIAL); the trait surface stays in
 /// domain vocabulary.
+///
+/// `OutboxRowId` is no longer threaded across publisher calls (see
+/// [`Outbox::publish`]); it stays an internal detail of the impl,
+/// surfaced on [`OutboxEntry`] for diagnostics and ordering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct OutboxRowId(u64);
 
@@ -63,31 +94,44 @@ impl OutboxRowId {
 
 /// One row from the outbox table awaiting publish to the Frontier.
 ///
-/// The `id` is the row's stable identifier; the publisher marks rows
-/// published by id after a successful Frontier submit. `entry` is the
-/// already-canonicalised `UrlEntry` ready for `Frontier::submit_batch`.
+/// `id` is the row's stable identifier; impls use it internally to
+/// scope the "mark as published" UPDATE to the leased rows. `entry`
+/// is the already-canonicalised `UrlEntry` ready for
+/// `Frontier::submit_batch`.
 #[derive(Debug, Clone)]
 pub struct OutboxEntry {
     pub id: OutboxRowId,
     pub entry: UrlEntry,
 }
 
-/// Read-side of the outbox: drain unpublished rows, mark them
-/// published once the Frontier has acknowledged the submit.
+/// Drain side of the transactional outbox.
 #[async_trait]
-pub trait OutboxReader: Send + Sync {
-    /// Fetch up to `max` unpublished rows in stable order (by id).
-    /// Returning fewer than `max` (including zero) means the outbox
-    /// is empty for now; the publisher should sleep before retrying.
-    async fn fetch_unpublished(&self, max: usize) -> Result<Vec<OutboxEntry>>;
-
-    /// Mark the listed row ids as published. The publisher calls
-    /// this **after** a successful `Frontier::submit_batch` so a
-    /// crash between submit and mark leaves the rows visible for
-    /// retry; the Frontier-side seen-set absorbs the duplicate
-    /// XADD.
+pub trait Outbox: Send + Sync {
+    /// Lease up to `max` unpublished entries, hand them to `ship`,
+    /// and mark as published any entries the ship call resolves
+    /// successfully.
     ///
-    /// Must be idempotent: passing an id that's already published
-    /// is a no-op, not an error.
-    async fn mark_published(&self, ids: &[OutboxRowId]) -> Result<()>;
+    /// ## Lease semantics
+    ///
+    /// Concurrent callers (multiple publisher tasks or processes)
+    /// receive **disjoint batches**. Impls enforce this via
+    /// row-level locks held for the duration of the closure call;
+    /// the Postgres impl uses `SELECT ... FOR UPDATE SKIP LOCKED`.
+    /// Test fakes must model the same guarantee.
+    ///
+    /// ## All-or-nothing batch
+    ///
+    /// If `ship` resolves `Ok(())`, the entire batch is marked
+    /// published atomically and the lease is released. If `ship`
+    /// resolves `Err`, no rows are marked published, the lease is
+    /// released, and the rows reappear for the next caller. Partial
+    /// success is not representable; this matches
+    /// `Frontier::submit_batch`'s own all-or-nothing contract.
+    ///
+    /// Returns the number of entries successfully published. Zero
+    /// means the outbox was empty (or the contention with peers was
+    /// total, which under SKIP LOCKED translates to "no available
+    /// rows for me right now"); the caller should sleep before
+    /// retrying.
+    async fn publish(&self, max: usize, ship: ShipFn) -> Result<usize>;
 }

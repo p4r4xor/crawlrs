@@ -74,8 +74,9 @@ pub fn register() {
          `result=success` counts rows successfully shipped from the \
          metadata store into the Frontier (sums to outbound \
          throughput). `result=error` counts publish-error events \
-         observed in the drain loop (fetch_unpublished, submit_batch, \
-         or mark_published failures); each event is one increment \
+         observed in the drain loop (any failure inside `Outbox::publish`, \
+         including the leased SELECT, the ship closure, and the \
+         mark-published UPDATE); each event is one increment \
          regardless of how many rows were involved. Don't sum across \
          labels - the units differ."
     );

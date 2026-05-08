@@ -4,7 +4,11 @@
 //! URLs so they could share a container in the future without
 //! cross-test contamination.
 
-use crawlrs_core::{AttemptId, CanonicalUrl, FailureKind, MetadataStore, SuccessRecord, UrlStatus};
+use std::sync::{Arc, Mutex};
+
+use crawlrs_core::{
+    AttemptId, CanonicalUrl, Error, FailureKind, MetadataStore, Outbox, SuccessRecord, UrlStatus,
+};
 use crawlrs_metadata::PostgresMetadataStore;
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
@@ -282,4 +286,193 @@ async fn history_records_each_transition() {
     .unwrap();
     // attempted + failed + failed + succeeded = 4 events.
     assert_eq!(count, 4);
+}
+
+// ---------------------------------------------------------------------------
+// Outbox publish: lease semantics under concurrency (ADR-0017)
+// ---------------------------------------------------------------------------
+
+/// One `publish` call that records the row ids it received into a
+/// shared collector. Pulled out as a helper because the boxed-closure
+/// shape needs each call to own its own clone of the collector.
+async fn publish_recording(
+    outbox: Arc<dyn Outbox>,
+    collected: Arc<Mutex<Vec<u64>>>,
+    per_call: usize,
+) -> usize {
+    outbox
+        .publish(
+            per_call,
+            Box::new(move |entries| {
+                Box::pin(async move {
+                    let mut g = collected.lock().unwrap();
+                    for e in &entries {
+                        g.push(e.id.value());
+                    }
+                    Ok(())
+                })
+            }),
+        )
+        .await
+        .unwrap()
+}
+
+/// Seed `n` outbox rows attached to a single parent URL. Used by the
+/// publish tests to fill the table without driving the full
+/// `mark_succeeded` path (which would re-test the metadata write,
+/// not the outbox lease).
+async fn seed_outbox_rows(pool: &PgPool, store: &PostgresMetadataStore, n: usize) -> i64 {
+    let parent = unique_url("publish-parent");
+    store.mark_attempting(&parent, &run_id(), 0).await.unwrap();
+    let parent_url_id: i64 = sqlx::query_scalar("SELECT id FROM url_metadata WHERE url = $1")
+        .bind(parent.as_str())
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    for i in 0..n {
+        sqlx::query(
+            "INSERT INTO frontier_outbox
+                (url, depth, discovered_from, parent_url_id, parent_attempt_id)
+             VALUES ($1, 1, NULL, $2, 'attempt-seed')",
+        )
+        .bind(format!("https://child-{}-{i}.test/", cuid2::create_id()))
+        .bind(parent_url_id)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+    parent_url_id
+}
+
+#[tokio::test]
+async fn publish_distributes_disjoint_batches_across_concurrent_callers() {
+    // Pin the FOR UPDATE SKIP LOCKED contract: N concurrent publish
+    // callers each receive a disjoint batch, never the same row twice.
+    // See ADR-0017.
+    let fx = fixture().await;
+    let store = Arc::new(PostgresMetadataStore::with_pool(fx.pool.clone()));
+
+    let total: usize = 1024;
+    let parent_url_id = seed_outbox_rows(&fx.pool, &store, total).await;
+
+    // 4 concurrent publishers, each capped at 256 (sum = 1024).
+    // Synchronise their starts via a barrier so SKIP LOCKED is the
+    // primitive that splits the work, not arrival timing.
+    let publishers = 4;
+    let per_call = 256;
+    let collected: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
+    let barrier = Arc::new(tokio::sync::Barrier::new(publishers));
+
+    let mut tasks = tokio::task::JoinSet::new();
+    for _ in 0..publishers {
+        let outbox: Arc<dyn Outbox> = store.clone();
+        let collected = collected.clone();
+        let barrier = barrier.clone();
+        tasks.spawn(async move {
+            barrier.wait().await;
+            let mut local_total = 0usize;
+            // Loop until publish reports nothing left for me to take.
+            // A 0 may transiently mean "peers hold the rest under
+            // lease right now"; one yield + retry clears that false
+            // empty.
+            loop {
+                let n = publish_recording(outbox.clone(), collected.clone(), per_call).await;
+                if n == 0 {
+                    tokio::task::yield_now().await;
+                    let n2 = publish_recording(outbox.clone(), collected.clone(), per_call).await;
+                    if n2 == 0 {
+                        break;
+                    }
+                    local_total += n2;
+                } else {
+                    local_total += n;
+                }
+            }
+            local_total
+        });
+    }
+
+    let mut grand_total = 0usize;
+    while let Some(r) = tasks.join_next().await {
+        grand_total += r.unwrap();
+    }
+    assert_eq!(grand_total, total, "every row published exactly once");
+
+    let mut all = collected.lock().unwrap().clone();
+    all.sort();
+    let mut deduped = all.clone();
+    deduped.dedup();
+    assert_eq!(
+        all.len(),
+        deduped.len(),
+        "no row delivered to more than one publisher"
+    );
+    assert_eq!(all.len(), total, "every seeded row was delivered");
+
+    // And every row is now marked published in the table.
+    let still_unpublished: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM frontier_outbox
+         WHERE parent_url_id = $1 AND published_at IS NULL",
+    )
+    .bind(parent_url_id)
+    .fetch_one(&fx.pool)
+    .await
+    .unwrap();
+    assert_eq!(still_unpublished, 0);
+}
+
+#[tokio::test]
+async fn publish_rolls_back_when_ship_returns_error() {
+    // Pin the lease-on-failure contract: if the ship closure errors,
+    // the txn rolls back, the lease releases, and the rows reappear
+    // for the next caller. See ADR-0017.
+    let fx = fixture().await;
+    let store = PostgresMetadataStore::with_pool(fx.pool.clone());
+
+    let total: usize = 64;
+    let parent_url_id = seed_outbox_rows(&fx.pool, &store, total).await;
+
+    // First call: ship errors. publish must surface the error.
+    let result = store
+        .publish(
+            total,
+            Box::new(|_entries| {
+                Box::pin(async { Err(Error::Metadata("simulated ship failure".into())) })
+            }),
+        )
+        .await;
+    assert!(result.is_err(), "ship error must propagate out of publish");
+
+    // Every row stayed unpublished: the rollback released the lease
+    // without marking anything.
+    let still_unpublished: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM frontier_outbox
+         WHERE parent_url_id = $1 AND published_at IS NULL",
+    )
+    .bind(parent_url_id)
+    .fetch_one(&fx.pool)
+    .await
+    .unwrap();
+    assert_eq!(still_unpublished, total as i64);
+
+    // A subsequent successful publish picks up the same rows.
+    let recorded: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
+    let recorded_clone = recorded.clone();
+    let n = store
+        .publish(
+            total,
+            Box::new(move |entries| {
+                Box::pin(async move {
+                    let mut g = recorded_clone.lock().unwrap();
+                    for e in entries {
+                        g.push(e.id.value());
+                    }
+                    Ok(())
+                })
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(n, total);
+    assert_eq!(recorded.lock().unwrap().len(), total);
 }
