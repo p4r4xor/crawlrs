@@ -58,6 +58,10 @@ spec:
             - crawl
             - --config
             - /etc/crawlrs/crawl.toml
+            {{- if .Values.seeds.content }}
+            - --seeds
+            - /etc/crawlrs/seeds.txt
+            {{- end }}
           ports:
             - name: http
               containerPort: {{ .Values.server.port }}

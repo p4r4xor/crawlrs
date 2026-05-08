@@ -1,0 +1,145 @@
+# Helm overrides for local kind deployment of charts/crawlrs-demo.
+#
+# Layered on top of charts/crawlrs-demo/values.yaml (which already has
+# Bitnami Redis + Postgres + MinIO + observability wired). This file
+# only overrides what changes for local: image source, resource asks,
+# crawl.toml runtime knobs, and seeds.
+#
+# Apply with:
+#   helm upgrade --install crawlrs-demo ./charts/crawlrs-demo \
+#     --values local/values.local.yaml \
+#     --create-namespace -n crawlrs
+#
+# The make target `make local-up` does this for you.
+
+crawlrs:
+  # Use the locally-built image loaded into kind via
+  # `kind load docker-image`. `pullPolicy: Never` keeps K8s from
+  # trying to pull from the upstream registry (which we don't publish
+  # to from this repo).
+  image:
+    repository: crawlrs
+    tag: local
+    pullPolicy: Never
+
+  replicaCount: 1
+
+  # Resource asks scaled for a developer laptop. The crawler itself
+  # is mostly IO-bound; bump cpu.limit if you increase `runtime.workers`
+  # well past 50 and watch CPU saturation in Grafana.
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: 2000m
+      memory: 2Gi
+
+  runtime:
+    # Modest worker count for a laptop. 50 fetchers across 80+ seed
+    # hosts means politeness windows are the bottleneck, not CPU.
+    workers: 50
+    maxDepth: 4
+    maxRetries: 5
+    crossRunDedup: true
+
+  fetch:
+    maxBodyBytes: 5242880  # 5 MiB; truncate larger bodies
+    userAgent: "crawlrs-local/0.0.1 (+https://github.com/p4r4xor/crawlrs)"
+    defaultTimeout: "30s"
+
+  politeness:
+    minDelay: "1s"
+    honorRobotsTxt: true
+    robotsCacheTtl: "24h"
+    backoff:
+      initialBackoff: "30s"
+      maxBackoff: "10m"
+      multiplier: 2.0
+      circuitOpenAfterFailures: 10
+
+  store:
+    parquet: true
+    warc: false  # Disable archival mirror locally to halve disk usage;
+                 # flip on for research-mode runs that need byte-exact
+                 # HTTP wire framing preserved.
+    backend:
+      kind: s3
+      s3:
+        endpoint: "http://crawlrs-demo-minio:9000"
+        bucket: "crawlrs-data"
+        region: "us-east-1"
+        allowHttp: true
+        virtualHostedStyleRequest: false
+
+  # Optional seed list rendered into the same ConfigMap as crawl.toml
+  # and passed to the binary as `--seeds /etc/crawlrs/seeds.txt`. For
+  # production deployments leave `seeds.content` empty (the default in
+  # charts/crawlrs/values.yaml) and load the frontier externally.
+  # Local sandbox populates it from local/seeds.txt at install time
+  # via the `make local-up` target.
+  seeds:
+    content: ""  # Populated by `make local-up` from local/seeds.txt.
+
+  sharding:
+    numShards: 8
+
+  server:
+    port: 9090
+    listen: "0.0.0.0:9090"
+
+  # Expose Grafana + metrics on host ports via NodePort, matching
+  # local/kind.yaml's extraPortMappings. The chart's Service is
+  # ClusterIP by default; we layer a NodePort over the headless
+  # service for direct access.
+  service:
+    type: ClusterIP
+
+# ---- Bundled subchart resource trims for laptop ---------------------
+
+redis:
+  master:
+    persistence:
+      enabled: true
+      size: 5Gi
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 1000m
+        memory: 2Gi
+    # Persist Redis AOF so a `kind delete cluster` doesn't lose the
+    # whole frontier. Set to false for ephemeral runs.
+    extraFlags:
+      - "--appendonly"
+      - "yes"
+      - "--maxmemory"
+      - "1500mb"
+      - "--maxmemory-policy"
+      - "noeviction"
+
+postgresql:
+  primary:
+    persistence:
+      enabled: true
+      size: 10Gi
+    resources:
+      requests:
+        cpu: 200m
+        memory: 256Mi
+      limits:
+        cpu: 1000m
+        memory: 1Gi
+
+minio:
+  persistence:
+    enabled: true
+    size: 50Gi
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi

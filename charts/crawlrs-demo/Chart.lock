@@ -2,14 +2,5 @@ dependencies:
 - name: crawlrs
   repository: file://../crawlrs
   version: 0.1.0
-- name: redis
-  repository: https://charts.bitnami.com/bitnami
-  version: 20.6.2
-- name: postgresql
-  repository: https://charts.bitnami.com/bitnami
-  version: 16.3.5
-- name: minio
-  repository: https://charts.bitnami.com/bitnami
-  version: 14.8.5
-digest: sha256:51d2c82242ab05a399b16bafa4d253b4c107993cc285917ca86569acedb3a9e7
-generated: "2026-05-05T18:40:27.415552434+05:30"
+digest: sha256:123910e1e776643f69742db3385f64176e25bc5847933bd4f4f86b3f738cfdd0
+generated: "2026-05-08T22:28:17.311209899+05:30"

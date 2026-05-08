@@ -1,0 +1,66 @@
+{{- /*
+Bucket-creation Job. Runs as a Helm post-install / post-upgrade hook
+so it's only triggered after the MinIO StatefulSet exists; the Job's
+own readiness loop waits for the API to actually answer before
+calling `mc mb`. Idempotent via `--ignore-existing` so re-running on
+upgrade is safe.
+
+Bitnami's MinIO chart did this via `defaultBuckets:`; we replicate
+the behavior with one explicit Job + the official `mc` client image.
+*/ -}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Release.Name }}-minio-bucket-init
+  labels:
+    {{- include "crawlrs-demo.labels" . | nindent 4 }}
+    app.kubernetes.io/component: minio-init
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "5"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 4
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      labels:
+        {{- include "crawlrs-demo.labels" . | nindent 8 }}
+        app.kubernetes.io/component: minio-init
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: mc
+          image: {{ .Values.minio.mcImage | quote }}
+          imagePullPolicy: {{ .Values.minio.imagePullPolicy | quote }}
+          env:
+            - name: MC_HOST_local
+              value: "http://$(MINIO_ROOT_USER):$(MINIO_ROOT_PASSWORD)@{{ .Release.Name }}-minio:9000"
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-minio
+                  key: rootUser
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-minio
+                  key: rootPassword
+          # `mc ready` blocks until MinIO is up; then `mc mb` creates
+          # the bucket idempotently. --ignore-existing prevents
+          # re-create errors on helm upgrade.
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              mc ready local
+              mc mb --ignore-existing "local/{{ .Values.minio.bucket }}"
+              mc ls local
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi

@@ -9,19 +9,23 @@ data:
   # placeholders here and overwritten via env-var overlay
   # (CRAWLRS_REDIS_URL, CRAWLRS_POSTGRES_URL) sourced from the Secret.
   # The binary's apply_env_overlay() makes the env values win.
+  #
+  # Numeric values are rendered through `int64`/`%d` to avoid Helm's
+  # default `fmt.Sprint(float64(...))` which prints large ints in
+  # scientific notation (e.g. 5242880 -> 5.24288e+06) and breaks TOML.
   crawl.toml: |
     run_id = {{ .Values.runId | quote }}
 
     [redis]
     url = {{ .Values.redis.url | quote }}
-    pool_size = {{ .Values.redis.poolSize }}
+    pool_size = {{ printf "%d" (.Values.redis.poolSize | int64) }}
 
     [postgres]
     url = {{ .Values.postgres.url | quote }}
-    pool_size = {{ .Values.postgres.poolSize }}
+    pool_size = {{ printf "%d" (.Values.postgres.poolSize | int64) }}
 
     [fetch]
-    max_body_bytes  = {{ .Values.fetch.maxBodyBytes }}
+    max_body_bytes  = {{ printf "%d" (.Values.fetch.maxBodyBytes | int64) }}
     user_agent      = {{ .Values.fetch.userAgent | quote }}
     default_timeout = {{ .Values.fetch.defaultTimeout | quote }}
 
@@ -34,13 +38,16 @@ data:
     initial_backoff             = {{ .Values.politeness.backoff.initialBackoff | quote }}
     max_backoff                 = {{ .Values.politeness.backoff.maxBackoff | quote }}
     multiplier                  = {{ .Values.politeness.backoff.multiplier }}
-    circuit_open_after_failures = {{ .Values.politeness.backoff.circuitOpenAfterFailures }}
+    circuit_open_after_failures = {{ printf "%d" (.Values.politeness.backoff.circuitOpenAfterFailures | int64) }}
 
     [runtime]
-    workers          = {{ .Values.runtime.workers }}
-    max_depth        = {{ .Values.runtime.maxDepth }}
-    max_retries      = {{ .Values.runtime.maxRetries }}
+    workers          = {{ printf "%d" (.Values.runtime.workers | int64) }}
+    {{- if .Values.runtime.maxDepth }}
+    max_depth        = {{ printf "%d" (.Values.runtime.maxDepth | int64) }}
+    {{- end }}
+    max_retries      = {{ printf "%d" (.Values.runtime.maxRetries | int64) }}
     cross_run_dedup  = {{ .Values.runtime.crossRunDedup }}
+    link_dispatch    = {{ .Values.runtime.linkDispatch | quote }}
 
     [store]
     parquet     = {{ .Values.store.parquet }}
@@ -68,4 +75,11 @@ data:
     listen = {{ .Values.server.listen | quote }}
 
     [sharding]
-    num_shards = {{ .Values.sharding.numShards }}
+    num_shards = {{ printf "%d" (.Values.sharding.numShards | int64) }}
+  {{- if .Values.seeds.content }}
+  # Optional seed list. Mounted at /etc/crawlrs/seeds.txt and passed
+  # to the binary as `--seeds /etc/crawlrs/seeds.txt` via the
+  # StatefulSet args.
+  seeds.txt: |
+    {{- .Values.seeds.content | nindent 4 }}
+  {{- end }}

@@ -1,0 +1,43 @@
+# Build outputs
+target/
+**/target/
+
+# VCS / IDE / editor noise
+.git/
+.github/
+.gitignore
+.gitattributes
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Internal docs + AI tooling (gitignored from the repo too)
+docs/
+CLAUDE.md
+ARCHITECTURE.md
+.claude/
+.playwright-mcp/
+
+# Local-deployment scaffolding (not needed for image build; mounted
+# at runtime via Helm values / ConfigMap)
+local/
+
+# Helm artefacts
+charts/*/charts/
+charts/**/*.tgz
+charts/**/Chart.lock
+
+# Test artefacts and benchmarks
+target/criterion/
+target/llvm-cov/
+target/coverage/
+target/tarpaulin/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Compose files (not used; Docker is the build runtime, K8s is the deploy target)
+compose*.yml
+docker-compose*.yml

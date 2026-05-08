@@ -1,0 +1,30 @@
+# Local kind cluster for crawlrs end-to-end deployment.
+#
+# Single control-plane node (no separate worker). Pinned to K8s 1.31
+# which matches the version tier most managed clouds (EKS, GKE, AKS)
+# expose; staying close to that floor means YAMLs that work locally
+# work in prod with no rev-bump surprises.
+#
+# Port mappings expose the two endpoints we typically watch:
+#   - 9090 -> crawlrs /metrics (and /healthz, /readyz, /livez)
+#   - 3000 -> Grafana
+# These are convenience exposes; you can also `kubectl port-forward`
+# if you'd rather keep host ports clean.
+
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: crawlrs-local
+nodes:
+  - role: control-plane
+    image: kindest/node:v1.31.4
+    extraPortMappings:
+      - containerPort: 30090
+        hostPort: 9090
+        protocol: TCP
+      - containerPort: 30300
+        hostPort: 3000
+        protocol: TCP
+networking:
+  # Default kindnet CNI; nothing exotic. Crawlrs has no NetworkPolicy
+  # constraints in the chart so the simple default works.
+  disableDefaultCNI: false

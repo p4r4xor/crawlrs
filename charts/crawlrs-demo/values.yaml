@@ -4,77 +4,83 @@
 #
 #   helm install crawlrs-demo ./charts/crawlrs-demo --create-namespace -n crawlrs
 #
-# The service-DNS hostnames below assume that release name. Other
-# release names mean overriding the `crawlrs.redis.url` /
-# `crawlrs.postgres.url` / `crawlrs.store.backend.s3.endpoint`
-# values to match.
+# The Service-DNS hostnames the crawlrs subchart references below
+# include the release name. A different release name means overriding
+# `crawlrs.redis.url`, `crawlrs.postgres.url`, and
+# `crawlrs.store.backend.s3.endpoint` to match.
 
-# ---- Bundled Redis (Bitnami) ----------------------------------------
+# ---- Redis (official upstream image) --------------------------------
 redis:
-  enabled: true
-  architecture: standalone
-  auth:
-    enabled: false
-  master:
-    persistence:
-      enabled: false
-    resources:
-      requests:
-        cpu: 50m
-        memory: 64Mi
-      limits:
-        cpu: 500m
-        memory: 256Mi
+  image: redis:7.4.2-alpine
+  imagePullPolicy: IfNotPresent
+  # AOF persistence on by default. `make local-cluster-down` (kind
+  # delete) wipes the PVC; `helm uninstall` keeps it.
+  persistence:
+    size: 5Gi
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
 
-# ---- Bundled Postgres (Bitnami) -------------------------------------
+# ---- Postgres (official upstream image) -----------------------------
 postgresql:
-  enabled: true
-  auth:
-    postgresPassword: crawlrs-demo
-    username: crawlrs
+  image: postgres:17.2-alpine
+  imagePullPolicy: IfNotPresent
+  credentials:
+    user: crawlrs
+    # Demo password baked into a Secret. Override in any non-sandbox
+    # use; never commit a real password here.
     password: crawlrs
     database: crawlrs
-  primary:
-    persistence:
-      enabled: false
-    resources:
-      requests:
-        cpu: 100m
-        memory: 128Mi
-      limits:
-        cpu: 1000m
-        memory: 512Mi
+  persistence:
+    size: 10Gi
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 1000m
+      memory: 512Mi
 
-# ---- Bundled MinIO (Bitnami) ----------------------------------------
+# ---- MinIO (official upstream image) --------------------------------
 minio:
-  enabled: true
-  mode: standalone
-  auth:
+  image: minio/minio:RELEASE.2024-11-07T00-52-20Z
+  # `mc` client image used by the bucket-init Job. Pinned to a
+  # release close to the server image so client/server protocol
+  # versions match.
+  mcImage: minio/mc:RELEASE.2024-11-05T11-29-45Z
+  imagePullPolicy: IfNotPresent
+  credentials:
     rootUser: minioadmin
     rootPassword: minioadmin
-  defaultBuckets: "crawlrs-data"
+  bucket: crawlrs-data
   persistence:
-    enabled: false
+    size: 50Gi
   resources:
     requests:
       cpu: 100m
       memory: 256Mi
     limits:
       cpu: 1000m
-      memory: 512Mi
+      memory: 1Gi
 
 # ---- crawlrs subchart override --------------------------------------
-# Wires the crawler at the bundled-service DNS names.
+# Wires the crawler at the bundled-service DNS names rendered by our
+# raw manifests below. Service names are
+# `<release>-{redis,postgres,minio}` (so `crawlrs-demo-...`).
 crawlrs:
   runId: "demo"
   replicaCount: 1
 
   redis:
-    url: "redis://crawlrs-demo-redis-master:6379"
+    url: "redis://crawlrs-demo-redis:6379"
     poolSize: 8
 
   postgres:
-    url: "postgres://crawlrs:crawlrs@crawlrs-demo-postgresql:5432/crawlrs"
+    url: "postgres://crawlrs:crawlrs@crawlrs-demo-postgres:5432/crawlrs"
     poolSize: 4
 
   store:
@@ -83,23 +89,20 @@ crawlrs:
     backend:
       kind: s3
       s3:
-        # Bitnami minio chart Service is `<release>-minio:9000` by default.
         endpoint: "http://crawlrs-demo-minio:9000"
         bucket: "crawlrs-data"
         region: "us-east-1"
         allowHttp: true
-        # MinIO requires path-style requests; AWS-style virtual hosting
-        # would resolve `crawlrs-data.crawlrs-demo-minio` which doesn't
-        # work in-cluster.
         virtualHostedStyleRequest: false
 
-  # Demo creds rendered into the Secret. Swap for externally-managed
-  # secrets in production via charts/crawlrs/ directly.
+  # Demo creds rendered into the chart's Secret. Swap for
+  # externally-managed secrets in production via charts/crawlrs/
+  # directly.
   secrets:
     create: true
     values:
-      redisUrl: "redis://crawlrs-demo-redis-master:6379"
-      postgresUrl: "postgres://crawlrs:crawlrs@crawlrs-demo-postgresql:5432/crawlrs"
+      redisUrl: "redis://crawlrs-demo-redis:6379"
+      postgresUrl: "postgres://crawlrs:crawlrs@crawlrs-demo-postgres:5432/crawlrs"
       s3AccessKeyId: "minioadmin"
       s3SecretAccessKey: "minioadmin"
 

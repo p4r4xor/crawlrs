@@ -1,0 +1,90 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ .Release.Name }}-minio
+  labels:
+    {{- include "crawlrs-demo.labels" . | nindent 4 }}
+    app.kubernetes.io/component: minio
+spec:
+  serviceName: {{ .Release.Name }}-minio
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "crawlrs-demo.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: minio
+  template:
+    metadata:
+      labels:
+        {{- include "crawlrs-demo.labels" . | nindent 8 }}
+        app.kubernetes.io/component: minio
+    spec:
+      # minio:RELEASE images run as uid 1000 by default. fsGroup
+      # ensures the data dir is writable.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+        - name: minio
+          image: {{ .Values.minio.image | quote }}
+          imagePullPolicy: {{ .Values.minio.imagePullPolicy | quote }}
+          # `server /data` exposes the MinIO API on :9000 and the
+          # console on :9001. We don't expose the console externally
+          # for the sandbox; bucket browsing happens via `kubectl
+          # port-forward` ad hoc.
+          args:
+            - server
+            - /data
+            - --console-address
+            - ":9001"
+          ports:
+            - name: api
+              containerPort: 9000
+              protocol: TCP
+            - name: console
+              containerPort: 9001
+              protocol: TCP
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-minio
+                  key: rootUser
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-minio
+                  key: rootPassword
+          livenessProbe:
+            httpGet:
+              path: /minio/health/live
+              port: api
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /minio/health/ready
+              port: api
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.minio.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "crawlrs-demo.labels" . | nindent 10 }}
+          app.kubernetes.io/component: minio
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: {{ .Values.minio.persistence.size | quote }}

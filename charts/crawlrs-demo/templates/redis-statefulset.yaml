@@ -1,0 +1,74 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ .Release.Name }}-redis
+  labels:
+    {{- include "crawlrs-demo.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+spec:
+  serviceName: {{ .Release.Name }}-redis
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "crawlrs-demo.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: redis
+  template:
+    metadata:
+      labels:
+        {{- include "crawlrs-demo.labels" . | nindent 8 }}
+        app.kubernetes.io/component: redis
+    spec:
+      # The official redis-alpine image runs as uid 999 by default;
+      # fsGroup makes the mounted volume writable for that uid.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+      containers:
+        - name: redis
+          image: {{ .Values.redis.image | quote }}
+          imagePullPolicy: {{ .Values.redis.imagePullPolicy | quote }}
+          # AOF persistence (--appendonly yes) trades a small write
+          # amplification for survivability across pod restarts. AOF
+          # rewriting keeps the file bounded.
+          args:
+            - redis-server
+            - --appendonly
+            - "yes"
+            - --dir
+            - /data
+          ports:
+            - name: redis
+              containerPort: 6379
+              protocol: TCP
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 2
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.redis.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "crawlrs-demo.labels" . | nindent 10 }}
+          app.kubernetes.io/component: redis
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: {{ .Values.redis.persistence.size | quote }}

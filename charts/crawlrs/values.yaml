@@ -62,6 +62,25 @@ runtime:
   maxDepth: 5
   maxRetries: 5
   crossRunDedup: true
+  # Strategy for moving discovered outbound URLs into the Frontier.
+  # "direct" (default): worker calls Frontier::submit_batch itself
+  # after the metadata commit; loses URLs during transient Frontier
+  # errors. "durable_outbox": outbound URLs commit atomically into a
+  # Postgres outbox table; a publisher daemon drains them with
+  # at-least-once delivery. Trade durability for ~50x lower Postgres
+  # write rate vs `durable_outbox`.
+  linkDispatch: "direct"
+
+# Optional initial seed URLs loaded into the frontier at startup.
+# When `content` is non-empty, the chart renders it into the same
+# ConfigMap as crawl.toml (mounted at /etc/crawlrs/seeds.txt) and
+# appends `--seeds /etc/crawlrs/seeds.txt` to the StatefulSet args.
+# Production deployments typically leave this empty and load the
+# frontier externally (kubectl exec, redis-cli, a one-shot Job).
+# Local sandboxes set `content` to a multi-line string of URLs
+# (one per line; blank lines and `#`-prefixed lines are skipped).
+seeds:
+  content: ""
 
 store:
   parquet: true
