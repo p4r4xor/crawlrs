@@ -13,7 +13,7 @@
 //! call is in flight, its leased ids live in the set; concurrent
 //! callers' `lease_batch` skips them. Finalize on success (mark
 //! published, drop lease) or release on failure (drop lease, leave
-//! unpublished). See ADR-0017.
+//! unpublished).
 //!
 //! The free functions in this module are intended to be called while
 //! holding the metadata store's lock; they accept an `&mut OutboxState`

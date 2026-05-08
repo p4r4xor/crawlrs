@@ -56,8 +56,24 @@ circuit_open_after_failures = 10
 [runtime]
 workers          = 4
 max_depth        = 5      # null/unset = unbounded
-max_retries      = 5      # after this many consecutive failures, URL → DLQ
+max_retries      = 5      # after this many consecutive failures, URL -> DLQ
 cross_run_dedup  = true   # skip URLs already succeeded in a prior run
+
+# Strategy for moving discovered outbound URLs into the Frontier.
+#
+# "direct" (default): worker calls Frontier::submit_batch directly
+# after the metadata commit. A submit_batch failure or worker crash
+# mid-call drops those outbound URLs. ~50x lower Postgres write rate
+# than durable_outbox because outbound URLs never become rows in the
+# outbox table. Watch crawlrs_direct_dispatch_lost_total; sustained
+# non-zero loss is the signal to flip to durable_outbox.
+#
+# "durable_outbox": outbound URLs commit atomically with the metadata
+# write into a Postgres outbox table; a separate publisher drains
+# them into the Frontier with at-least-once delivery. Survives any
+# single component crash; costs ~100x the per-fetch Postgres write
+# rate (one row per outbound URL).
+link_dispatch    = "direct"
 
 # Output stores. Parquet is the analytical primary; WARC is the
 # archival mirror that preserves the original HTTP wire framing. Both

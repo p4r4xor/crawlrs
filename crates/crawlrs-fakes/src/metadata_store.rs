@@ -199,7 +199,7 @@ impl Outbox for InMemoryMetadataStore {
         // Lease under the lock, then release the lock before awaiting
         // ship: peers can run concurrent publish calls and the lease
         // set hides our rows from them. Mirrors the Postgres
-        // FOR UPDATE SKIP LOCKED contract; see ADR-0017.
+        // FOR UPDATE SKIP LOCKED contract.
         let entries = {
             let mut ledger = self.ledger.lock().unwrap();
             outbox::lease_batch(&mut ledger.outbox, max)

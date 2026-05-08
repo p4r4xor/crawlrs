@@ -35,7 +35,7 @@ pub use traits::sharding::{HostHashShardPolicy, ShardKey, ShardingPolicy, Single
 pub use traits::site_adapter::{SiteAdapter, SiteAdapterRegistry};
 pub use traits::store::Store;
 pub use types::{
-    AttemptId, FetchRequest, FetchResponse, ParsedDocument, RedirectHop, StoreRecord, UrlEntry,
-    UrlMetadata, UrlStatus, WorkerIdentity,
+    AttemptId, FetchRequest, FetchResponse, LinkDispatch, ParsedDocument, RedirectHop, StoreRecord,
+    UrlEntry, UrlMetadata, UrlStatus, WorkerIdentity,
 };
 pub use url::CanonicalUrl;

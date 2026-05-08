@@ -34,6 +34,7 @@
 //! max_depth = 5
 //! max_retries = 5
 //! cross_run_dedup = true
+//! link_dispatch = "durable_outbox"  # or "direct"
 //!
 //! [store]
 //! parquet = true
@@ -182,6 +183,12 @@ pub struct RuntimeConfig {
     pub max_depth: Option<u32>,
     pub max_retries: u32,
     pub cross_run_dedup: bool,
+    /// Strategy for moving discovered outbound URLs into the
+    /// Frontier. Default `Direct` is the lower-cost path that loses
+    /// URLs during transient Frontier errors; `DurableOutbox` is the
+    /// opt-in path that commits outbound URLs atomically with
+    /// metadata at the cost of ~100x the metadata write rate.
+    pub link_dispatch: crawlrs_core::LinkDispatch,
 }
 
 impl Default for RuntimeConfig {
@@ -191,6 +198,7 @@ impl Default for RuntimeConfig {
             max_depth: Some(5),
             max_retries: 5,
             cross_run_dedup: true,
+            link_dispatch: crawlrs_core::LinkDispatch::default(),
         }
     }
 }

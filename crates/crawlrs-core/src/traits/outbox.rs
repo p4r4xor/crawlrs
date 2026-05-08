@@ -32,7 +32,7 @@
 //! fix is a row-level lease (`SELECT ... FOR UPDATE SKIP LOCKED`
 //! inside one txn): concurrent callers receive disjoint batches.
 //! That requires the read and the mark to share a transaction, which
-//! requires them to share a method. See ADR-0017.
+//! requires them to share a method.
 //!
 //! ## Why a separate trait (and not just methods on MetadataStore)
 //!

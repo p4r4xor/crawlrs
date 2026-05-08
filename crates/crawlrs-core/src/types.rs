@@ -249,3 +249,31 @@ pub struct UrlMetadata {
     /// `discovered_at`.
     pub updated_at: SystemTime,
 }
+
+/// Strategy for moving a successful fetch's outbound URLs into the
+/// Frontier. Selected at runtime composition time.
+///
+/// `Direct` (default) skips the outbox: the worker calls
+/// `Frontier::submit_batch` directly after the metadata commit. A
+/// `submit_batch` failure or a worker crash mid-call drops those
+/// outbound URLs. Best-effort delivery; ~50x lower Postgres write
+/// volume than `DurableOutbox` because outbound URLs never become
+/// rows in the outbox table.
+///
+/// `DurableOutbox` commits outbound URLs atomically with the metadata
+/// write into a Postgres outbox table; a separate publisher drains
+/// the table into the Frontier with at-least-once delivery. Survives
+/// any single component crashing at the cost of ~100x the metadata
+/// write rate. Opt-in for system-of-record runs where every
+/// discovered URL must reach the Frontier.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LinkDispatch {
+    /// Fire-and-forget direct enqueue from the worker. Loses URLs
+    /// during transient Frontier errors. Default.
+    #[default]
+    Direct,
+    /// Atomic with metadata, drained asynchronously by the outbox
+    /// publisher. Survives any single component crash.
+    DurableOutbox,
+}

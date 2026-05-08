@@ -4,8 +4,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crawlrs_core::{
-    Clock, Fetcher, Frontier, HostHashShardPolicy, MetadataStore, Outbox, Parser, Politeness,
-    ShardingPolicy, SiteAdapterRegistry, Store, SystemClock,
+    Clock, Fetcher, Frontier, HostHashShardPolicy, LinkDispatch, MetadataStore, Outbox, Parser,
+    Politeness, ShardingPolicy, SiteAdapterRegistry, Store, SystemClock,
 };
 use thiserror::Error;
 use tokio::sync::watch;
@@ -95,6 +95,15 @@ pub struct CrawlerConfig {
     /// corpora that crash parsers, down to limit blast radius from a
     /// genuine crash-loop bug.
     pub restart_policy: crate::supervisor::RestartPolicy,
+
+    /// Strategy for moving discovered outbound URLs into the
+    /// Frontier. `Direct` (default) bypasses the outbox and lets the
+    /// worker submit URLs fire-and-forget after the metadata commit;
+    /// trades durability for ~50x lower Postgres write rate.
+    /// `DurableOutbox` commits outbound URLs atomically with the
+    /// metadata write and lets the publisher drain them
+    /// asynchronously, surviving any single component crash.
+    pub link_dispatch: LinkDispatch,
 }
 
 impl Default for CrawlerConfig {
@@ -112,6 +121,7 @@ impl Default for CrawlerConfig {
             cross_run_dedup: true,
             pod_ordinal: 0,
             restart_policy: crate::supervisor::RestartPolicy::default(),
+            link_dispatch: LinkDispatch::default(),
         }
     }
 }
@@ -174,20 +184,22 @@ impl Crawler {
 
         // Outbox publisher: drains frontier_outbox rows written
         // transactionally by the worker pipeline's mark_succeeded
-        // call into the Frontier. This is the consumer half of the
-        // transactional-outbox pattern: the worker commits the
-        // outbound URLs in the same Postgres transaction as the
-        // metadata write, and this task converts those committed
-        // rows into at-least-once Frontier writes.
-        let outbox = self.outbox.clone();
-        let frontier = self.deps.frontier.clone();
-        let p_shutdown = self.shutdown_rx.clone();
-        tasks.spawn(outbox_publisher(
-            outbox,
-            frontier,
-            p_shutdown,
-            crate::outbox::DEFAULT_PUBLISH_INTERVAL,
-        ));
+        // call into the Frontier. Only relevant under
+        // `LinkDispatch::DurableOutbox`; in `Direct` mode the worker
+        // submits outbound URLs to the Frontier itself and the
+        // outbox table sits empty, so spawning the publisher would
+        // be a no-op tight loop.
+        if matches!(self.deps.config.link_dispatch, LinkDispatch::DurableOutbox) {
+            let outbox = self.outbox.clone();
+            let frontier = self.deps.frontier.clone();
+            let p_shutdown = self.shutdown_rx.clone();
+            tasks.spawn(outbox_publisher(
+                outbox,
+                frontier,
+                p_shutdown,
+                crate::outbox::DEFAULT_PUBLISH_INTERVAL,
+            ));
+        }
 
         // Worker pool. Each worker gets a stable WorkerIdentity built
         // from the configured pod_ordinal + the per-pod worker index.

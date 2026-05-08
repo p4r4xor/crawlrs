@@ -289,7 +289,7 @@ async fn history_records_each_transition() {
 }
 
 // ---------------------------------------------------------------------------
-// Outbox publish: lease semantics under concurrency (ADR-0017)
+// Outbox publish: lease semantics under concurrency
 // ---------------------------------------------------------------------------
 
 /// One `publish` call that records the row ids it received into a
@@ -348,7 +348,6 @@ async fn seed_outbox_rows(pool: &PgPool, store: &PostgresMetadataStore, n: usize
 async fn publish_distributes_disjoint_batches_across_concurrent_callers() {
     // Pin the FOR UPDATE SKIP LOCKED contract: N concurrent publish
     // callers each receive a disjoint batch, never the same row twice.
-    // See ADR-0017.
     let fx = fixture().await;
     let store = Arc::new(PostgresMetadataStore::with_pool(fx.pool.clone()));
 
@@ -425,7 +424,7 @@ async fn publish_distributes_disjoint_batches_across_concurrent_callers() {
 async fn publish_rolls_back_when_ship_returns_error() {
     // Pin the lease-on-failure contract: if the ship closure errors,
     // the txn rolls back, the lease releases, and the rows reappear
-    // for the next caller. See ADR-0017.
+    // for the next caller.
     let fx = fixture().await;
     let store = PostgresMetadataStore::with_pool(fx.pool.clone());
 

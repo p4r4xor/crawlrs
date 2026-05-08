@@ -21,6 +21,7 @@ pub const WORKERS_ACTIVE: &str = "crawlrs_workers_active";
 pub const PIPELINE_SECONDS: &str = "crawlrs_pipeline_seconds";
 pub const WORKER_RESTARTS_TOTAL: &str = "crawlrs_worker_restarts_total";
 pub const OUTBOX_PUBLISHED_TOTAL: &str = "crawlrs_outbox_published_total";
+pub const DIRECT_DISPATCH_LOST_TOTAL: &str = "crawlrs_direct_dispatch_lost_total";
 
 pub const SKIP_ALREADY_SUCCEEDED: &str = "already_succeeded";
 pub const SKIP_ALREADY_DLQ: &str = "already_dlq";
@@ -79,6 +80,15 @@ pub fn register() {
          mark-published UPDATE); each event is one increment \
          regardless of how many rows were involved. Don't sum across \
          labels - the units differ."
+    );
+    describe_counter!(
+        DIRECT_DISPATCH_LOST_TOTAL,
+        "Outbound URLs dropped under `LinkDispatch::Direct` because \
+         the worker's post-commit `Frontier::submit_batch` call \
+         errored. One increment per URL lost. Always zero under \
+         `LinkDispatch::DurableOutbox`. Operators running Direct \
+         mode alert on a non-trivial rate; sustained loss is the \
+         signal to flip back to DurableOutbox."
     );
 }
 

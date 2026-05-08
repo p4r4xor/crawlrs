@@ -404,8 +404,7 @@ impl Outbox for PostgresMetadataStore {
     async fn publish(&self, max: usize, ship: ShipFn) -> Result<usize> {
         // One transaction holds the SELECT-acquired row locks until
         // commit. Concurrent callers' SELECTs use SKIP LOCKED to step
-        // over our locked rows, so they receive disjoint batches. See
-        // ADR-0017.
+        // over our locked rows, so they receive disjoint batches.
         let mut tx = self
             .pool
             .begin()

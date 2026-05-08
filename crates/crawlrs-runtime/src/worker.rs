@@ -17,9 +17,9 @@ use std::sync::Arc;
 
 use crawlrs_core::{
     AttemptId, CanonicalUrl, ClaimedMessage, Clock, FailureKind, FetchRequest, FetchResponse,
-    Fetcher, Frontier, MetadataStore, ParsedDocument, Parser, PoliteDecision, Politeness,
-    ShardingPolicy, SiteAdapterRegistry, Store, StoreRecord, SuccessRecord, UrlEntry, UrlStatus,
-    WorkerIdentity, content_hash,
+    Fetcher, Frontier, LinkDispatch, MetadataStore, ParsedDocument, Parser, PoliteDecision,
+    Politeness, ShardingPolicy, SiteAdapterRegistry, Store, StoreRecord, SuccessRecord, UrlEntry,
+    UrlStatus, WorkerIdentity, content_hash,
 };
 use tokio::sync::watch;
 use tokio::time::Instant as TokioInstant;
@@ -228,7 +228,7 @@ impl UrlPipeline {
         // at-least-once semantics if the publisher re-runs after a
         // crash.
         let outbound = compute_outbound(&self.entry, &doc, self.deps.config.max_depth);
-        self.finalize(&resp, &doc, &outbound).await;
+        self.finalize(&resp, &doc, outbound).await;
     }
 
     /// Cross-run dedup. Returns `true` iff a prior run already
@@ -399,11 +399,12 @@ impl UrlPipeline {
     }
 
     /// Persist the body via the store, record the blob path + content
-    /// hash + outbound URLs on the metadata ledger (one Postgres
-    /// transaction), then ack the frontier. Each step's failure path
-    /// acks anyway to avoid hot-looping; the URL stays `InProgress`
-    /// in the ledger so a future run can pick it up.
-    async fn finalize(&self, resp: &FetchResponse, doc: &ParsedDocument, outbound: &[UrlEntry]) {
+    /// hash on the metadata ledger, dispatch outbound URLs to the
+    /// Frontier per the configured `LinkDispatch` strategy, then ack
+    /// the frontier. Each step's failure path acks anyway to avoid
+    /// hot-looping; the URL stays `InProgress` in the ledger so a
+    /// future run can pick it up.
+    async fn finalize(&self, resp: &FetchResponse, doc: &ParsedDocument, outbound: Vec<UrlEntry>) {
         let body_hash = content_hash(&resp.body);
         let record = StoreRecord {
             doc,
@@ -422,15 +423,38 @@ impl UrlPipeline {
             }
         };
 
+        // Outbound dispatch strategy. DurableOutbox commits outbound
+        // URLs atomically with metadata so the publisher can replay
+        // them at-least-once; Direct skips the outbox and lets the
+        // worker fire-and-forget into the Frontier after the metadata
+        // commit, accepting bounded loss on transient errors.
+        let outbound_for_metadata: &[UrlEntry] = match self.deps.config.link_dispatch {
+            LinkDispatch::DurableOutbox => &outbound,
+            LinkDispatch::Direct => &[],
+        };
         let success = SuccessRecord {
             url: self.url(),
             attempt_id: self.attempt(),
             blob_path: &blob_path,
             content_hash: body_hash,
-            outbound,
+            outbound: outbound_for_metadata,
         };
         if let Err(e) = self.deps.metadata.mark_succeeded(&success).await {
             warn!(url = %self.url(), error = %e, "metadata.mark_succeeded failed; acking anyway");
+        }
+
+        if matches!(self.deps.config.link_dispatch, LinkDispatch::Direct) && !outbound.is_empty() {
+            // Fire-and-forget enqueue. submit_batch errors are logged
+            // and counted; we do not retry, buffer, or propagate. The
+            // worker continues to ack and pull the next URL. Bounded
+            // loss is the explicit tradeoff of Direct mode: a retry
+            // buffer would re-implement the outbox without the
+            // durability that justifies it.
+            let n = outbound.len();
+            if let Err(e) = self.deps.frontier.submit_batch(outbound).await {
+                warn!(url = %self.url(), error = %e, n, "direct dispatch lost outbound URLs");
+                metrics::counter!(crate::metrics::DIRECT_DISPATCH_LOST_TOTAL).increment(n as u64);
+            }
         }
 
         if let Err(e) = self.deps.frontier.ack(self.attempt()).await {

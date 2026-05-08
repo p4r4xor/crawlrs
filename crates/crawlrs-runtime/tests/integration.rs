@@ -14,8 +14,8 @@ use std::time::Duration;
 use bb8::Pool;
 use bb8_redis::RedisConnectionManager;
 use crawlrs_core::{
-    AttemptId, CanonicalUrl, MetadataStore, ShardingPolicy, SingleShardPolicy, SiteAdapterRegistry,
-    SuccessRecord, UrlEntry, UrlStatus,
+    AttemptId, CanonicalUrl, LinkDispatch, MetadataStore, ShardingPolicy, SingleShardPolicy,
+    SiteAdapterRegistry, SuccessRecord, UrlEntry, UrlStatus,
 };
 use crawlrs_fakes::{FakeFetcher, InMemoryMetadataStore, InMemoryStore};
 use crawlrs_frontier_redis::RedisFrontier;
@@ -139,7 +139,20 @@ fn fast_config() -> CrawlerConfig {
         cross_run_dedup: true,
         pod_ordinal: 0,
         restart_policy: Default::default(),
+        link_dispatch: Default::default(),
     }
+}
+
+fn direct_dispatch_config() -> CrawlerConfig {
+    let mut c = fast_config();
+    c.link_dispatch = LinkDispatch::Direct;
+    c
+}
+
+fn durable_outbox_dispatch_config() -> CrawlerConfig {
+    let mut c = fast_config();
+    c.link_dispatch = LinkDispatch::DurableOutbox;
+    c
 }
 
 fn fast_politeness() -> PolitenessConfig {
@@ -521,5 +534,118 @@ async fn retry_after_header_extends_politeness_wake_time() {
     assert!(
         attempts <= 1,
         "Retry-After: 2 should have parked the host past our 800ms window; got {attempts} attempts",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// LinkDispatch strategy
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn direct_mode_skips_outbox_and_enqueues_outbound_directly() {
+    // Pin LinkDispatch::Direct's contract: outbound URLs go straight
+    // from the worker into the Frontier after the metadata commit.
+    // The outbox table sits empty (no row ever written) and the
+    // publisher daemon never spawns.
+    let fx = fixture().await;
+    let (crawler, fetcher, _store, metadata) =
+        build_crawler(&fx, direct_dispatch_config(), fast_politeness()).await;
+
+    fetcher.install_html(
+        "https://parent.test/",
+        r#"<html><body>
+            <a href="https://child1.test/">c1</a>
+            <a href="https://child2.test/">c2</a>
+           </body></html>"#,
+    );
+    fetcher.install_html("https://child1.test/", "<html>c1</html>");
+    fetcher.install_html("https://child2.test/", "<html>c2</html>");
+
+    crawler
+        .deps()
+        .frontier
+        .submit(entry("https://parent.test/"))
+        .await
+        .unwrap();
+
+    let crawler = Arc::new(crawler);
+    let crawler_clone = crawler.clone();
+    let run_handle = tokio::spawn(async move { crawler_clone.run().await });
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    crawler.shutdown();
+    run_handle.await.unwrap().unwrap();
+
+    // Direct mode passes outbound: &[] to mark_succeeded; no outbox
+    // rows are ever written. This is the load-bearing assertion.
+    assert_eq!(
+        metadata.outbox_row_count(),
+        0,
+        "Direct mode must not write to the outbox table",
+    );
+
+    // Children were fetched, which means they reached the Frontier
+    // via the worker's direct submit_batch call (no outbox publisher
+    // ran in Direct mode).
+    let calls = fetcher.calls();
+    assert!(
+        calls.iter().any(|u| u == "https://child1.test/"),
+        "child1 should have been fetched (direct enqueue worked)",
+    );
+    assert!(
+        calls.iter().any(|u| u == "https://child2.test/"),
+        "child2 should have been fetched (direct enqueue worked)",
+    );
+}
+
+#[tokio::test]
+async fn durable_outbox_mode_writes_outbound_through_outbox() {
+    // Pin LinkDispatch::DurableOutbox's contract: outbound URLs
+    // commit atomically with the metadata write, the publisher
+    // drains them, and they reach the Frontier eventually. The
+    // outbox table records the rows for at-least-once replay.
+    let fx = fixture().await;
+    let (crawler, fetcher, _store, metadata) =
+        build_crawler(&fx, durable_outbox_dispatch_config(), fast_politeness()).await;
+
+    fetcher.install_html(
+        "https://parent.test/",
+        r#"<html><body><a href="https://child1.test/">c1</a></body></html>"#,
+    );
+    fetcher.install_html("https://child1.test/", "<html>c1</html>");
+
+    crawler
+        .deps()
+        .frontier
+        .submit(entry("https://parent.test/"))
+        .await
+        .unwrap();
+
+    let crawler = Arc::new(crawler);
+    let crawler_clone = crawler.clone();
+    let run_handle = tokio::spawn(async move { crawler_clone.run().await });
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    crawler.shutdown();
+    run_handle.await.unwrap().unwrap();
+
+    // The outbox table received at least one row for the child URL.
+    // (`>=` because the seed and child both run mark_succeeded; the
+    // child's own outbound is empty, so we expect exactly 1 here in
+    // practice, but `>=` is the contract assertion.)
+    assert!(
+        metadata.outbox_row_count() >= 1,
+        "DurableOutbox must write outbound URLs into the outbox table; got {}",
+        metadata.outbox_row_count(),
+    );
+    // After the publisher drained, no rows remain unpublished.
+    assert_eq!(
+        metadata.unpublished_outbox_count(),
+        0,
+        "publisher must have drained all outbox rows by shutdown",
+    );
+    // child1 was fetched -> publisher drained the outbox row -> the
+    // Frontier received the URL -> the worker claimed and fetched it.
+    assert!(
+        fetcher.calls().iter().any(|u| u == "https://child1.test/"),
+        "child1 should have been fetched after publisher drain",
     );
 }

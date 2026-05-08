@@ -188,6 +188,7 @@ fn build_runtime_config(config: &CrawlrsConfig) -> CrawlerConfig {
         max_retries: config.runtime.max_retries,
         cross_run_dedup: config.runtime.cross_run_dedup,
         pod_ordinal: pod_ordinal_from_env(),
+        link_dispatch: config.runtime.link_dispatch,
         ..CrawlerConfig::default()
     }
 }
