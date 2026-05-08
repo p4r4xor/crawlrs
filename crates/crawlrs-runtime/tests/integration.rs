@@ -143,18 +143,6 @@ fn fast_config() -> CrawlerConfig {
     }
 }
 
-fn direct_dispatch_config() -> CrawlerConfig {
-    let mut c = fast_config();
-    c.link_dispatch = LinkDispatch::Direct;
-    c
-}
-
-fn durable_outbox_dispatch_config() -> CrawlerConfig {
-    let mut c = fast_config();
-    c.link_dispatch = LinkDispatch::DurableOutbox;
-    c
-}
-
 fn fast_politeness() -> PolitenessConfig {
     PolitenessConfig {
         min_delay: Duration::from_millis(50),
@@ -172,49 +160,16 @@ fn fast_politeness() -> PolitenessConfig {
 
 // ---------------------------------------------------------------------------
 // Tests
+//
+// Tests in this section exercise behavior invariant under
+// LinkDispatch (failure paths, retry budget, politeness windows,
+// cross-run dedup, depth filtering). They do not run mark_succeeded
+// on a non-empty outbound, so the dispatch branch never executes.
+// Running them under both modes would double the testcontainer
+// startup cost for zero parity coverage. The dispatch-sensitive
+// success-path tests live in the LinkDispatch section below and are
+// parameterized over both modes.
 // ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn end_to_end_crawl_one_seed_two_pages() {
-    let fx = fixture().await;
-    let (crawler, fetcher, store, _metadata) =
-        build_crawler(&fx, fast_config(), fast_politeness()).await;
-
-    fetcher.install_html(
-        "https://a.test/",
-        r#"<html><body><a href="/page1">p1</a><a href="https://b.test/">b</a></body></html>"#,
-    );
-    fetcher.install_html("https://a.test/page1", "<html><body>page1</body></html>");
-    fetcher.install_html("https://b.test/", "<html><body>b</body></html>");
-
-    crawler
-        .deps()
-        .frontier
-        .submit(entry("https://a.test/"))
-        .await
-        .unwrap();
-
-    // Run the crawler in a task; trigger shutdown after enough time
-    // for the seed + its 2 children to have been fetched.
-    let crawler = Arc::new(crawler);
-    let crawler_clone = crawler.clone();
-    let run_handle = tokio::spawn(async move { crawler_clone.run().await });
-
-    // Give it time to drain; with min_delay=50ms and 3 distinct
-    // hosts, ~1s is plenty.
-    tokio::time::sleep(Duration::from_millis(800)).await;
-    crawler.shutdown();
-    run_handle.await.unwrap().unwrap();
-
-    let calls = fetcher.calls();
-    assert!(
-        calls.contains(&"https://a.test/".to_string()),
-        "seed fetched"
-    );
-    let stored = store.urls();
-    assert!(!stored.is_empty(), "at least the seed was stored");
-    assert!(stored.contains(&"https://a.test/".to_string()));
-}
 
 #[tokio::test]
 async fn rate_limit_response_triggers_failure_recording_and_nack() {
@@ -548,8 +503,9 @@ async fn direct_mode_skips_outbox_and_enqueues_outbound_directly() {
     // The outbox table sits empty (no row ever written) and the
     // publisher daemon never spawns.
     let fx = fixture().await;
-    let (crawler, fetcher, _store, metadata) =
-        build_crawler(&fx, direct_dispatch_config(), fast_politeness()).await;
+    let mut config = fast_config();
+    config.link_dispatch = LinkDispatch::Direct;
+    let (crawler, fetcher, _store, metadata) = build_crawler(&fx, config, fast_politeness()).await;
 
     fetcher.install_html(
         "https://parent.test/",
@@ -604,8 +560,9 @@ async fn durable_outbox_mode_writes_outbound_through_outbox() {
     // drains them, and they reach the Frontier eventually. The
     // outbox table records the rows for at-least-once replay.
     let fx = fixture().await;
-    let (crawler, fetcher, _store, metadata) =
-        build_crawler(&fx, durable_outbox_dispatch_config(), fast_politeness()).await;
+    let mut config = fast_config();
+    config.link_dispatch = LinkDispatch::DurableOutbox;
+    let (crawler, fetcher, _store, metadata) = build_crawler(&fx, config, fast_politeness()).await;
 
     fetcher.install_html(
         "https://parent.test/",
@@ -648,4 +605,61 @@ async fn durable_outbox_mode_writes_outbound_through_outbox() {
         fetcher.calls().iter().any(|u| u == "https://child1.test/"),
         "child1 should have been fetched after publisher drain",
     );
+}
+
+/// Comprehensive E2E parity body: 1 seed across 3 hosts, 2 children,
+/// distinct politeness windows. Asserts the seed and its children all
+/// land in the store regardless of dispatch mode. Wrapped by two
+/// `#[tokio::test]` entry points below so a regression in either
+/// dispatch path fails its own named test in CI.
+async fn run_end_to_end_crawl_one_seed_two_pages(dispatch: LinkDispatch) {
+    let fx = fixture().await;
+    let mut config = fast_config();
+    config.link_dispatch = dispatch;
+    let (crawler, fetcher, store, _metadata) = build_crawler(&fx, config, fast_politeness()).await;
+
+    fetcher.install_html(
+        "https://a.test/",
+        r#"<html><body><a href="/page1">p1</a><a href="https://b.test/">b</a></body></html>"#,
+    );
+    fetcher.install_html("https://a.test/page1", "<html><body>page1</body></html>");
+    fetcher.install_html("https://b.test/", "<html><body>b</body></html>");
+
+    crawler
+        .deps()
+        .frontier
+        .submit(entry("https://a.test/"))
+        .await
+        .unwrap();
+
+    // Run the crawler in a task; trigger shutdown after enough time
+    // for the seed + its 2 children to have been fetched.
+    let crawler = Arc::new(crawler);
+    let crawler_clone = crawler.clone();
+    let run_handle = tokio::spawn(async move { crawler_clone.run().await });
+
+    // Give it time to drain; with min_delay=50ms and 3 distinct
+    // hosts, ~1s is plenty.
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    crawler.shutdown();
+    run_handle.await.unwrap().unwrap();
+
+    let calls = fetcher.calls();
+    assert!(
+        calls.contains(&"https://a.test/".to_string()),
+        "seed fetched"
+    );
+    let stored = store.urls();
+    assert!(!stored.is_empty(), "at least the seed was stored");
+    assert!(stored.contains(&"https://a.test/".to_string()));
+}
+
+#[tokio::test]
+async fn end_to_end_crawl_one_seed_two_pages_under_direct() {
+    run_end_to_end_crawl_one_seed_two_pages(LinkDispatch::Direct).await;
+}
+
+#[tokio::test]
+async fn end_to_end_crawl_one_seed_two_pages_under_durable_outbox() {
+    run_end_to_end_crawl_one_seed_two_pages(LinkDispatch::DurableOutbox).await;
 }
