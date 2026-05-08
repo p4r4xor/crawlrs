@@ -96,7 +96,7 @@ impl InMemoryMetadataStore {
             .outbox
             .rows
             .iter()
-            .filter(|row| !row.published && !ledger.outbox.leased.contains(&row.id.value()))
+            .filter(|row| !row.published && !ledger.outbox.leased.contains(&row.id))
             .count()
     }
 }

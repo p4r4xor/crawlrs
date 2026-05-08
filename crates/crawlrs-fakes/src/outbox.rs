@@ -36,7 +36,7 @@ pub(crate) struct OutboxState {
     /// Row ids currently leased by an in-flight `publish` call.
     /// Concurrent `lease_batch` callers skip these, mirroring
     /// `FOR UPDATE SKIP LOCKED`.
-    pub(crate) leased: HashSet<u64>,
+    pub(crate) leased: HashSet<OutboxRowId>,
 }
 
 #[derive(Clone)]
@@ -83,7 +83,7 @@ pub(crate) fn lease_batch(state: &mut OutboxState, max: usize) -> Vec<OutboxEntr
         if leased.len() >= max {
             break;
         }
-        if row.published || state.leased.contains(&row.id.value()) {
+        if row.published || state.leased.contains(&row.id) {
             continue;
         }
         leased.push(OutboxEntry {
@@ -92,7 +92,7 @@ pub(crate) fn lease_batch(state: &mut OutboxState, max: usize) -> Vec<OutboxEntr
         });
     }
     for entry in &leased {
-        state.leased.insert(entry.id.value());
+        state.leased.insert(entry.id);
     }
     leased
 }
@@ -106,7 +106,7 @@ pub(crate) fn finalize_lease(state: &mut OutboxState, ids: &[OutboxRowId]) {
         }
     }
     for id in ids {
-        state.leased.remove(&id.value());
+        state.leased.remove(id);
     }
 }
 
@@ -115,6 +115,6 @@ pub(crate) fn finalize_lease(state: &mut OutboxState, ids: &[OutboxRowId]) {
 /// `ROLLBACK` path.
 pub(crate) fn release_lease(state: &mut OutboxState, ids: &[OutboxRowId]) {
     for id in ids {
-        state.leased.remove(&id.value());
+        state.leased.remove(id);
     }
 }

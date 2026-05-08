@@ -60,6 +60,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use crawlrs_core::LinkDispatch;
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -188,7 +189,7 @@ pub struct RuntimeConfig {
     /// URLs during transient Frontier errors; `DurableOutbox` is the
     /// opt-in path that commits outbound URLs atomically with
     /// metadata at the cost of ~100x the metadata write rate.
-    pub link_dispatch: crawlrs_core::LinkDispatch,
+    pub link_dispatch: LinkDispatch,
 }
 
 impl Default for RuntimeConfig {
@@ -198,7 +199,7 @@ impl Default for RuntimeConfig {
             max_depth: Some(5),
             max_retries: 5,
             cross_run_dedup: true,
-            link_dispatch: crawlrs_core::LinkDispatch::default(),
+            link_dispatch: LinkDispatch::default(),
         }
     }
 }

@@ -125,6 +125,9 @@ async fn build_crawler(
     (crawler, fetcher, store, metadata)
 }
 
+/// Default test config. `link_dispatch` inherits the project default
+/// (`LinkDispatch::Direct`); tests that need a specific dispatch mode
+/// set the field explicitly after this returns.
 fn fast_config() -> CrawlerConfig {
     CrawlerConfig {
         workers: 2,

@@ -69,16 +69,18 @@ pub type ShipFn = Box<dyn FnOnce(Vec<OutboxEntry>) -> ShipFuture + Send>;
 
 /// Identifier for one row in the outbox table.
 ///
-/// Newtype around `u64` so impls can't accidentally swap an outbox
-/// row id for some other numeric id flowing through the publisher
-/// pipeline (e.g. a depth, a content hash, a counter). Concrete impls
-/// translate to whatever the storage backend uses on the wire (the
-/// Postgres impl maps to BIGSERIAL); the trait surface stays in
+/// Newtype around `u64` so callers can't swap an outbox row id for
+/// some other numeric id (e.g. a depth, a content hash). Concrete
+/// impls translate to whatever the storage backend uses on the wire
+/// (the Postgres impl maps to BIGSERIAL); the trait surface stays in
 /// domain vocabulary.
 ///
-/// `OutboxRowId` is no longer threaded across publisher calls (see
-/// [`Outbox::publish`]); it stays an internal detail of the impl,
-/// surfaced on [`OutboxEntry`] for diagnostics and ordering.
+/// Surfaced on [`OutboxEntry`] for diagnostics, deterministic
+/// ordering, and tests asserting on per-row identity. Not threaded
+/// across publisher calls: the closure-based [`Outbox::publish`]
+/// owns the rows for one batch's lifetime, so the impl uses the id
+/// internally to scope its mark-published UPDATE without exposing
+/// it to the runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct OutboxRowId(u64);
 
