@@ -92,6 +92,18 @@ store:
     # Local FS path (used when kind=local). When kind=s3, the chart
     # ignores this.
     path: /var/lib/crawlrs/data
+    # Pod-local storage shape (only relevant when kind=local).
+    #   enabled=false (default) - emptyDir with sizeLimit. Fast,
+    #     simple, blobs LOST on pod restart. Right for sandboxes
+    #     validating the pipeline end-to-end.
+    #   enabled=true - PVC via volumeClaimTemplates. Blobs survive
+    #     pod restarts. Use when you want to keep what you crawl.
+    persistence:
+      enabled: false
+      size: 10Gi
+      # Only consulted when enabled=true; empty = cluster default.
+      storageClassName: ""
+      accessMode: ReadWriteOnce
     # S3 settings (used when kind=s3). access/secret pulled from the
     # Secret (S3_ACCESS_KEY_ID / S3_SECRET_ACCESS_KEY).
     s3:

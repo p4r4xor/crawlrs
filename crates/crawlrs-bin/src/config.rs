@@ -325,6 +325,25 @@ impl CrawlrsConfig {
         {
             self.runtime.workers = n;
         }
+        // S3 backend overlays. Only meaningful when store.backend is
+        // `s3`; for `local` the env vars are no-ops.
+        if let StoreBackend::S3 {
+            endpoint,
+            access_key_id,
+            secret_access_key,
+            ..
+        } = &mut self.store.backend
+        {
+            if let Ok(v) = std::env::var("CRAWLRS_S3_ENDPOINT") {
+                *endpoint = Some(v);
+            }
+            if let Ok(v) = std::env::var("CRAWLRS_S3_ACCESS_KEY_ID") {
+                *access_key_id = Some(v);
+            }
+            if let Ok(v) = std::env::var("CRAWLRS_S3_SECRET_ACCESS_KEY") {
+                *secret_access_key = Some(v);
+            }
+        }
     }
 
     /// One-line summary used by `crawlrs validate`.

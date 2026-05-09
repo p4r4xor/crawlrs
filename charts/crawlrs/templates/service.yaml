@@ -17,7 +17,7 @@ spec:
     {{- include "crawlrs.selectorLabels" . | nindent 4 }}
   ports:
     - name: http
-      port: {{ .Values.server.port }}
+      port: {{ .Values.server.port | int64 }}
       targetPort: http
       protocol: TCP
 {{- if .Values.serviceAccount.create }}

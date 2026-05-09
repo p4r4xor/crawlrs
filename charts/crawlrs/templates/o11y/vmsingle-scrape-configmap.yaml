@@ -25,8 +25,8 @@ data:
             {{- $fullname := include "crawlrs.fullname" . }}
             {{- $headless := include "crawlrs.headlessServiceName" . }}
             {{- $namespace := .Release.Namespace }}
-            {{- $port := .Values.server.port }}
-            {{- range $i, $_ := until (int .Values.replicaCount) }}
+            {{- $port := .Values.server.port | int64 }}
+            {{- range $i, $_ := until (.Values.replicaCount | int) }}
               - "{{ $fullname }}-{{ $i }}.{{ $headless }}.{{ $namespace }}.svc.cluster.local:{{ $port }}"
             {{- end }}
             labels:

@@ -72,9 +72,12 @@ kubectl port-forward -n crawlrs \
 # http://localhost:3000  (admin / admin)
 ```
 
-The sandbox bundles Bitnami Redis + Postgres + MinIO + the
-observability stack. Single replicas everywhere, fixed credentials,
-no persistence; for evaluation, dev loops, and CI smoke tests only.
+The sandbox bundles Redis + Postgres + the observability stack via
+raw manifests with official upstream images. Blob storage is
+pod-local FS (`store.backend.kind = local`); production deploys
+flip to `kind = s3` against real S3 / R2 / GCS. Single replicas
+everywhere, fixed credentials, no persistence; for evaluation, dev
+loops, and CI smoke tests only.
 
 See [`charts/crawlrs-demo/README.md`](charts/crawlrs-demo/README.md)
 for what's deployed and the migration path to production.
@@ -101,8 +104,8 @@ full values reference, sharding math, and security context defaults.
 ### Local (no Kubernetes)
 
 ```bash
-# Bring up Redis + Postgres + MinIO via your preferred docker-compose
-# setup, then:
+# Bring up Redis + Postgres via docker run (or your own
+# orchestration), then:
 cp crates/crawlrs-bin/examples/crawl.toml ./crawl.toml
 $EDITOR crawl.toml                    # point at your local services
 echo "https://example.com" > seeds.txt

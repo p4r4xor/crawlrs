@@ -1,33 +1,36 @@
-# crawlrs-demo Helm chart (Phase 6d)
+# crawlrs-demo Helm chart
 
 One-command sandbox install of the full crawlrs stack:
 
-- `crawlrs` (the crawler StatefulSet)
-- `vmsingle` + Grafana (bundled observability)
-- Bitnami Redis (frontier + politeness backend)
-- Bitnami Postgres (metadata ledger)
-- Bitnami MinIO (S3-compatible object store with `crawlrs-data`
-  bucket pre-created)
+- `crawlrs` (the crawler StatefulSet, via the `charts/crawlrs/` subchart)
+- `vmsingle` + Grafana (bundled observability, three provisioned dashboards)
+- Redis (frontier + politeness backend, `redis:7.4.2-alpine`)
+- Postgres (metadata ledger, `postgres:17.2-alpine`)
+
+Backing services run as raw `StatefulSet` + `Service` manifests in
+`templates/{redis,postgres}-*.yaml` using official upstream images
+directly. No third-party charts in the supply chain.
+
+Blob storage uses the **pod-local FS backend** (`store.backend.kind =
+local`); blobs land at `/var/lib/crawlrs/data` inside the crawlrs pod.
+By default this is an `emptyDir` volume — ephemeral, lost on pod
+restart. Toggle `crawlrs.store.backend.persistence.enabled=true` to
+back it with a PVC instead.
 
 Useful for: trying crawlrs without standing up your own backing
 services, dev-loop integration tests, and CI smoke tests.
 
 **Not for production.** Sandbox shape: single replicas everywhere,
-fixed credentials, no persistence. See the bottom of `NOTES.txt` for
-the full list of caveats.
+fixed credentials, sandbox-sized PVCs.
 
 ## TL;DR
 
 ```bash
-# One-time: register the Bitnami repo, fetch + unpack subcharts.
-helm repo add bitnami https://charts.bitnami.com/bitnami || true
 helm dep build ./charts/crawlrs-demo
-# Helm 3.16 needs the subchart tarballs unpacked alongside the .tgz.
-# (Newer helm versions can drop this step.)
 ( cd ./charts/crawlrs-demo/charts && for f in *.tgz; do tar -xzf "$f"; done )
 
 # Install (release name MUST be `crawlrs-demo` for the default
-# service-DNS values to resolve)
+# Service-DNS values to resolve)
 helm install crawlrs-demo ./charts/crawlrs-demo \
   --create-namespace -n crawlrs
 
@@ -43,53 +46,48 @@ kubectl wait --for=condition=ready pod \
 +------------------------------------------------+
 |  Namespace: crawlrs                            |
 |                                                |
-|  crawlrs-demo-crawlrs-0  (StatefulSet)         |
+|  crawlrs-demo-0  (StatefulSet, the crawler)    |
 |         |                                      |
-|         |  redis://crawlrs-demo-redis-master   |
-|         +---------------------------------+    |
-|         |  postgres://crawlrs-demo-...    |    |
-|         +---------------------------------+    |
-|         |  s3://crawlrs-demo-minio/...    |    |
-|         |                                 |    |
-|  crawlrs-demo-redis-master  (Deployment) <-+   |
-|  crawlrs-demo-postgresql    (StatefulSet)  +-->|
-|  crawlrs-demo-minio         (Deployment) <-+   |
+|         +---  redis://crawlrs-demo-redis:6379 ---+
+|         +---  postgres://crawlrs-demo-postgres ---+
+|         +---  file:///var/lib/crawlrs/data       |
+|                                                |
+|  crawlrs-demo-redis     (StatefulSet)          |
+|  crawlrs-demo-postgres  (StatefulSet)          |
 |                                                |
 |  crawlrs-demo-crawlrs-vmsingle  (Deployment)   |
-|         scrapes /metrics from crawlrs-0        |
-|                                                |
-|  crawlrs-demo-crawlrs-grafana  (Deployment)    |
-|         queries vmsingle, ships 3 dashboards   |
+|         scrapes /metrics from crawlrs-demo-0   |
+|  crawlrs-demo-crawlrs-grafana   (Deployment)   |
+|         queries vmsingle, 3 provisioned dashboards |
 +------------------------------------------------+
 ```
 
 ## Why the release name matters
 
-Subcharts emit Service names of the form `<release>-<name>`. The
-`crawlrs` subchart in `values.yaml` references those by literal
-string (`crawlrs-demo-redis-master`, `crawlrs-demo-postgresql`,
-`crawlrs-demo-minio`). If you change the release name, those names
-won't resolve.
+Service names emitted by the demo chart's templates are of the form
+`<release>-<role>` (e.g. `crawlrs-demo-redis`,
+`crawlrs-demo-postgres`). The `crawlrs` subchart's URLs in
+`values.yaml` reference those by literal string. If you change the
+release name, those names won't resolve.
 
-**Fix**: install with `crawlrs-demo` as the release name (the chart's
+Either install with `crawlrs-demo` as the release name (the chart's
 NOTES.txt will warn you if you don't), or override:
 
 ```bash
 helm install my-name ./charts/crawlrs-demo \
-  --set crawlrs.redis.url=redis://my-name-redis-master:6379 \
-  --set crawlrs.postgres.url=postgres://crawlrs:crawlrs@my-name-postgresql:5432/crawlrs \
-  --set crawlrs.store.backend.s3.endpoint=http://my-name-minio:9000 \
-  --set crawlrs.secrets.values.redisUrl=redis://my-name-redis-master:6379 \
-  --set crawlrs.secrets.values.postgresUrl=postgres://crawlrs:crawlrs@my-name-postgresql:5432/crawlrs
+  --set crawlrs.redis.url=redis://my-name-redis:6379 \
+  --set crawlrs.postgres.url=postgres://crawlrs:crawlrs@my-name-postgres:5432/crawlrs \
+  --set crawlrs.secrets.values.redisUrl=redis://my-name-redis:6379 \
+  --set crawlrs.secrets.values.postgresUrl=postgres://crawlrs:crawlrs@my-name-postgres:5432/crawlrs
 ```
 
 ## Migrating to production
 
 This chart is the wrong shape for production. When you outgrow it:
 
-1. Stand up production-grade Redis (with Sentinel or managed
-   service), Postgres (managed RDS / Cloud SQL / your own HA
-   cluster), and S3-compatible storage outside Kubernetes.
+1. Stand up production-grade Redis (Sentinel or managed service),
+   Postgres (managed RDS / Cloud SQL / your own HA cluster), and
+   S3-compatible storage (real S3 / R2 / GCS) outside Kubernetes.
 2. Switch to the bare `charts/crawlrs/` chart with `o11y.enabled=true`
    so you keep the bundled observability but drop the bundled deps:
 
@@ -99,20 +97,23 @@ This chart is the wrong shape for production. When you outgrow it:
      --set postgres.url=... \
      --set store.backend.kind=s3 \
      --set store.backend.s3.bucket=... \
+     --set store.backend.s3.region=... \
      --set secrets.existingSecret=my-crawlrs-secrets \
      ...
    ```
 
 The `crawlrs` subchart values you pass to `crawlrs-demo` map directly
-to the `charts/crawlrs/` values; nothing changes except where the
-backing services live.
+to the `charts/crawlrs/` values; the only meaningful change between
+sandbox and production is `store.backend.kind` (`local` vs `s3`) plus
+the URLs of the backing services.
 
 ## Disclaimers (the short version)
 
 | | crawlrs-demo | charts/crawlrs/ |
 |---|---|---|
 | Backing services | bundled, single-replica | external, your call |
-| Persistence | none (data lost on pod restart) | S3 + your DB persistence |
+| Blob storage | `kind = local` (emptyDir or PVC) | `kind = s3` against real S3 |
+| Persistence | sandbox-sized PVCs (or none for blobs) | your DB + S3 retention |
 | Credentials | hard-coded sandbox values | externally-managed Secret |
 | HA / failover | none | yes |
 | Resources | laptop-sized | configure to taste |

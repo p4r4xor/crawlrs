@@ -1,16 +1,18 @@
 //! Factory smoke test against testcontainer-backed dependencies.
 //!
-//! Spins up Redis + Postgres + MinIO (the full backing-services
-//! footprint a real `crawlrs crawl` requires), constructs a
-//! `CrawlrsConfig` pointing at those endpoints, and verifies
-//! `factory::build` returns a `Built` without errors. Then submits
-//! one URL to the frontier and confirms it round-trips through
-//! `submit_batch` -> `claim`.
+//! Spins up Redis + Postgres (the stateful backing services a real
+//! `crawlrs crawl` requires), constructs a `CrawlrsConfig` pointing
+//! at those endpoints with a local-FS store backend in a tempdir,
+//! and verifies `factory::build` returns a `Built` without errors.
+//! Then submits one URL to the frontier and confirms it round-trips
+//! through `submit_batch` -> `claim`.
 //!
 //! This test exercises the binary's wiring at the lib level. The
 //! end-to-end fetch path (URL -> store object -> metadata row) is
 //! covered by `crawlrs-runtime/tests/integration.rs`; replicating
-//! it here would re-test the runtime, not the binary's wiring.
+//! it here would re-test the runtime, not the binary's wiring. The
+//! S3 store backend's wire path is owned by the upstream
+//! `object_store` crate's own test suite.
 
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
@@ -22,9 +24,7 @@ use crawlrs_bin::config::{
 use crawlrs_bin::factory;
 use crawlrs_core::{CanonicalUrl, Frontier, UrlEntry, WorkerIdentity};
 use testcontainers::ImageExt;
-use testcontainers::core::{CmdWaitFor, ExecCommand};
 use testcontainers::runners::AsyncRunner;
-use testcontainers_modules::minio::MinIO;
 use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::redis::Redis;
 
@@ -43,19 +43,6 @@ async fn factory_builds_against_real_backends() {
         .await
         .unwrap();
     let pg_port = postgres.get_host_port_ipv4(5432).await.unwrap();
-
-    let minio = MinIO::default().start().await.unwrap();
-
-    // Pre-create the bucket via mc; same pattern as the parquet/warc
-    // tests in crawlrs-store.
-    let cmd = ExecCommand::new([
-        "sh",
-        "-c",
-        "mc alias set local http://localhost:9000 minioadmin minioadmin \
-         && mc mb local/crawlrs-test",
-    ])
-    .with_cmd_ready_condition(CmdWaitFor::exit_code(0));
-    minio.exec(cmd).await.unwrap();
 
     let tmp = tempfile::tempdir().unwrap();
 

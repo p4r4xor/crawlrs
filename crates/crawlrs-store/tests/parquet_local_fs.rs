@@ -3,8 +3,9 @@
 //! Writes a few records, flushes, walks the resulting directory tree,
 //! and reads each Parquet file back via the parquet crate's row-group
 //! reader to verify schema, row count, and a handful of column values.
-//! This is the fast inner-loop test; the testcontainers-MinIO variant
-//! lives in `parquet_minio.rs` and exercises the S3 code path.
+//! S3 wire-path coverage is owned by the upstream `object_store`
+//! crate's own test suite; we test the Parquet writer + path layout
+//! here against a tempdir.
 
 use std::collections::HashMap;
 use std::sync::Arc;

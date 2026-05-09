@@ -1,19 +1,27 @@
-crawlrs-demo: a sandbox bundle of crawlrs + Redis + Postgres + MinIO.
+crawlrs-demo: a sandbox bundle of crawlrs + Redis + Postgres + bundled
+observability. Blob storage uses the pod-local FS backend; production
+deploys flip to S3-compatible storage on the prod chart directly.
 
 Release    : {{ .Release.Name }} (namespace {{ .Release.Namespace }})
 
 {{- if not (eq .Release.Name "crawlrs-demo") }}
 
-#######################################################################
-# WARNING: this chart's default values assume release name             #
-#  `crawlrs-demo`. You used `{{ .Release.Name }}`. Service DNS in the   #
-# crawler subchart's config points at `crawlrs-demo-redis-master`,     #
-# `crawlrs-demo-postgresql`, `crawlrs-demo-minio`; those names won't   #
-# resolve. Reinstall with:                                              #
-#                                                                       #
-#   helm install crawlrs-demo ./charts/crawlrs-demo \                  #
-#     --create-namespace -n {{ .Release.Namespace }}                   #
-#######################################################################
+###########################################################################################################
+# WARNING: this chart's default values assume release name                                                #
+#  `crawlrs-demo`. You used `{{ .Release.Name }}`. Service DNS in the                                     #
+# crawler subchart's config points at `crawlrs-demo-redis` and                                            #
+# `crawlrs-demo-postgres`; those names won't resolve under your                                           #
+# release. Reinstall with:                                                                                #
+#                                                                                                         #
+#   helm install crawlrs-demo ./charts/crawlrs-demo \                                                     #    
+#     --create-namespace -n {{ .Release.Namespace }}                                                      #
+#                                                                                                         #
+# Or override the URLs:                                                                                   #
+#                                                                                                         #
+#   helm install {{ .Release.Name }} ./charts/crawlrs-demo \                                              #
+#     --set crawlrs.redis.url=redis://{{ .Release.Name }}-redis:6379 \                                    #
+#     --set crawlrs.postgres.url=postgres://crawlrs:crawlrs@{{ .Release.Name }}-postgres:5432/crawlrs \   #
+###########################################################################################################
 {{- end }}
 
 # Wait for everything to come up
@@ -21,42 +29,40 @@ kubectl wait --for=condition=ready pod \
   -l app.kubernetes.io/instance={{ .Release.Name }} \
   -n {{ .Release.Namespace }} --timeout=180s
 
-# Submit a few seed URLs (the crawler reads from a frontier; this
-# pipes URLs into Redis directly via the running pod):
-kubectl exec -n {{ .Release.Namespace }} \
-  {{ .Release.Name }}-crawlrs-0 -- \
-  sh -c 'echo "https://example.com" | crawlrs ...'
+# Tail crawler logs
+kubectl logs -f -n {{ .Release.Namespace }} {{ .Release.Name }}-0
 
-# Port-forward Grafana to your laptop:
+# List the running services (use these names for port-forwarding)
+kubectl get svc -n {{ .Release.Namespace }}
+
+# Port-forward Grafana
 kubectl port-forward -n {{ .Release.Namespace }} \
-  svc/{{ .Release.Name }}-crawlrs-grafana 3000:3000
-# Then http://localhost:3000 (admin / admin) - dashboards under
-# the "crawlrs" folder.
+  svc/{{ .Release.Name }}-grafana 3000:3000
+# Then http://localhost:3000  (admin / admin); dashboards live in the
+# "crawlrs" folder.
 
-# Port-forward MinIO console:
+# Port-forward the crawler's metrics + healthz endpoints
 kubectl port-forward -n {{ .Release.Namespace }} \
-  svc/{{ .Release.Name }}-minio-console 9001:9001
-# Then http://localhost:9001 (minioadmin / minioadmin)
+  sts/{{ .Release.Name }} 9090:9090
+# Then curl http://localhost:9090/metrics
+#       curl http://localhost:9090/readyz
 
-# Port-forward vmsingle's PromQL UI:
-kubectl port-forward -n {{ .Release.Namespace }} \
-  svc/{{ .Release.Name }}-crawlrs-vmsingle 8429:8429
-# Then http://localhost:8429/vmui
-
-# Tail crawler logs:
-kubectl logs -f -n {{ .Release.Namespace }} \
-  {{ .Release.Name }}-crawlrs-0
+# Inspect blobs the crawler has written so far
+kubectl exec -n {{ .Release.Namespace }} {{ .Release.Name }}-0 -- \
+  ls -la /var/lib/crawlrs/data
 
 #######################################################################
-# Sandbox-shape disclaimers                                             #
-#                                                                       #
-# - persistence: NONE on Redis / Postgres / MinIO. Pod restart erases   #
-#   all crawl state.                                                    #
-# - credentials: hard-coded ("minioadmin", "crawlrs", "crawlrs-demo").  #
-#   DO NOT expose this chart to the internet.                           #
-# - replicas: single replica everywhere. No HA, no failover.            #
-# - resource limits: tuned for laptop / kind clusters.                  #
-#                                                                       #
-# For production use the bare `charts/crawlrs/` chart and bring         #
-# external Redis / Postgres / S3 endpoints + secrets.                   #
+# Sandbox-shape disclaimers                                           #
+#                                                                     #
+# - persistence: Redis + Postgres have small PVCs. Crawled blobs land #
+#   in an emptyDir by default and are LOST on pod restart; flip       #
+#   crawlrs.store.backend.persistence.enabled=true for a PVC instead. #
+# - credentials: hard-coded ("crawlrs" / "crawlrs"). DO NOT expose    #
+#   this chart to the internet.                                       #
+# - replicas: single replica everywhere. No HA, no failover.          #
+# - resource limits: tuned for laptop / kind clusters.                #
+#                                                                     #
+# For production use the bare `charts/crawlrs/` chart and bring       #
+# external Redis / Postgres + flip store.backend.kind=s3 with your    #
+# own S3 bucket + creds.                                              #
 #######################################################################

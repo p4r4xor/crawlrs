@@ -4,10 +4,14 @@
 #
 #   helm install crawlrs-demo ./charts/crawlrs-demo --create-namespace -n crawlrs
 #
-# The Service-DNS hostnames the crawlrs subchart references below
-# include the release name. A different release name means overriding
-# `crawlrs.redis.url`, `crawlrs.postgres.url`, and
-# `crawlrs.store.backend.s3.endpoint` to match.
+# The Service-DNS hostnames the crawlrs subchart references include
+# the release name. A different release name means overriding
+# `crawlrs.redis.url` and `crawlrs.postgres.url` to match.
+#
+# Local sandbox stores blobs on a pod-local filesystem (kind=local).
+# For a production deploy use the prod chart at `charts/crawlrs/`
+# directly with `--set store.backend.kind=s3` and your own bucket /
+# region / credentials.
 
 # ---- Redis (official upstream image) --------------------------------
 redis:
@@ -17,13 +21,16 @@ redis:
   # delete) wipes the PVC; `helm uninstall` keeps it.
   persistence:
     size: 5Gi
+  # Memory limit needs headroom for Redis to load AOF on startup
+  # plus working set (seen-set hash, frontier streams). 256Mi caused
+  # OOMKill on restart with ~200MB of persisted state.
   resources:
     requests:
       cpu: 50m
-      memory: 64Mi
-    limits:
-      cpu: 500m
       memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
 
 # ---- Postgres (official upstream image) -----------------------------
 postgresql:
@@ -45,32 +52,7 @@ postgresql:
       cpu: 1000m
       memory: 512Mi
 
-# ---- MinIO (official upstream image) --------------------------------
-minio:
-  image: minio/minio:RELEASE.2024-11-07T00-52-20Z
-  # `mc` client image used by the bucket-init Job. Pinned to a
-  # release close to the server image so client/server protocol
-  # versions match.
-  mcImage: minio/mc:RELEASE.2024-11-05T11-29-45Z
-  imagePullPolicy: IfNotPresent
-  credentials:
-    rootUser: minioadmin
-    rootPassword: minioadmin
-  bucket: crawlrs-data
-  persistence:
-    size: 50Gi
-  resources:
-    requests:
-      cpu: 100m
-      memory: 256Mi
-    limits:
-      cpu: 1000m
-      memory: 1Gi
-
 # ---- crawlrs subchart override --------------------------------------
-# Wires the crawler at the bundled-service DNS names rendered by our
-# raw manifests below. Service names are
-# `<release>-{redis,postgres,minio}` (so `crawlrs-demo-...`).
 crawlrs:
   runId: "demo"
   replicaCount: 1
@@ -87,24 +69,23 @@ crawlrs:
     parquet: true
     warc: true
     backend:
-      kind: s3
-      s3:
-        endpoint: "http://crawlrs-demo-minio:9000"
-        bucket: "crawlrs-data"
-        region: "us-east-1"
-        allowHttp: true
-        virtualHostedStyleRequest: false
+      kind: local
+      path: /var/lib/crawlrs/data
+      # persistence.enabled defaults to false (emptyDir, blobs LOST on
+      # pod restart). Flip to true for a PVC-backed volume that
+      # survives restarts; size below applies to both modes.
 
   # Demo creds rendered into the chart's Secret. Swap for
-  # externally-managed secrets in production via charts/crawlrs/
-  # directly.
+  # externally-managed secrets in production via charts/crawlrs/.
   secrets:
     create: true
     values:
       redisUrl: "redis://crawlrs-demo-redis:6379"
       postgresUrl: "postgres://crawlrs:crawlrs@crawlrs-demo-postgres:5432/crawlrs"
-      s3AccessKeyId: "minioadmin"
-      s3SecretAccessKey: "minioadmin"
+      # S3 creds left empty: kind=local doesn't read them. Populate
+      # only if switching to kind=s3 against real S3.
+      s3AccessKeyId: ""
+      s3SecretAccessKey: ""
 
   runtime:
     workers: 2

@@ -1,11 +1,14 @@
 # Local container deployment
 
 Production-shape `crawlrs` running on your laptop, end to end. Same
-chart as production, same backing services (Redis, Postgres, MinIO),
-same observability stack (vmsingle, Grafana, three provisioned
-dashboards). The only thing that changes between this and an EKS / GKE
-deploy is the image source: locally-built and side-loaded into a kind
-cluster instead of pulled from a registry.
+chart as production, same backing services (Redis, Postgres), same
+observability stack (vmsingle, Grafana, three provisioned dashboards).
+
+Blob storage is **pod-local FS** for the sandbox (`store.backend.kind
+= local`). For production deploys flip to `kind = s3` and bring your
+own bucket / region / credentials — the prod chart at
+`charts/crawlrs/` already supports both modes via the same
+`[store.backend]` toggle.
 
 ## What gets deployed
 
@@ -18,12 +21,10 @@ crawlrs-demo namespace
 |  crawlrs-demo-crawlrs-0      (StatefulSet)         |
 |       redis://crawlrs-demo-redis:6379              |
 |       postgres://crawlrs-demo-postgres:5432        |
-|       s3://crawlrs-demo-minio:9000/crawlrs-data    |
+|       file:///var/lib/crawlrs/data  (emptyDir)     |
 |                                                    |
 |  crawlrs-demo-redis        (StatefulSet, redis:7-alpine)        |
 |  crawlrs-demo-postgres     (StatefulSet, postgres:17-alpine)    |
-|  crawlrs-demo-minio        (StatefulSet, minio/minio:RELEASE)   |
-|  crawlrs-demo-minio-bucket-init  (Job, mc mb crawlrs-data)      |
 |  crawlrs-demo-crawlrs-vmsingle   (metrics storage)              |
 |  crawlrs-demo-crawlrs-grafana    (3 dashboards)                 |
 +----------------------------------------------------+
@@ -33,7 +34,13 @@ Backing services use **official upstream images** directly via raw
 manifests in `charts/crawlrs-demo/templates/`. No third-party Helm
 charts in the supply chain.
 
-Total: ~6 pods, roughly 4-6 GB of RAM in use under steady-state crawl.
+Blobs (Parquet + WARC) write to a pod-local emptyDir at
+`/var/lib/crawlrs/data` by default — fast and simple, but **lost on
+pod restart**. To keep them across restarts, set
+`crawlrs.store.backend.persistence.enabled=true` (uses a
+volumeClaimTemplates-provisioned PVC instead).
+
+Total: ~5 pods, roughly 3-4 GB of RAM in use under steady-state crawl.
 
 ## One-time prerequisites
 
@@ -117,27 +124,34 @@ make local-cluster-down    # destroy the kind cluster (loses all PVC data)
 
 This setup is meaningfully prod-shaped:
 
-- **Same chart** — `charts/crawlrs-demo/` is the production `charts/crawlrs/`
-  chart wrapped with Bitnami Redis + Postgres + MinIO subcharts. The
-  crawler StatefulSet, ConfigMap, Secret, PDB, Service are identical.
+- **Same chart** — `charts/crawlrs-demo/` wraps the production
+  `charts/crawlrs/` chart with raw manifests for Redis + Postgres
+  using official upstream images. The crawler StatefulSet, ConfigMap,
+  Secret, PDB, Service templates are identical between the two.
 - **Same image** — built from this repo's `Dockerfile`. Push it to GHCR
   and prod will use the same artefact.
 - **Same observability** — vmsingle + Grafana with the same three
   dashboards (`crawler-health`, `fetch-pipeline`, `frontier-storage`).
-- **Same env-var overlay** — `CRAWLRS_REDIS_URL`, `CRAWLRS_POSTGRES_URL`,
-  `CRAWLRS_S3_*` flow through the Secret the same way they would in prod.
+- **Same env-var overlay** — `CRAWLRS_REDIS_URL`, `CRAWLRS_POSTGRES_URL`
+  (and `CRAWLRS_S3_*` when you flip to S3) flow through the Secret the
+  same way they would in prod.
 
 What differs:
 
-- **One-replica everything.** Prod runs 3+ Redis nodes, HA Postgres,
-  multi-replica MinIO. The demo chart's defaults are single-replica.
-- **Persistence sized for a laptop.** PVCs are 5 GiB Redis / 10 GiB PG /
-  50 GiB MinIO; production sizing is 10-100x.
+- **Blob storage** — sandbox uses `kind = local` (pod-local FS).
+  Production deploys use `kind = s3` with real S3 / R2 / GCS;
+  the prod chart's `[store.backend]` toggle is the only knob that
+  changes. The same `charts/crawlrs/` chart serves both; we just
+  don't bundle an in-cluster S3 server (no MinIO, no Bitnami).
+- **One-replica everything.** Prod runs 3+ Redis nodes, HA Postgres.
+  The demo chart's defaults are single-replica.
+- **Persistence sized for a laptop.** PVCs are 5 GiB Redis / 10 GiB PG;
+  production sizing is 10-100x.
 - **`pullPolicy: Never`** so K8s uses the kind-loaded image instead of
   trying GHCR. Production flips this to `IfNotPresent` and pulls the
   registry-hosted image.
-- **Demo-grade credentials.** `crawlrs:crawlrs`, `minioadmin`, etc.
-  Fine for the local box; never for prod.
+- **Demo-grade credentials.** `crawlrs:crawlrs` for Postgres. Fine
+  for the local box; never for prod.
 
 ## Iterating
 

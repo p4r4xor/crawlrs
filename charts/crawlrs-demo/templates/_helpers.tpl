@@ -1,7 +1,7 @@
 {{/*
 Common labels applied to every demo-chart-owned resource (redis,
-postgres, minio, bucket-init job, secrets). Component-specific
-labels are added per-template via `app.kubernetes.io/component`.
+postgres, secrets). Component-specific labels are added per-template
+via `app.kubernetes.io/component`.
 */}}
 {{- define "crawlrs-demo.labels" -}}
 helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" }}

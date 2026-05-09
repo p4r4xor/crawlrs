@@ -83,11 +83,11 @@ Render a single probe block. Usage:
 {{- define "crawlrs.probe" -}}
 httpGet:
   path: {{ .probe.path }}
-  port: {{ .port }}
-initialDelaySeconds: {{ .probe.initialDelaySeconds }}
-periodSeconds: {{ .probe.periodSeconds }}
-timeoutSeconds: {{ .probe.timeoutSeconds }}
-failureThreshold: {{ .probe.failureThreshold }}
+  port: {{ .port | int64 }}
+initialDelaySeconds: {{ .probe.initialDelaySeconds | int64 }}
+periodSeconds: {{ .probe.periodSeconds | int64 }}
+timeoutSeconds: {{ .probe.timeoutSeconds | int64 }}
+failureThreshold: {{ .probe.failureThreshold | int64 }}
 {{- end -}}
 
 {{/* o11y helpers (Phase 6c). */}}

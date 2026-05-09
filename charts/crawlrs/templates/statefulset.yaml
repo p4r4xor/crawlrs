@@ -6,7 +6,7 @@ metadata:
     {{- include "crawlrs.labels" . | nindent 4 }}
 spec:
   serviceName: {{ include "crawlrs.headlessServiceName" . }}
-  replicas: {{ .Values.replicaCount }}
+  replicas: {{ .Values.replicaCount | int64 }}
   podManagementPolicy: Parallel
   selector:
     matchLabels:
@@ -64,7 +64,7 @@ spec:
             {{- end }}
           ports:
             - name: http
-              containerPort: {{ .Values.server.port }}
+              containerPort: {{ .Values.server.port | int64 }}
               protocol: TCP
           env:
             - name: POD_NAME
@@ -139,13 +139,29 @@ spec:
         - name: scratch
           emptyDir:
             sizeLimit: 256Mi
-        {{- if and (eq .Values.store.backend.kind "local") (not (hasKey .Values "volumeClaimTemplates")) }}
-        # When the store backend is local FS, we provide a single
-        # emptyDir per pod by default. Operators wanting persistence
-        # across pod recreations should set
-        # `persistentStore.enabled: true` (TODO Phase 6c.x) or switch
-        # to backend.kind = s3.
+        {{- if and (eq .Values.store.backend.kind "local") (not .Values.store.backend.persistence.enabled) }}
+        # kind=local + persistence.enabled=false: ephemeral pod-local
+        # FS via emptyDir. Blobs LOST on pod restart. The PVC path
+        # below kicks in when persistence.enabled=true.
         - name: store-data
           emptyDir:
-            sizeLimit: 10Gi
+            sizeLimit: {{ .Values.store.backend.persistence.size }}
         {{- end }}
+  {{- if and (eq .Values.store.backend.kind "local") .Values.store.backend.persistence.enabled }}
+  # kind=local + persistence.enabled=true: PVC per pod, survives
+  # restarts. StatefulSet volumeClaimTemplates auto-provision a PV
+  # bound to each pod's `store-data` mount point.
+  volumeClaimTemplates:
+    - metadata:
+        name: store-data
+        labels:
+          {{- include "crawlrs.labels" . | nindent 10 }}
+      spec:
+        accessModes: [{{ .Values.store.backend.persistence.accessMode }}]
+        {{- if .Values.store.backend.persistence.storageClassName }}
+        storageClassName: {{ .Values.store.backend.persistence.storageClassName | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.store.backend.persistence.size | quote }}
+  {{- end }}

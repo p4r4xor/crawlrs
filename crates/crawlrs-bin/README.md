@@ -5,7 +5,8 @@ a runnable process.
 
 ## Quick start (sandbox)
 
-Spin up Redis + Postgres + MinIO via docker-compose, then:
+Spin up Redis + Postgres (via `docker run` or your preferred
+orchestration), point the crawler at a local-FS store path, then:
 
 ```bash
 # Copy the sample config
