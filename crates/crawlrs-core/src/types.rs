@@ -1,6 +1,10 @@
 //! Data structs that flow between pipeline stages.
 //!
 //! - `UrlEntry`: a frontier item (a URL the crawler intends to fetch).
+//! - `UrlId`: content-addressed 16-byte identifier for one URL.
+//! - `NextWake`: a politeness-computed "when may this host fetch again"
+//!   plan, returned from politeness and applied by the runtime via
+//!   `Frontier::advance_wake`.
 //! - `FetchRequest`: fetcher input (the URL plus per-request overrides).
 //! - `FetchResponse`: fetcher output (status, headers, body, timing).
 //! - `ParsedDocument`: parser output (text, links, metadata).
@@ -8,13 +12,12 @@
 //! - `WorkerIdentity`: stable identity for one worker across restarts.
 //! - `AttemptId`: opaque correlation token for one delivery of a URL.
 //!
-//! `ClaimedMessage` (the `UrlEntry` + `AttemptId` pair returned by
-//! `Frontier::claim`) lives next to the trait it serves, in
-//! [`crate::traits::frontier`].
+//! `ClaimOutcome` (the three-state return of `Frontier::claim`) lives
+//! next to the trait it serves, in [`crate::traits::frontier`].
 
 use std::collections::HashMap;
 use std::fmt;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
@@ -88,6 +91,88 @@ impl fmt::Display for AttemptId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
     }
+}
+
+/// Content-addressed identifier for a URL. 16 bytes of BLAKE3 of the
+/// canonical-URL string.
+///
+/// Pattern: Value Object. Two `UrlId`s compare equal iff they were
+/// derived from the same canonical URL; the runtime uses this for
+/// content-addressed lookup in the frontier's URL HASH and for the
+/// bloom-filter dedup at submit. 16 bytes keeps queue entries small
+/// while BLAKE3's collision resistance at billions-of-URLs is far
+/// beyond the operational regime we care about (birthday bound is
+/// ~2^64 URLs).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct UrlId([u8; 16]);
+
+impl UrlId {
+    pub fn from_canonical(url: &CanonicalUrl) -> Self {
+        let digest = blake3::hash(url.as_str().as_bytes());
+        let mut out = [0u8; 16];
+        out.copy_from_slice(&digest.as_bytes()[..16]);
+        Self(out)
+    }
+
+    pub fn from_bytes(bytes: [u8; 16]) -> Self {
+        Self(bytes)
+    }
+
+    pub const fn as_bytes(&self) -> &[u8; 16] {
+        &self.0
+    }
+
+    /// Lowercase hex rendering. Used as the key suffix in the
+    /// frontier's URL HASH and the lease ZSET, and as the wire form
+    /// flowing through the `AttemptId`.
+    pub fn to_hex(&self) -> String {
+        let mut out = String::with_capacity(32);
+        for byte in &self.0 {
+            use std::fmt::Write;
+            let _ = write!(out, "{byte:02x}");
+        }
+        out
+    }
+
+    /// Inverse of `to_hex`. Returns `None` if the string isn't 32 hex
+    /// chars.
+    pub fn from_hex(s: &str) -> Option<Self> {
+        if s.len() != 32 {
+            return None;
+        }
+        let mut out = [0u8; 16];
+        for (i, byte) in out.iter_mut().enumerate() {
+            let hi = (s.as_bytes()[i * 2] as char).to_digit(16)? as u8;
+            let lo = (s.as_bytes()[i * 2 + 1] as char).to_digit(16)? as u8;
+            *byte = (hi << 4) | lo;
+        }
+        Some(Self(out))
+    }
+}
+
+impl fmt::Debug for UrlId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "UrlId({})", self.to_hex())
+    }
+}
+
+impl fmt::Display for UrlId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.to_hex())
+    }
+}
+
+/// A politeness-computed "when may this host be fetched again" plan.
+///
+/// Returned by `Politeness::record_fetch` / `record_failure`; applied
+/// by the runtime via `Frontier::advance_wake`. The split lets the
+/// politeness layer stay pure policy (robots + backoff + circuit
+/// breaker) while the frontier owns scheduling state (wake ZSET + ready
+/// LIST). Per ADR-0020.
+#[derive(Debug, Clone)]
+pub struct NextWake {
+    pub host: String,
+    pub until: Instant,
 }
 
 /// One item in the frontier: "this URL is queued to be fetched."

@@ -1,15 +1,15 @@
 //! Per-host politeness, robots.txt cache, and failure backoff.
 //!
-//! [`RedisPoliteness`] satisfies [`crawlrs_core::Politeness`] using the
-//! same per-shard Redis keyspace shape as `crawlrs-frontier-redis`. Each
-//! host has:
+//! [`RedisPoliteness`] satisfies [`crawlrs_core::Politeness`] as a
+//! policy layer: it answers `check` (allow / disallow) and returns
+//! `NextWake` plans from `record_fetch` / `record_failure`. The
+//! frontier owns scheduling state (wake ZSET, ready list, lease ZSET);
+//! politeness owns policy state. Per-host Redis keys:
 //!
-//! - **One slot in a sorted set** (`hostsched`) keyed by host with score
-//!   = next-allowed-fetch wall-clock millis. `next_ready_at` reads this
-//!   set's smallest score; `record_fetch` writes a future score.
 //! - **One Hash** (`hoststate:{host}`) with consecutive-failure counter,
 //!   backoff-until-ms, and last failure category. Drives exponential
-//!   backoff on 429/503/transport errors.
+//!   backoff on 429/503/transport errors and the per-host circuit
+//!   breaker exposed via `check`.
 //! - **One Hash** (`robots:{host}`) caching the raw robots.txt body and
 //!   its TTL, fetched on first need via the supplied [`Fetcher`].
 //!

@@ -42,7 +42,12 @@ fn metric_name_contract_holds() {
     )
     .increment(1);
     metrics::gauge!(
-        crawlrs_frontier_redis::metrics::FRONTIER_PENDING_CLAIMS,
+        crawlrs_frontier_redis::metrics::FRONTIER_READY_LENGTH,
+        "shard" => "0",
+    )
+    .set(0.0);
+    metrics::gauge!(
+        crawlrs_frontier_redis::metrics::FRONTIER_INFLIGHT_LENGTH,
         "shard" => "0",
     )
     .set(0.0);
@@ -52,8 +57,23 @@ fn metric_name_contract_holds() {
     )
     .record(0.001);
     metrics::histogram!(crawlrs_frontier_redis::metrics::FRONTIER_SUBMIT_BATCH_SIZE).record(100.0);
-    metrics::histogram!(crawlrs_frontier_redis::metrics::FRONTIER_IN_FLIGHT_SECONDS).record(0.5);
     metrics::gauge!(crawlrs_frontier_redis::metrics::FRONTIER_POOL_PENDING).set(0.0);
+    metrics::counter!(
+        crawlrs_frontier_redis::metrics::FRONTIER_BLOOM_TOTAL,
+        "verdict" => crawlrs_frontier_redis::metrics::BLOOM_NEW,
+    )
+    .increment(1);
+    metrics::counter!(
+        crawlrs_frontier_redis::metrics::FRONTIER_LEASE_RECLAIM_TOTAL,
+        "reason" => crawlrs_frontier_redis::metrics::RECLAIM_REASON_EXPIRED,
+    )
+    .increment(0);
+    metrics::counter!(crawlrs_frontier_redis::metrics::FRONTIER_PROMOTED_TOTAL).increment(0);
+    metrics::counter!(
+        crawlrs_frontier_redis::metrics::FRONTIER_OVERFLOW_TOTAL,
+        "host" => "example.com",
+    )
+    .increment(0);
 
     // ---- politeness layer ----
     metrics::counter!(crawlrs_politeness::metrics::ROBOTS_CACHE_HITS_TOTAL).increment(1);
@@ -143,11 +163,15 @@ fn metric_name_contract_holds() {
         crawlrs_runtime::metrics::WORKERS_ACTIVE,
         crawlrs_runtime::metrics::PIPELINE_SECONDS,
         crawlrs_frontier_redis::metrics::FRONTIER_CLAIM_TOTAL,
-        crawlrs_frontier_redis::metrics::FRONTIER_PENDING_CLAIMS,
         crawlrs_frontier_redis::metrics::FRONTIER_CALL_SECONDS,
         crawlrs_frontier_redis::metrics::FRONTIER_SUBMIT_BATCH_SIZE,
-        crawlrs_frontier_redis::metrics::FRONTIER_IN_FLIGHT_SECONDS,
         crawlrs_frontier_redis::metrics::FRONTIER_POOL_PENDING,
+        crawlrs_frontier_redis::metrics::FRONTIER_OVERFLOW_TOTAL,
+        crawlrs_frontier_redis::metrics::FRONTIER_BLOOM_TOTAL,
+        crawlrs_frontier_redis::metrics::FRONTIER_LEASE_RECLAIM_TOTAL,
+        crawlrs_frontier_redis::metrics::FRONTIER_PROMOTED_TOTAL,
+        crawlrs_frontier_redis::metrics::FRONTIER_READY_LENGTH,
+        crawlrs_frontier_redis::metrics::FRONTIER_INFLIGHT_LENGTH,
         crawlrs_politeness::metrics::ROBOTS_CACHE_HITS_TOTAL,
         crawlrs_politeness::metrics::ROBOTS_CACHE_MISSES_TOTAL,
         crawlrs_politeness::metrics::POLITENESS_BACKOFF_SECONDS,
@@ -170,8 +194,8 @@ fn metric_name_contract_holds() {
 
     assert_eq!(
         expected.len(),
-        29,
-        "expected 29 distinct metric names per the metric-name contract; \
+        33,
+        "expected 33 distinct metric names per the metric-name contract; \
          if you intentionally added or removed one, update both this \
          assertion and the contract"
     );
@@ -194,11 +218,15 @@ fn metric_name_contract_holds() {
         "crawlrs_workers_active",
         "crawlrs_pipeline_seconds",
         "crawlrs_frontier_claim_total",
-        "crawlrs_frontier_pending_claims",
         "crawlrs_frontier_call_seconds",
         "crawlrs_frontier_submit_batch_size",
-        "crawlrs_frontier_in_flight_seconds",
         "crawlrs_frontier_pool_pending",
+        "crawlrs_frontier_overflow_total",
+        "crawlrs_frontier_bloom_total",
+        "crawlrs_frontier_lease_reclaim_total",
+        "crawlrs_frontier_promoted_total",
+        "crawlrs_frontier_ready_length",
+        "crawlrs_frontier_inflight_length",
         "crawlrs_robots_cache_hits_total",
         "crawlrs_robots_cache_misses_total",
         "crawlrs_politeness_backoff_seconds",

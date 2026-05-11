@@ -15,7 +15,6 @@ pub const POLITENESS_CHECK_TOTAL: &str = "crawlrs_politeness_check_total";
 pub const POLITENESS_POOL_PENDING: &str = "crawlrs_politeness_pool_pending";
 
 pub const DECISION_ALLOW: &str = "allow";
-pub const DECISION_DELAY: &str = "delay";
 pub const DECISION_DISALLOW_ROBOTS: &str = "disallow_robots";
 pub const DECISION_DISALLOW_BLOCKED: &str = "disallow_blocked";
 pub const DECISION_DISALLOW_CIRCUIT: &str = "disallow_circuit";

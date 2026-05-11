@@ -54,6 +54,7 @@ pub async fn build(config: &CrawlrsConfig) -> Result<Built> {
             sharding_policy.clone(),
             owned_shards.clone(),
             &config.run_id,
+            crawlrs_frontier_redis::BloomConfig::default(),
         )
         .await
         .context("constructing RedisFrontier")?,

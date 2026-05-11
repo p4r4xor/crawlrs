@@ -24,14 +24,6 @@ impl KeyPrefix {
         &self.run_id
     }
 
-    /// `crawlrs:{run_id}:s{shard}:hostsched`. Sorted set keyed on host;
-    /// score is the wall-clock millis after which fetches to that host
-    /// are allowed. `record_fetch` writes `now + delay`; `next_ready_at`
-    /// reads the smallest score.
-    pub fn hostsched(&self, shard: ShardKey) -> String {
-        format!("crawlrs:{}:s{}:hostsched", self.run_id, shard)
-    }
-
     /// `crawlrs:{run_id}:s{shard}:hoststate:{host}`. Hash with failure
     /// state for one host: `consecutive_failures`, `backoff_until_ms`,
     /// `last_kind`. Drives circuit-breaker behaviour.

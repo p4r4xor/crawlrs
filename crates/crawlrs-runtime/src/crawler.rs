@@ -17,6 +17,34 @@ use crate::outbox::outbox_publisher;
 use crate::supervisor::supervise_worker;
 use crate::worker::WorkerDeps;
 
+/// Periodic driver for `Frontier::tick`. Combines the promoter
+/// (wake -> ready) and lease-reclaim passes; both run inside the
+/// `tick` implementation per ADR-0019 (one background task, not two).
+///
+/// Lives in the runtime per the project's architecture rule: tokio
+/// composition belongs here, not inside the frontier crate.
+async fn frontier_tick_loop(
+    frontier: Arc<dyn Frontier>,
+    interval: Duration,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    let mut tick = tokio::time::interval(interval);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    tick.tick().await; // skip immediate first fire
+    loop {
+        tokio::select! {
+            _ = tick.tick() => {
+                if let Err(e) = frontier.tick().await {
+                    warn!(error = %e, "frontier.tick failed");
+                }
+            }
+            _ = shutdown.changed() => {
+                if *shutdown.borrow() { break; }
+            }
+        }
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum CrawlerError {
     #[error("missing dependency: {0}")]
@@ -42,21 +70,25 @@ pub struct CrawlerConfig {
     /// Discovered links beyond this depth are dropped at submit time.
     pub max_depth: Option<u32>,
 
-    /// How often the maintenance task drives `Frontier::tick`.
-    /// 30s mirrors the typical XAUTOCLAIM cadence at which stranded
-    /// entries are reclaimed.
+    /// How often the maintenance task emits the process-health
+    /// heartbeat. 30s catches slow leaks without dominating log
+    /// volume.
     pub maintenance_interval: Duration,
 
-    /// Sleep duration when `frontier.claim()` returns no entry.
+    /// How often the frontier-tick task drives `Frontier::tick` —
+    /// the per-shard promoter (wake -> ready) and lease-reclaim
+    /// pass. 50ms keeps the latency-tail collapsed under sustained
+    /// load while staying out of Redis CPU's way on idle clusters.
+    /// See ADR-0019.
+    pub promoter_tick: Duration,
+
+    /// Sleep duration when `frontier.claim()` returns `Empty` (queue
+    /// is idle, no wake-time in the near future).
     pub empty_queue_poll: Duration,
 
-    /// Sleep duration when `politeness.next_ready_at()` returns None
-    /// (no hosts tracked yet, e.g. at startup).
-    pub startup_poll: Duration,
-
-    /// Cap on how long a worker waits even when politeness reports a
-    /// far-future wake-time. Bounded so shutdown signals propagate
-    /// quickly.
+    /// Cap on how long a worker waits when `claim()` returns
+    /// `EmptyHint` with a far-future wake-time. Bounded so shutdown
+    /// signals propagate quickly.
     pub max_idle_sleep: Duration,
 
     /// Sleep duration after an unexpected backend error before
@@ -73,10 +105,9 @@ pub struct CrawlerConfig {
 
     /// StatefulSet pod ordinal for this process. Combined with each
     /// worker's task index it forms the [`crawlrs_core::WorkerIdentity`]
-    /// rendered as the Redis Streams consumer name (`pod-N:M`). Stable
-    /// across process restarts so tier-1 PEL replay reattaches a
-    /// restarted worker to its own previously-in-flight entries
-    /// without waiting for the `XAUTOCLAIM` idle threshold.
+    /// used by the frontier for lease attribution. Stable across
+    /// process restarts so a restarting worker can recover its own
+    /// previously-leased URLs without waiting for the reclaim timeout.
     ///
     /// In a Kubernetes StatefulSet deployment this is the integer
     /// suffix on `HOSTNAME` (`crawlrs-2` -> 2); single-process or test
@@ -108,8 +139,8 @@ impl Default for CrawlerConfig {
             user_agent: None,
             max_depth: Some(5),
             maintenance_interval: Duration::from_secs(30),
+            promoter_tick: Duration::from_millis(50),
             empty_queue_poll: Duration::from_millis(500),
-            startup_poll: Duration::from_millis(100),
             max_idle_sleep: Duration::from_secs(5),
             error_backoff: Duration::from_secs(1),
             max_retries: 5,
@@ -168,13 +199,20 @@ impl Crawler {
 
         let mut tasks = JoinSet::new();
 
-        // Heartbeat task. Frontier-side maintenance (XAUTOCLAIM
-        // reclaim of stranded entries) is driven by workers
-        // themselves now; this loop only emits the per-interval
-        // process-health log line.
+        // Heartbeat task. Process-health snapshot only; frontier
+        // bookkeeping is driven by `frontier_tick_loop` below.
         let interval = self.deps.config.maintenance_interval;
         let m_shutdown = self.shutdown_rx.clone();
         tasks.spawn(maintenance_loop(interval, m_shutdown));
+
+        // Frontier promoter + lease-reclaim. Ticks every
+        // `promoter_tick`; the frontier's `tick` impl does both
+        // promotion (wake -> ready) and lease-expiry reclaim
+        // (inflight -> host_queue) in one call.
+        let f_shutdown = self.shutdown_rx.clone();
+        let frontier = self.deps.frontier.clone();
+        let promoter_tick = self.deps.config.promoter_tick;
+        tasks.spawn(frontier_tick_loop(frontier, promoter_tick, f_shutdown));
 
         // Outbox publisher: drains frontier_outbox rows written
         // transactionally by the worker pipeline's mark_succeeded

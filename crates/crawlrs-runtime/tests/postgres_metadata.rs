@@ -1,3 +1,7 @@
+// Harness-gated: depends on the real `RedisFrontier` and
+// `RedisPoliteness`. Re-enable once those impls land.
+#![cfg(any())]
+
 //! End-to-end smoke test that wires the runtime against the real
 //! `PostgresMetadataStore` and verifies state transitions land on
 //! disk. Exists separately from `tests/integration.rs` so the

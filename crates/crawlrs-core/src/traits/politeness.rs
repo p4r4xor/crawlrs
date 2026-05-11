@@ -1,25 +1,31 @@
 //! Politeness types and trait.
 //!
-//! The politeness layer gates fetches per host: minimum delay between
-//! requests, robots.txt enforcement, exponential backoff on 429/503,
-//! per-host circuit breakers. The trait surface here is the contract;
-//! the Redis-backed impl lives in `crawlrs-politeness`.
+//! Per ADR-0020 the politeness layer is policy-only: it answers
+//! "may this URL be fetched?" (`check`) and computes "given this
+//! outcome, when should we next be allowed to touch this host?"
+//! (`record_fetch` / `record_failure`). The *application* of the
+//! plan; writing the wake-time so future claims see it; lives in
+//! the frontier crate. Politeness owns: robots.txt, blocklist,
+//! circuit breaker, exponential-backoff math. Politeness does NOT
+//! own: per-host wake ZSET, ready LIST, lease tracking.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use async_trait::async_trait;
 
 use crate::error::Result;
+use crate::types::NextWake;
 use crate::url::CanonicalUrl;
 
-/// Politeness gate decision for a single URL.
+/// Politeness gate decision for a single URL. Two states: the wake
+/// time is enforced by the frontier (claim never returns a URL whose
+/// host is still in the wake-window), so `check` only has to answer
+/// "is this URL allowed at all?" (robots, blocklist, circuit-open).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PoliteDecision {
     /// Safe to fetch right now.
     Allow,
-    /// Wait at least this long before fetching.
-    Delay(Duration),
-    /// Disallowed (robots.txt, host on a deny-list, etc.).
+    /// Disallowed (robots.txt, blocklist, circuit open).
     Disallow,
 }
 
@@ -66,53 +72,45 @@ impl FailureKind {
 
 #[async_trait]
 pub trait Politeness: Send + Sync {
-    /// May this URL be fetched right now? Honors per-host wake-time,
-    /// 429/503 backoff, robots.txt, and any per-domain overrides.
+    /// May this URL be fetched right now? Honors robots.txt,
+    /// blocklist, and any open per-host circuit breaker. Wake-time
+    /// gating is the frontier's responsibility, not this method's.
     ///
     /// Errors are propagated from the backing store (e.g. Redis being
     /// unreachable). The runtime should treat an error as "do not
-    /// fetch right now" and retry the check; silently dropping the
-    /// error would risk over-fetching when the backend recovers.
+    /// fetch right now" and retry; silently dropping the error would
+    /// risk over-fetching when the backend recovers.
     async fn check(&self, url: &CanonicalUrl) -> Result<PoliteDecision>;
 
-    /// A successful fetch just completed. Implementations use this to
-    /// update per-host last-fetched timestamps so the next `check` for
-    /// this host applies the configured delay.
-    ///
-    /// Returns `Result` because a backend write may fail; callers
-    /// should retry rather than swallow, otherwise the next check
-    /// after a transient outage would over-fetch the host.
-    async fn record_fetch(&self, url: &CanonicalUrl) -> Result<()>;
+    /// A successful fetch just completed. Returns the wake-time plan
+    /// the runtime should apply via `Frontier::advance_wake`: the
+    /// host's earliest next-allowed fetch given the configured
+    /// host-delay (plus any robots.txt Crawl-Delay or per-domain
+    /// override). Politeness does not write the plan itself; the
+    /// frontier owns wake-time storage per ADR-0020.
+    async fn record_fetch(&self, url: &CanonicalUrl) -> Result<NextWake>;
 
-    /// A fetch failed. Implementations use this to apply per-host
-    /// exponential backoff on rate-limit categories (429/503) and to
-    /// open per-host circuits after repeated transport failures.
+    /// A fetch failed. Returns the wake-time plan after applying
+    /// exponential backoff for rate-limit categories (429/503), or
+    /// the host-delay floor for the milder failure categories. Also
+    /// increments the circuit-breaker counter; once over the
+    /// configured threshold subsequent `check` calls for the host
+    /// return `Disallow` until the next successful fetch resets it.
     ///
     /// `retry_after` carries a server-supplied hint when one was
     /// present (HTTP `Retry-After` header, RFC 9110 §10.2.3). When
-    /// present, implementations honor it as a *floor*: the next
-    /// allowed time is `max(server_hint, computed_backoff)`. Servers
-    /// know best how long they need to recover; we don't undercut
-    /// them, but we still apply our own backoff if it's harsher
-    /// (e.g., after the 5th consecutive 503 we may want longer than
-    /// the 5-second hint).
+    /// present, implementations honor it as a *floor*: the returned
+    /// `NextWake.until` is `max(server_hint, computed_backoff)`.
+    /// Servers know best how long they need to recover; we don't
+    /// undercut them, but we still apply our own backoff if it's
+    /// harsher (e.g., after the 5th consecutive 503 we may want
+    /// longer than the 5-second hint).
     async fn record_failure(
         &self,
         url: &CanonicalUrl,
         kind: FailureKind,
         retry_after: Option<Duration>,
-    ) -> Result<()>;
-
-    /// Soonest moment any host this instance tracks becomes claimable.
-    /// Lets the runtime sleep precisely until then instead of
-    /// busy-polling every host on every tick.
-    ///
-    /// Returns `Ok(None)` if the politeness layer has no scheduled work
-    /// (every host is currently free, or no hosts are tracked yet).
-    /// Implementations typically back this with a time-ordered
-    /// structure keyed on host (sorted set, delay-queue, etc.) so the
-    /// answer is O(log N) or better.
-    async fn next_ready_at(&self) -> Result<Option<Instant>>;
+    ) -> Result<NextWake>;
 
     // Note: there is intentionally no trait-level method for a
     // robots-only decision. `check` already runs the robots gate as

@@ -1,11 +1,5 @@
 //! Pool-size sanity check.
 //!
-//! Andrew Chan's 10M-URL crawl spent months debugging "why is throughput
-//! flat?" before discovering that 500 workers were fighting for 80
-//! Postgres connections; P50 acquisition latency was 1.8s. The same
-//! foot-gun is one misconfiguration away in any setup that wires a
-//! shared `bb8::Pool` to a worker count.
-//!
 //! [`validate_pool_size`] is a startup-time guard: given the configured
 //! pool's `max_size` and the worker count, it returns an error if the
 //! pool is sized below `workers + headroom`. Headroom covers the

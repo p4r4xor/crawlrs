@@ -1,76 +1,94 @@
-//! `InMemoryFrontier`: a `Frontier` impl that models Redis Streams
-//! consumer-group semantics in-process.
+//! `InMemoryFrontier`: a `Frontier` impl that models the per-host
+//! queue + wake ZSET + ready LIST + lease ZSET shape from ADR-0019
+//! entirely in-process.
 //!
 //! Pattern: Test Double as Specification. The job of this module is
 //! NOT to be a stub that returns canned answers; it's to be a
-//! **protocol model** of the Redis Streams behaviour the runtime
+//! **protocol model** of the Redis frontier behavior the runtime
 //! depends on. Tests written against `RedisFrontier` would also pass
-//! against `InMemoryFrontier`. That is what makes simulation testing
-//! tractable: the interesting failure modes (PEL accumulation, idle
-//! reclaim by a peer, redelivery of the same `AttemptId`, restart
-//! recovery via stable `WorkerIdentity`) are all expressible against
-//! this model with no Docker.
+//! against `InMemoryFrontier`. The interesting failure modes (lease
+//! expiry + reclaim, host backlog overflow, bloom dedup at submit,
+//! ready-host promotion) are all expressible against this model with
+//! no Docker.
 //!
-//! What this models:
+//! What this models, per ADR-0019:
 //!
-//! - **Per-shard streams** keyed by [`ShardKey`]. Each entry has a
-//!   monotonic ID `<ms>-<seq>` (millis from the injected [`Clock`],
-//!   sequence within the same ms).
-//! - **A single consumer group** per stream (the `"fetchers"` name is
-//!   implicit since the trait surfaces only one). Consumers are named
-//!   by [`WorkerIdentity::to_string`]; the group keeps a per-consumer
-//!   PEL.
-//! - **Tier-1 PEL replay**: `claim(identity)` first surfaces entries
-//!   already in `identity`'s PEL. This is what makes restart recovery
-//!   instant when the consumer name is stable across restarts.
-//! - **Tier-2 new delivery**: if the PEL is empty, hand out the next
-//!   undelivered stream entry to `identity`.
-//! - **Tier-3 XAUTOCLAIM**: if both 1 and 2 are empty, transfer one
-//!   entry from any peer consumer's PEL whose `claimed_at` is older
-//!   than the configured idle threshold into `identity`'s PEL.
-//! - **Submit-time dedup**: per-shard "seen" set; a duplicate URL is
-//!   silently dropped.
+//! - **Per-shard state.** Each owned shard has its own host queues,
+//!   URL HASH, seen-set, wake/ready/inflight bookkeeping.
+//! - **Per-host FIFO queue** keyed by `host`. Submitted URLs are
+//!   pushed to the back; claims pop from the front.
+//! - **Wake ZSET** keyed by host, score = next-allowed-fetch wall-
+//!   clock millis. The frontier owns this state outright now (was
+//!   the politeness layer's responsibility pre-ADR-0020).
+//! - **Ready LIST** keyed by shard: hosts whose wake-time has elapsed.
+//!   Populated by `tick` (the promoter analogue) and drained by
+//!   `claim`. Pre-computing readiness keeps claim O(1).
+//! - **Lease ZSET** keyed by url_id, score = lease-expiry millis.
+//!   `tick` reclaims expired leases and re-pushes the URL to its
+//!   host queue for re-delivery.
+//! - **Bloom-style seen-set** (a `HashSet<UrlId>` here; real impl
+//!   uses RedisBloom). Submit drops a URL if its id is already in
+//!   the set.
+//! - **Overflow queue** when a host's backlog exceeds the configured
+//!   cap. Surfaced via the `SubmitOutcome::Overflowed` return so
+//!   tests can assert on it.
+//! - **URL HASH** keyed by url_id; payload is the `UrlEntry`. Claim
+//!   materialises this; ack deletes it.
 //!
 //! What this does NOT model (deliberate scope):
 //!
-//! - `XADD MAXLEN` trimming.
-//! - `XACK`-after-stream-trim corner cases.
-//! - Cluster failover / replication lag.
+//! - Bloom false-positive math (we use a `HashSet`; never false-
+//!   positive, never false-negative).
 //! - Lua-script atomicity beyond the Mutex granularity.
+//! - Cluster failover / replication lag.
 //!
 //! Time control: pass an `Arc<dyn Clock>` (e.g. a `ManualClock`) to
-//! [`InMemoryFrontier::with_clock`] so XAUTOCLAIM idle decisions can
-//! be exercised in zero wall-time.
+//! [`InMemoryFrontier::with_clock`] so lease-expiry and wake-time
+//! decisions can be exercised in zero wall-time.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use crawlrs_core::{
-    AttemptId, ClaimedMessage, Clock, Error, Frontier, Result, ShardKey, ShardingPolicy,
-    SystemClock, UrlEntry, WorkerIdentity,
+    AttemptId, ClaimOutcome, Clock, Error, Frontier, Result, ShardKey, ShardingPolicy,
+    SubmitOutcome, SystemClock, UrlEntry, UrlId, WorkerIdentity,
 };
 
-/// Default XAUTOCLAIM idle threshold: 5 minutes, mirroring the
-/// production Redis adapter. Tests typically override to `Duration::ZERO`
-/// so reclaim fires immediately.
-const DEFAULT_AUTOCLAIM_IDLE: Duration = Duration::from_secs(300);
+/// Default per-host backlog cap before submits route to the overflow
+/// queue. Matches the chart's `frontier.maxHostBacklog`. Caps memory
+/// at ~10k URLs/host * ~150 bytes/entry = ~1.5MB/host worst-case.
+const DEFAULT_MAX_HOST_BACKLOG: usize = 10_000;
+
+/// Default lease timeout. A worker that crashes mid-fetch holds its
+/// URL for this long before the reclaim path re-pushes it. 60s
+/// matches the chart's `frontier.leaseTimeout` and is comfortably
+/// above the typical fetch duration.
+const DEFAULT_LEASE_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub struct InMemoryFrontier {
     sharding_policy: Arc<dyn ShardingPolicy>,
     owned_shards: Vec<ShardKey>,
     state: Mutex<FrontierState>,
     clock: Arc<dyn Clock>,
-    autoclaim_idle_ms: u64,
+    max_host_backlog: usize,
+    lease_timeout_ms: u64,
+    /// Reference wall-clock instant. The Frontier trait carries wake-
+    /// times as `Instant` but `Clock` only exposes millis since
+    /// process start; we capture an anchor here so we can convert
+    /// in both directions consistently.
+    anchor_instant: Instant,
+    anchor_clock_ms: u64,
 }
 
 impl std::fmt::Debug for InMemoryFrontier {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("InMemoryFrontier")
             .field("owned_shards", &self.owned_shards)
-            .field("autoclaim_idle_ms", &self.autoclaim_idle_ms)
+            .field("max_host_backlog", &self.max_host_backlog)
+            .field("lease_timeout_ms", &self.lease_timeout_ms)
             .finish_non_exhaustive()
     }
 }
@@ -78,35 +96,36 @@ impl std::fmt::Debug for InMemoryFrontier {
 #[derive(Debug, Default)]
 struct FrontierState {
     shards: HashMap<ShardKey, ShardState>,
-    /// Disambiguates entry IDs that share the same wall-clock millisecond.
-    /// Reset on each new ms.
-    last_id_ms: u64,
-    last_id_seq: u64,
+    /// Round-robin cursor across owned shards on claim.
     claim_cursor: usize,
 }
 
 #[derive(Debug, Default)]
 struct ShardState {
-    /// Append-only stream entries, in order of `XADD`.
-    stream: Vec<StreamEntry>,
-    /// `seen[url]`: dedupes the SADD-then-XADD path.
-    seen: HashSet<String>,
-    /// Per-consumer PEL: `consumer_name -> [(entry_id, claimed_at_ms)]`.
-    pel: HashMap<String, Vec<PelSlot>>,
-    /// Index into `stream` of the next entry to deliver via tier-2.
-    next_undelivered: usize,
+    /// Per-host FIFO of URL IDs.
+    host_queue: HashMap<String, VecDeque<UrlId>>,
+    /// Spillover for hosts past their backlog cap.
+    overflow: VecDeque<UrlId>,
+    /// Content-addressed URL records. Claim materialises from here;
+    /// ack removes.
+    urls: HashMap<UrlId, UrlEntry>,
+    /// Submit-time dedup. Mirrors RedisBloom's `seen:s{shard}`.
+    seen: HashSet<UrlId>,
+    /// Host -> next-allowed-fetch-millis. Score-sorted (we walk the
+    /// values on `tick`; explicit sort isn't worth maintaining at this
+    /// scale).
+    wake: HashMap<String, u64>,
+    /// Hosts whose wake-time has elapsed, awaiting `claim`. Maintained
+    /// by `tick`.
+    ready: VecDeque<String>,
+    /// url_id -> InflightSlot. The lease ZSET analogue.
+    inflight: HashMap<UrlId, InflightSlot>,
 }
 
 #[derive(Debug, Clone)]
-struct StreamEntry {
-    id: String,
-    entry: UrlEntry,
-}
-
-#[derive(Debug, Clone)]
-struct PelSlot {
-    entry_id: String,
-    claimed_at_ms: u64,
+struct InflightSlot {
+    host: String,
+    lease_expiry_ms: u64,
 }
 
 impl InMemoryFrontier {
@@ -115,38 +134,40 @@ impl InMemoryFrontier {
         for shard in &owned_shards {
             state.shards.insert(*shard, ShardState::default());
         }
+        let clock: Arc<dyn Clock> = Arc::new(SystemClock);
         Self {
             sharding_policy,
             owned_shards,
             state: Mutex::new(state),
-            clock: Arc::new(SystemClock),
-            autoclaim_idle_ms: DEFAULT_AUTOCLAIM_IDLE.as_millis() as u64,
+            anchor_clock_ms: clock.now_ms(),
+            anchor_instant: Instant::now(),
+            clock,
+            max_host_backlog: DEFAULT_MAX_HOST_BACKLOG,
+            lease_timeout_ms: DEFAULT_LEASE_TIMEOUT.as_millis() as u64,
         }
     }
 
     /// Override the wall-clock source. Tests inject a manual clock to
-    /// make XAUTOCLAIM idle decisions deterministic.
+    /// make lease-expiry and wake-time decisions deterministic.
     pub fn with_clock(mut self, clock: Arc<dyn Clock>) -> Self {
+        self.anchor_clock_ms = clock.now_ms();
+        self.anchor_instant = Instant::now();
         self.clock = clock;
         self
     }
 
-    /// Override the XAUTOCLAIM idle threshold. Tests set this to zero
-    /// to force reclaim on the next `claim()` call.
-    pub fn with_autoclaim_idle(mut self, idle: Duration) -> Self {
-        self.autoclaim_idle_ms = idle.as_millis() as u64;
+    /// Override the per-host backlog cap.
+    pub fn with_max_host_backlog(mut self, cap: usize) -> Self {
+        self.max_host_backlog = cap;
         self
     }
 
-    fn next_entry_id(&self, state: &mut FrontierState) -> String {
-        let now_ms = self.clock.now_ms();
-        if now_ms == state.last_id_ms {
-            state.last_id_seq += 1;
-        } else {
-            state.last_id_ms = now_ms;
-            state.last_id_seq = 0;
-        }
-        format!("{}-{}", now_ms, state.last_id_seq)
+    /// Override the lease timeout. Tests pass a short timeout (e.g.
+    /// 100ms) so reclaim fires on the next `tick` after a manual
+    /// clock advance.
+    pub fn with_lease_timeout(mut self, t: Duration) -> Self {
+        self.lease_timeout_ms = t.as_millis() as u64;
+        self
     }
 
     fn assert_owned(&self, shard: ShardKey) -> Result<()> {
@@ -158,236 +179,279 @@ impl InMemoryFrontier {
         }
         Ok(())
     }
+
+    /// Convert an `Instant` to clock-millis using the captured anchor.
+    /// Instants in the past relative to the anchor saturate at the
+    /// anchor's millis value (the worker is asking for "now" or
+    /// earlier, which means "ready immediately").
+    fn instant_to_clock_ms(&self, when: Instant) -> u64 {
+        if when <= self.anchor_instant {
+            return self.anchor_clock_ms;
+        }
+        let delta = when.duration_since(self.anchor_instant).as_millis() as u64;
+        self.anchor_clock_ms.saturating_add(delta)
+    }
+
+    /// Inverse of `instant_to_clock_ms`. Used to surface wake-time as
+    /// an `Instant` in `ClaimOutcome::EmptyHint`.
+    fn clock_ms_to_instant(&self, ms: u64) -> Instant {
+        let delta = ms.saturating_sub(self.anchor_clock_ms);
+        self.anchor_instant + Duration::from_millis(delta)
+    }
 }
 
-fn encode_attempt(shard: ShardKey, entry_id: &str) -> AttemptId {
-    AttemptId::new(format!("{shard}|{entry_id}"))
+fn encode_attempt(shard: ShardKey, url_id: &UrlId) -> AttemptId {
+    AttemptId::new(format!("{shard}|{}", url_id.to_hex()))
 }
 
-fn decode_attempt(attempt: &AttemptId) -> Result<(ShardKey, String)> {
+fn decode_attempt(attempt: &AttemptId) -> Result<(ShardKey, UrlId)> {
     let raw = attempt.as_str();
-    let (shard_str, entry_id) = raw
+    let (shard_str, id_hex) = raw
         .split_once('|')
         .ok_or_else(|| Error::Frontier(format!("malformed AttemptId: {raw}")))?;
     let shard: ShardKey = shard_str
         .parse()
         .map_err(|_| Error::Frontier(format!("malformed shard in AttemptId: {raw}")))?;
-    Ok((shard, entry_id.to_owned()))
+    let url_id = UrlId::from_hex(id_hex)
+        .ok_or_else(|| Error::Frontier(format!("malformed url_id in AttemptId: {raw}")))?;
+    Ok((shard, url_id))
 }
 
 #[async_trait]
 impl Frontier for InMemoryFrontier {
-    async fn submit(&self, entry: UrlEntry) -> Result<bool> {
+    async fn submit(&self, entry: UrlEntry) -> Result<SubmitOutcome> {
         let shard = self.sharding_policy.shard_key(&entry.url);
         self.assert_owned(shard)?;
+        let url_id = UrlId::from_canonical(&entry.url);
+        // The runtime only enqueues HTTP-shape URLs (the parser drops
+        // mailto:/tel:/javascript: at link-collection time), so a URL
+        // arriving here without a host is a programming error.
+        let host = entry
+            .url
+            .host()
+            .ok_or_else(|| Error::Frontier(format!("URL has no host: {}", entry.url)))?
+            .to_string();
+        let now_ms = self.clock.now_ms();
+
         let mut state = self.state.lock().unwrap();
-        let entry_id = self.next_entry_id(&mut state);
         let shard_state = state
             .shards
             .get_mut(&shard)
             .expect("owned shard initialised at construction");
-        if !shard_state.seen.insert(entry.url.as_str().to_string()) {
-            return Ok(false);
+
+        if !shard_state.seen.insert(url_id) {
+            return Ok(SubmitOutcome::SkippedDuplicate);
         }
-        shard_state.stream.push(StreamEntry {
-            id: entry_id,
-            entry,
-        });
-        Ok(true)
+        shard_state.urls.insert(url_id, entry);
+
+        let host_queue = shard_state.host_queue.entry(host.clone()).or_default();
+        if host_queue.len() >= self.max_host_backlog {
+            shard_state.overflow.push_back(url_id);
+            return Ok(SubmitOutcome::Overflowed);
+        }
+        host_queue.push_back(url_id);
+
+        // New host? Wake at 0 (immediately ready). Promoter (tick) will
+        // pick this up on the next tick. We don't add to `ready`
+        // directly because that would race with concurrent claims on
+        // the same shard.
+        shard_state.wake.entry(host).or_insert(now_ms);
+        Ok(SubmitOutcome::Queued)
     }
 
     async fn submit_batch(&self, entries: Vec<UrlEntry>) -> Result<usize> {
         let mut newly = 0usize;
         for entry in entries {
-            if self.submit(entry).await? {
+            if matches!(self.submit(entry).await?, SubmitOutcome::Queued) {
                 newly += 1;
             }
         }
         Ok(newly)
     }
 
-    async fn claim(&self, identity: &WorkerIdentity) -> Result<Option<ClaimedMessage>> {
+    async fn claim(&self, _identity: &WorkerIdentity) -> Result<ClaimOutcome> {
         let n = self.owned_shards.len();
         if n == 0 {
-            return Ok(None);
+            return Ok(ClaimOutcome::Empty);
         }
+        let now_ms = self.clock.now_ms();
+        let lease_timeout = self.lease_timeout_ms;
 
-        let consumer = identity.to_string();
         let mut state = self.state.lock().unwrap();
         let start = state.claim_cursor % n;
         state.claim_cursor = state.claim_cursor.wrapping_add(1);
 
-        let now_ms = self.clock.now_ms();
-        let idle_threshold = self.autoclaim_idle_ms;
-
+        // Walk owned shards round-robin. The first shard whose `ready`
+        // list is non-empty wins; we serve at most one URL per claim.
+        let mut soonest_wake: Option<u64> = None;
         for offset in 0..n {
             let shard = self.owned_shards[(start + offset) % n];
-            if let Some((entry, entry_id)) =
-                claim_from_shard(&mut state, shard, &consumer, now_ms, idle_threshold)
+            let Some(shard_state) = state.shards.get_mut(&shard) else {
+                continue;
+            };
+
+            if let Some((url_id, entry, host)) =
+                pop_one_ready(shard_state, now_ms, lease_timeout)
             {
-                let attempt_id = encode_attempt(shard, &entry_id);
-                return Ok(Some(ClaimedMessage { entry, attempt_id }));
+                let attempt_id = encode_attempt(shard, &url_id);
+                let _ = host; // captured into InflightSlot already
+                return Ok(ClaimOutcome::Claimed {
+                    url_id,
+                    entry: Box::new(entry),
+                    attempt_id,
+                });
+            }
+
+            // No ready host on this shard. Track the earliest wake-time
+            // across all shards so we can return EmptyHint.
+            if let Some(min) = shard_state.wake.values().min().copied()
+                && (soonest_wake.is_none() || soonest_wake.is_some_and(|s| min < s))
+            {
+                soonest_wake = Some(min);
             }
         }
-        Ok(None)
-    }
 
-    async fn claim_batch(
-        &self,
-        identity: &WorkerIdentity,
-        max: usize,
-    ) -> Result<Vec<ClaimedMessage>> {
-        let mut out = Vec::with_capacity(max.min(64));
-        let n = self.owned_shards.len();
-        if n == 0 || max == 0 {
-            return Ok(out);
+        match soonest_wake {
+            Some(ms) if ms > now_ms => Ok(ClaimOutcome::EmptyHint {
+                sleep_until: self.clock_ms_to_instant(ms),
+            }),
+            // Either the wake ZSET is empty (truly idle), or hosts are
+            // already eligible but the promoter hasn't ticked them
+            // into `ready` yet. Both cases: return Empty and let the
+            // worker apply its idle floor.
+            _ => Ok(ClaimOutcome::Empty),
         }
-
-        let consumer = identity.to_string();
-        let mut state = self.state.lock().unwrap();
-        let start = state.claim_cursor % n;
-        state.claim_cursor = state.claim_cursor.wrapping_add(1);
-
-        let now_ms = self.clock.now_ms();
-        let idle_threshold = self.autoclaim_idle_ms;
-
-        for offset in 0..n {
-            let shard = self.owned_shards[(start + offset) % n];
-            while out.len() < max {
-                match claim_from_shard(&mut state, shard, &consumer, now_ms, idle_threshold) {
-                    Some((entry, entry_id)) => {
-                        let attempt_id = encode_attempt(shard, &entry_id);
-                        out.push(ClaimedMessage { entry, attempt_id });
-                    }
-                    None => break,
-                }
-            }
-            if out.len() >= max {
-                break;
-            }
-        }
-        Ok(out)
     }
 
     async fn len(&self) -> Result<usize> {
         let state = self.state.lock().unwrap();
-        Ok(state.shards.values().map(|s| s.stream.len()).sum())
+        Ok(state
+            .shards
+            .values()
+            .map(|s| {
+                s.host_queue.values().map(|q| q.len()).sum::<usize>() + s.overflow.len()
+            })
+            .sum())
+    }
+
+    async fn advance_wake(&self, host: &str, until: Instant) -> Result<()> {
+        let until_ms = self.instant_to_clock_ms(until);
+        let mut state = self.state.lock().unwrap();
+        // Apply to every owned shard that has the host. In production
+        // the sharding policy resolves the host to one shard, but the
+        // trait surface doesn't carry a shard parameter; we mirror the
+        // Redis impl's per-shard write by writing wherever the host
+        // is known.
+        for shard_state in state.shards.values_mut() {
+            if shard_state.host_queue.contains_key(host) || shard_state.wake.contains_key(host) {
+                shard_state.wake.insert(host.to_string(), until_ms);
+                // If the host was sitting in `ready`, remove it; the
+                // next tick will re-promote when the new wake-time
+                // elapses.
+                shard_state.ready.retain(|h| h != host);
+            }
+        }
+        Ok(())
     }
 
     async fn ack(&self, attempt: &AttemptId) -> Result<()> {
-        let (shard, entry_id) = decode_attempt(attempt)?;
+        let (shard, url_id) = decode_attempt(attempt)?;
         let mut state = self.state.lock().unwrap();
         let Some(shard_state) = state.shards.get_mut(&shard) else {
             return Ok(()); // unknown shard: idempotent no-op
         };
-        // Remove from any consumer's PEL (matches XACK semantics: the
-        // entry leaves PEL state regardless of which consumer holds
-        // it). Also remove from the stream so `len()` reflects "work
-        // remaining"; Redis itself doesn't trim on XACK but for the
-        // purposes of in-memory tests, "acked == done" is the useful
-        // invariant.
-        for pel in shard_state.pel.values_mut() {
-            pel.retain(|slot| slot.entry_id != entry_id);
-        }
-        shard_state.stream.retain(|e| e.id != entry_id);
-        // Also walk the next_undelivered cursor back if needed.
-        if shard_state.next_undelivered > shard_state.stream.len() {
-            shard_state.next_undelivered = shard_state.stream.len();
-        }
+        shard_state.inflight.remove(&url_id);
+        shard_state.urls.remove(&url_id);
         Ok(())
     }
 
-    async fn nack(&self, _attempt: &AttemptId) -> Result<()> {
-        // Local-only no-op (matches the Redis impl's nack semantics):
-        // leave the entry in this consumer's PEL; tier-1 will re-read
-        // it on the next claim, or a peer's tier-3 will reclaim if
-        // it goes idle.
-        Ok(())
+    async fn tick(&self) -> Result<usize> {
+        let now_ms = self.clock.now_ms();
+        let mut affected = 0usize;
+        let mut state = self.state.lock().unwrap();
+
+        for shard_state in state.shards.values_mut() {
+            // Promote: drain hosts from `wake` whose score <= now into
+            // `ready`. Skip hosts already in `ready` (idempotent).
+            let mut promoted: Vec<String> = Vec::new();
+            for (host, score) in shard_state.wake.iter() {
+                if *score <= now_ms && !shard_state.ready.contains(host) {
+                    promoted.push(host.clone());
+                }
+            }
+            for host in &promoted {
+                shard_state.wake.remove(host);
+                // Only promote hosts that have URLs queued.
+                if shard_state.host_queue.get(host).is_some_and(|q| !q.is_empty()) {
+                    shard_state.ready.push_back(host.clone());
+                    affected += 1;
+                }
+            }
+
+            // Reclaim: scan inflight for lease_expiry <= now, re-push
+            // the URL to its host queue, ZADD wake (now) so the host
+            // gets promoted next tick.
+            let expired: Vec<UrlId> = shard_state
+                .inflight
+                .iter()
+                .filter(|(_, slot)| slot.lease_expiry_ms <= now_ms)
+                .map(|(id, _)| *id)
+                .collect();
+            for url_id in expired {
+                let slot = shard_state.inflight.remove(&url_id).unwrap();
+                shard_state
+                    .host_queue
+                    .entry(slot.host.clone())
+                    .or_default()
+                    .push_back(url_id);
+                shard_state.wake.entry(slot.host).or_insert(now_ms);
+                affected += 1;
+            }
+        }
+        Ok(affected)
     }
 }
 
-/// Pull the body of `claim` out of the trait method so the borrowing
-/// gymnastics stay readable. `state` is the locked frontier state;
-/// the function operates entirely under that single guard.
-fn claim_from_shard(
-    state: &mut FrontierState,
-    shard: ShardKey,
-    consumer: &str,
+/// Pop one URL from a `ready` host, lease it, and return the
+/// materialised payload. Returns `None` if `ready` is empty or every
+/// ready host's `host_queue` is somehow empty (stale `ready` entries).
+///
+/// On a successful pop, the host is *not* re-added to `ready` even if
+/// it has more URLs queued: the worker is expected to call
+/// `advance_wake(host, ..)` after the fetch, which writes the host's
+/// next-allowed time into `wake`. Until then, the host is in neither
+/// `ready` nor `wake` — it's owned by the in-flight worker. The lease
+/// timeout (set on `inflight`) is the safety net if the worker
+/// crashes before calling `advance_wake`.
+fn pop_one_ready(
+    shard: &mut ShardState,
     now_ms: u64,
-    idle_threshold_ms: u64,
-) -> Option<(UrlEntry, String)> {
-    let shard_state = state.shards.get_mut(&shard)?;
-
-    // Tier 1: this consumer's PEL. Entries we previously claimed but
-    // haven't acked. Picked up immediately on a restarted consumer with
-    // the same identity, which is the load-bearing property.
-    if let Some(pel) = shard_state.pel.get(consumer)
-        && let Some(slot) = pel.first()
-        && let Some(stream_entry) = shard_state.stream.iter().find(|e| e.id == slot.entry_id)
-    {
-        return Some((stream_entry.entry.clone(), slot.entry_id.clone()));
-    }
-
-    // Tier 2: a fresh entry never delivered to anyone.
-    if shard_state.next_undelivered < shard_state.stream.len() {
-        let stream_entry = shard_state.stream[shard_state.next_undelivered].clone();
-        shard_state.next_undelivered += 1;
-        shard_state
-            .pel
-            .entry(consumer.to_string())
-            .or_default()
-            .push(PelSlot {
-                entry_id: stream_entry.id.clone(),
-                claimed_at_ms: now_ms,
-            });
-        return Some((stream_entry.entry, stream_entry.id));
-    }
-
-    // Tier 3: XAUTOCLAIM. Find any peer's PEL slot older than the idle
-    // threshold and transfer it to `consumer`'s PEL.
-    let mut victim: Option<(String, usize)> = None; // (peer_consumer, slot_index)
-    for (peer, pel) in shard_state.pel.iter() {
-        if peer == consumer {
+    lease_timeout_ms: u64,
+) -> Option<(UrlId, UrlEntry, String)> {
+    while let Some(host) = shard.ready.pop_front() {
+        let Some(q) = shard.host_queue.get_mut(&host) else {
             continue;
-        }
-        for (i, slot) in pel.iter().enumerate() {
-            if now_ms.saturating_sub(slot.claimed_at_ms) >= idle_threshold_ms {
-                victim = Some((peer.clone(), i));
-                break;
-            }
-        }
-        if victim.is_some() {
-            break;
-        }
+        };
+        let Some(url_id) = q.pop_front() else {
+            continue;
+        };
+        let entry = shard.urls.get(&url_id).cloned()?;
+        shard.inflight.insert(
+            url_id,
+            InflightSlot {
+                host: host.clone(),
+                lease_expiry_ms: now_ms.saturating_add(lease_timeout_ms),
+            },
+        );
+        return Some((url_id, entry, host));
     }
-    if let Some((peer, i)) = victim {
-        let pel = shard_state.pel.get_mut(&peer).expect("found above");
-        let mut slot = pel.remove(i);
-        slot.claimed_at_ms = now_ms;
-        let entry_id = slot.entry_id.clone();
-        let stream_entry = shard_state
-            .stream
-            .iter()
-            .find(|e| e.id == entry_id)
-            .cloned();
-        shard_state
-            .pel
-            .entry(consumer.to_string())
-            .or_default()
-            .push(slot);
-        if let Some(stream_entry) = stream_entry {
-            return Some((stream_entry.entry, entry_id));
-        }
-    }
-
     None
 }
 
-// Inline because: visibility-forced. These tests probe the
-// `FrontierState` shape (private fields, the per-shard `pel` map, the
-// seen-set) to assert that PEL replay and at-least-once semantics hold
-// across claim/ack/nack cycles. Splitting into `tests/` would require
-// publicising internal structure that has no place in the public API.
+// Inline because: visibility-forced. These tests probe `FrontierState`
+// internals (private fields: per-host queues, wake/ready/inflight
+// bookkeeping) to assert the per-host scheduling protocol holds.
+// Splitting into `tests/` would force `pub` on internal structure.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -406,97 +470,156 @@ mod tests {
         InMemoryFrontier::new(policy, vec![0])
     }
 
+    fn ident() -> WorkerIdentity {
+        WorkerIdentity::new(0, 0)
+    }
+
     #[tokio::test]
-    async fn submit_then_claim_yields_same_url() {
+    async fn submit_then_tick_then_claim_yields_url() {
         let f = fresh_frontier();
-        let id = WorkerIdentity::new(0, 0);
-        f.submit(entry("https://a.test/")).await.unwrap();
-        let claimed = f.claim(&id).await.unwrap().expect("claim should yield");
-        assert_eq!(claimed.entry.url.as_str(), "https://a.test/");
+        let outcome = f.submit(entry("https://a.test/")).await.unwrap();
+        assert!(matches!(outcome, SubmitOutcome::Queued));
+
+        // No tick yet: the host is in `wake` (score=0) but not in
+        // `ready`, so claim returns EmptyHint (or Empty if score
+        // happens to be in the past, which it is).
+        match f.claim(&ident()).await.unwrap() {
+            ClaimOutcome::Empty | ClaimOutcome::EmptyHint { .. } => {}
+            ClaimOutcome::Claimed { .. } => panic!("should not have a ready host yet"),
+        }
+
+        // Promote: tick drains wake -> ready.
+        f.tick().await.unwrap();
+
+        let claimed = f.claim(&ident()).await.unwrap();
+        match claimed {
+            ClaimOutcome::Claimed { entry, .. } => {
+                assert_eq!(entry.url.as_str(), "https://a.test/");
+            }
+            other => panic!("expected Claimed, got {other:?}"),
+        }
     }
 
     #[tokio::test]
     async fn duplicate_submit_is_dropped_at_seen_set() {
         let f = fresh_frontier();
-        assert!(f.submit(entry("https://a.test/")).await.unwrap());
-        assert!(!f.submit(entry("https://a.test/")).await.unwrap());
+        assert!(matches!(
+            f.submit(entry("https://a.test/")).await.unwrap(),
+            SubmitOutcome::Queued
+        ));
+        assert!(matches!(
+            f.submit(entry("https://a.test/")).await.unwrap(),
+            SubmitOutcome::SkippedDuplicate
+        ));
         assert_eq!(f.len().await.unwrap(), 1);
     }
 
     #[tokio::test]
-    async fn ack_removes_from_pel_and_stream() {
+    async fn ack_removes_url_from_state() {
         let f = fresh_frontier();
-        let id = WorkerIdentity::new(0, 0);
         f.submit(entry("https://a.test/")).await.unwrap();
-        let claimed = f.claim(&id).await.unwrap().unwrap();
-        assert_eq!(f.len().await.unwrap(), 1);
-        f.ack(&claimed.attempt_id).await.unwrap();
+        f.tick().await.unwrap();
+        let claimed = f.claim(&ident()).await.unwrap();
+        let ClaimOutcome::Claimed { attempt_id, .. } = claimed else {
+            panic!("expected Claimed");
+        };
+        f.ack(&attempt_id).await.unwrap();
+        // Idempotent second ack.
+        f.ack(&attempt_id).await.unwrap();
+        // URL HASH gone, inflight gone, host_queue empty.
         assert_eq!(f.len().await.unwrap(), 0);
-        // Idempotent: a second ack on the same attempt is a no-op.
-        f.ack(&claimed.attempt_id).await.unwrap();
     }
 
     #[tokio::test]
-    async fn stable_identity_recovers_pel_immediately() {
-        // The architectural invariant being asserted: when a worker
-        // dies mid-flight, a freshly-spawned worker with the SAME
-        // WorkerIdentity reattaches to the dead one's PEL via tier-1
-        // (no XAUTOCLAIM idle wait). This is the recovery path that
-        // makes pod-restart cheap.
-        let f = fresh_frontier();
-        let identity = WorkerIdentity::new(0, 0);
+    async fn advance_wake_blocks_re_claim_until_promoted() {
+        let policy: Arc<dyn ShardingPolicy> = Arc::new(SingleShardPolicy);
+        let clock = Arc::new(ManualClock::new(1_000_000));
+        let f =
+            InMemoryFrontier::new(policy, vec![0]).with_clock(clock.clone());
 
-        f.submit(entry("https://a.test/")).await.unwrap();
-        let first_claim = f.claim(&identity).await.unwrap().unwrap();
-        assert_eq!(first_claim.entry.url.as_str(), "https://a.test/");
-        // We deliberately do NOT ack: simulates the worker crashing
-        // between claim and finalize.
+        // Submit two URLs for the same host; promote them.
+        f.submit(entry("https://a.test/1")).await.unwrap();
+        f.submit(entry("https://a.test/2")).await.unwrap();
+        f.tick().await.unwrap();
 
-        // A new "worker process" with the same identity calls claim:
-        // tier-1 must surface the PEL'd entry without waiting for the
-        // 5-minute autoclaim idle.
-        let recovered = f.claim(&identity).await.unwrap().expect("tier-1 replay");
-        assert_eq!(
-            recovered.entry.url.as_str(),
-            "https://a.test/",
-            "same identity must see the same in-flight URL on tier-1 read",
+        // Claim the first; host is now neither in ready nor wake.
+        let ClaimOutcome::Claimed { attempt_id, .. } = f.claim(&ident()).await.unwrap() else {
+            panic!("expected Claimed for the first URL");
+        };
+
+        // Worker reports the host's wake-time 5s out.
+        let now = Instant::now();
+        f.advance_wake("a.test", now + Duration::from_secs(5))
+            .await
+            .unwrap();
+        f.ack(&attempt_id).await.unwrap();
+
+        // Tick now: host's wake is 5s out, so it does NOT promote.
+        f.tick().await.unwrap();
+        let again = f.claim(&ident()).await.unwrap();
+        assert!(
+            matches!(again, ClaimOutcome::EmptyHint { .. } | ClaimOutcome::Empty),
+            "second claim should not yield until wake elapses; got {again:?}"
         );
-        assert_eq!(
-            recovered.attempt_id, first_claim.attempt_id,
-            "redelivery via tier-1 carries the same AttemptId",
+
+        // Advance the clock past the wake-time; tick promotes.
+        clock.advance_ms(6_000);
+        f.tick().await.unwrap();
+        let third = f.claim(&ident()).await.unwrap();
+        assert!(
+            matches!(third, ClaimOutcome::Claimed { .. }),
+            "after wake elapses, the second URL should claim; got {third:?}"
         );
     }
 
     #[tokio::test]
-    async fn xautoclaim_transfers_idle_pel_entry_to_peer() {
-        // The recovery path for the case where the original worker
-        // doesn't come back: a peer's tier-3 reclaims after the
-        // configured idle threshold. With ManualClock + idle=1000ms,
-        // we control wall-time deterministically.
+    async fn expired_lease_reclaim_re_pushes_url() {
+        // The recovery path: a worker holds a lease but never acks.
+        // After the lease expires, `tick` re-pushes the URL into its
+        // host_queue and the next claim picks it up.
         let policy: Arc<dyn ShardingPolicy> = Arc::new(SingleShardPolicy);
         let clock = Arc::new(ManualClock::new(1_000_000));
         let f = InMemoryFrontier::new(policy, vec![0])
             .with_clock(clock.clone())
-            .with_autoclaim_idle(Duration::from_millis(1000));
-
-        let dead = WorkerIdentity::new(0, 0);
-        let alive = WorkerIdentity::new(0, 1);
+            .with_lease_timeout(Duration::from_millis(500));
 
         f.submit(entry("https://a.test/")).await.unwrap();
-        let dead_claim = f.claim(&dead).await.unwrap().unwrap();
+        f.tick().await.unwrap();
+        let _first = f.claim(&ident()).await.unwrap();
+        // Deliberately do not ack. Worker "crashed".
 
-        // Immediate peer claim sees nothing: idle threshold not met.
-        // Stream is empty (already delivered to `dead`), and the entry
-        // has been claimed for 0ms.
-        assert!(f.claim(&alive).await.unwrap().is_none());
+        // Advance past the lease; tick reclaims.
+        clock.advance_ms(1_000);
+        let affected = f.tick().await.unwrap();
+        assert!(affected >= 1, "tick should reclaim the expired lease");
 
-        // Advance past the idle threshold; peer's tier-3 must reclaim.
-        clock.advance_ms(2000);
-        let reclaimed = f.claim(&alive).await.unwrap().expect("xautoclaim");
-        assert_eq!(reclaimed.entry.url.as_str(), "https://a.test/");
-        assert_eq!(
-            reclaimed.attempt_id, dead_claim.attempt_id,
-            "the redelivered AttemptId is the original entry's id",
-        );
+        // Next claim sees the re-pushed URL.
+        f.tick().await.unwrap();
+        let recovered = f.claim(&ident()).await.unwrap();
+        match recovered {
+            ClaimOutcome::Claimed { entry, .. } => {
+                assert_eq!(entry.url.as_str(), "https://a.test/");
+            }
+            other => panic!("expected Claimed after reclaim; got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn overflow_routes_excess_urls_to_overflow_queue() {
+        let policy: Arc<dyn ShardingPolicy> = Arc::new(SingleShardPolicy);
+        let f = InMemoryFrontier::new(policy, vec![0]).with_max_host_backlog(2);
+        // Three submissions to the same host; the third overflows.
+        assert!(matches!(
+            f.submit(entry("https://a.test/1")).await.unwrap(),
+            SubmitOutcome::Queued
+        ));
+        assert!(matches!(
+            f.submit(entry("https://a.test/2")).await.unwrap(),
+            SubmitOutcome::Queued
+        ));
+        assert!(matches!(
+            f.submit(entry("https://a.test/3")).await.unwrap(),
+            SubmitOutcome::Overflowed
+        ));
     }
 }

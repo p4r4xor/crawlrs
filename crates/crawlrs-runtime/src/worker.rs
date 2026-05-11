@@ -7,6 +7,11 @@
 //! implicit via await-points: a worker that's blocked in `fetch` or
 //! `store` simply isn't claiming new URLs.
 //!
+//! Per ADR-0020 the politeness layer is policy-only: it returns a
+//! [`NextWake`] from `record_fetch` / `record_failure`; the runtime
+//! applies it via [`Frontier::advance_wake`]. This module is the
+//! composition site for that handoff.
+//!
 //! The per-URL pipeline is encapsulated in [`UrlPipeline`]: a struct
 //! that owns one URL's working set (deps + entry) and exposes one
 //! short async method per phase. The top-level [`UrlPipeline::run`]
@@ -16,10 +21,10 @@
 use std::sync::Arc;
 
 use crawlrs_core::{
-    AttemptId, CanonicalUrl, ClaimedMessage, Clock, FailureKind, FetchRequest, FetchResponse,
-    Fetcher, Frontier, LinkDispatch, MetadataStore, ParsedDocument, Parser, PoliteDecision,
-    Politeness, ShardingPolicy, SiteAdapterRegistry, Store, StoreRecord, SuccessRecord, UrlEntry,
-    WorkerIdentity, content_hash,
+    AttemptId, CanonicalUrl, ClaimOutcome, Clock, FailureKind, FetchRequest, FetchResponse,
+    Fetcher, Frontier, LinkDispatch, MetadataStore, NextWake, ParsedDocument, Parser,
+    PoliteDecision, Politeness, ShardingPolicy, SiteAdapterRegistry, Store, StoreRecord,
+    SuccessRecord, UrlEntry, UrlId, WorkerIdentity, content_hash,
 };
 use tokio::sync::watch;
 use tokio::time::Instant as TokioInstant;
@@ -58,88 +63,56 @@ pub struct WorkerDeps {
 }
 
 /// Drive one worker until shutdown. Loops:
-///   1. Sleep until the soonest host-wake-time the politeness layer
-///      knows about, or a brief poll interval if no hosts are tracked.
-///   2. Claim a URL on behalf of `identity`. If the queue is empty,
-///      sleep poll interval.
-///   3. Process the [`ClaimedMessage`] via [`UrlPipeline`].
+///   1. Claim a URL on behalf of `identity`. The frontier returns one
+///      of three outcomes:
+///      - `Claimed`: process the URL.
+///      - `EmptyHint`: nothing ready right now but a host wakes soon;
+///        sleep until then (capped by `max_idle_sleep`).
+///      - `Empty`: queue is fully idle; sleep `empty_queue_poll`.
+///   2. Process the [`ClaimOutcome::Claimed`] via [`UrlPipeline`].
 ///
 /// `identity` is constant for the lifetime of this task. Frontier impls
-/// MAY use it as the stable consumer name (e.g. Redis Streams), so the
-/// `(pod_ordinal, worker_index)` pair MUST be unique within the cluster
-/// and stable across process restarts.
+/// MAY use it as the lease holder for crash-recovery attribution; the
+/// `(pod_ordinal, worker_index)` pair MUST be unique within the
+/// cluster and stable across process restarts.
 pub async fn worker_loop(
     identity: WorkerIdentity,
     deps: Arc<WorkerDeps>,
     mut shutdown: watch::Receiver<bool>,
 ) {
     debug!(identity = %identity, "worker_loop started");
-    // Successive empty-claim attempts back off exponentially up to
-    // `max_idle_sleep`. Resets on any successful claim. Without this
-    // a 100-worker idle pool burns ~200 RPS on Redis just polling.
-    let mut empty_backoff = deps.config.empty_queue_poll;
     while !*shutdown.borrow() {
-        sleep_until_ready(&deps, &mut shutdown).await;
-        if *shutdown.borrow() {
-            break;
-        }
-
-        let claimed = match deps.frontier.claim(&identity).await {
-            Ok(Some(c)) => {
-                empty_backoff = deps.config.empty_queue_poll;
-                c
+        match deps.frontier.claim(&identity).await {
+            Ok(ClaimOutcome::Claimed {
+                url_id,
+                entry,
+                attempt_id,
+            }) => {
+                process_url(identity, &deps, url_id, entry, attempt_id).await;
             }
-            Ok(None) => {
+            Ok(ClaimOutcome::EmptyHint { sleep_until }) => {
+                let when_tokio = TokioInstant::from_std(sleep_until);
+                let now = TokioInstant::now();
+                let wait = when_tokio.saturating_duration_since(now);
+                let actual = wait.min(deps.config.max_idle_sleep);
                 tokio::select! {
-                    _ = tokio::time::sleep(empty_backoff) => {}
+                    _ = tokio::time::sleep(actual) => {}
                     _ = shutdown.changed() => break,
                 }
-                empty_backoff = (empty_backoff * 2).min(deps.config.max_idle_sleep);
-                continue;
+            }
+            Ok(ClaimOutcome::Empty) => {
+                tokio::select! {
+                    _ = tokio::time::sleep(deps.config.empty_queue_poll) => {}
+                    _ = shutdown.changed() => break,
+                }
             }
             Err(e) => {
                 warn!(identity = %identity, error = %e, "frontier.claim failed");
                 tokio::time::sleep(deps.config.error_backoff).await;
-                continue;
             }
-        };
-
-        process_url(identity, &deps, claimed).await;
+        }
     }
     debug!(identity = %identity, "worker_loop exiting");
-}
-
-/// Sleep up to the next-ready instant the politeness layer reports.
-/// Returns immediately if no hosts are tracked yet (startup case).
-async fn sleep_until_ready(deps: &Arc<WorkerDeps>, shutdown: &mut watch::Receiver<bool>) {
-    match deps.politeness.next_ready_at().await {
-        Ok(Some(when)) => {
-            let when_tokio = TokioInstant::from_std(when);
-            let now = TokioInstant::now();
-            if when_tokio > now {
-                let wait = when_tokio - now;
-                // Cap the wait so we don't sleep through a shutdown by
-                // accident; the runtime polls at least every `wait_cap`.
-                let cap = deps.config.max_idle_sleep;
-                let actual = wait.min(cap);
-                tokio::select! {
-                    _ = tokio::time::sleep(actual) => {}
-                    _ = shutdown.changed() => {}
-                }
-            }
-        }
-        Ok(None) => {
-            // No hosts tracked yet. Short sleep so we don't spin.
-            tokio::select! {
-                _ = tokio::time::sleep(deps.config.startup_poll) => {}
-                _ = shutdown.changed() => {}
-            }
-        }
-        Err(e) => {
-            warn!(error = %e, "politeness.next_ready_at failed");
-            tokio::time::sleep(deps.config.error_backoff).await;
-        }
-    }
 }
 
 /// Trace boundary for one URL's pipeline. Wraps [`UrlPipeline::run`]
@@ -147,13 +120,21 @@ async fn sleep_until_ready(deps: &Arc<WorkerDeps>, shutdown: &mut watch::Receive
 /// emits, and so the per-URL metric envelope (workers_active gauge +
 /// pipeline_seconds histogram) lives in one place.
 #[tracing::instrument(
-    skip(deps, claimed),
-    fields(identity = %identity, url = %claimed.entry.url, depth = claimed.entry.depth),
+    skip(deps, entry),
+    fields(identity = %identity, url = %entry.url, depth = entry.depth, url_id = %url_id),
 )]
-async fn process_url(identity: WorkerIdentity, deps: &Arc<WorkerDeps>, claimed: ClaimedMessage) {
+async fn process_url(
+    identity: WorkerIdentity,
+    deps: &Arc<WorkerDeps>,
+    url_id: UrlId,
+    entry: Box<UrlEntry>,
+    attempt_id: AttemptId,
+) {
     let started_at = tokio::time::Instant::now();
     metrics::gauge!(crate::metrics::WORKERS_ACTIVE).increment(1.0);
-    UrlPipeline::new(Arc::clone(deps), claimed).run().await;
+    UrlPipeline::new(Arc::clone(deps), url_id, *entry, attempt_id)
+        .run()
+        .await;
     metrics::gauge!(crate::metrics::WORKERS_ACTIVE).decrement(1.0);
     metrics::histogram!(crate::metrics::PIPELINE_SECONDS)
         .record(started_at.elapsed().as_secs_f64());
@@ -171,24 +152,26 @@ async fn process_url(identity: WorkerIdentity, deps: &Arc<WorkerDeps>, claimed: 
 /// own short async method; [`Self::run`] is the orchestration.
 ///
 /// The contract for each phase method is uniform: perform the phase,
-/// and *if it terminally handled the URL* (acked or nacked the
-/// frontier, wrote any required metadata transition), signal that to
-/// the caller via the return type so `run` can short-circuit. None of
-/// the phase methods bubble errors; politeness/metadata/frontier
-/// errors are warn-and-move-on so one failed RPC doesn't poison the
-/// whole pipeline.
+/// and *if it terminally handled the URL* (committed via `ack` or
+/// chose to let the lease expire), signal that to the caller via the
+/// return type so `run` can short-circuit. None of the phase methods
+/// bubble errors; politeness/metadata/frontier errors are warn-and-
+/// move-on so one failed RPC doesn't poison the whole pipeline.
 struct UrlPipeline {
     deps: Arc<WorkerDeps>,
+    #[allow(dead_code)] // surfaced in tracing fields and useful for future logging
+    url_id: UrlId,
     entry: UrlEntry,
     attempt_id: AttemptId,
 }
 
 impl UrlPipeline {
-    fn new(deps: Arc<WorkerDeps>, claimed: ClaimedMessage) -> Self {
+    fn new(deps: Arc<WorkerDeps>, url_id: UrlId, entry: UrlEntry, attempt_id: AttemptId) -> Self {
         Self {
             deps,
-            entry: claimed.entry,
-            attempt_id: claimed.attempt_id,
+            url_id,
+            entry,
+            attempt_id,
         }
     }
 
@@ -203,9 +186,9 @@ impl UrlPipeline {
     /// Top-level orchestration. Reads as a checklist: each step
     /// either proceeds or short-circuits the run. The methods below
     /// follow a uniform contract - they perform their phase, and if
-    /// they terminally handle the URL (acking/nacking the frontier
-    /// and writing any metadata transition), they signal that to
-    /// `run` via the return type so we exit early.
+    /// they terminally handle the URL (acking the frontier and/or
+    /// writing any metadata transition), they signal that to `run`
+    /// via the return type so we exit early.
     async fn run(self) {
         if !self.politeness_allows().await {
             return;
@@ -217,21 +200,23 @@ impl UrlPipeline {
         let Some(doc) = self.extract(&resp).await else {
             return;
         };
-        // Outbound URLs are computed here but NOT enqueued directly;
-        // they ride along as a parameter to mark_succeeded so the
-        // metadata + outbox writes commit in one Postgres transaction.
-        // A separate publisher task drains the outbox into the
-        // Frontier; the Frontier-side seen-set absorbs the
-        // at-least-once semantics if the publisher re-runs after a
-        // crash.
+        // Outbound URLs are computed here but their dispatch path
+        // depends on `LinkDispatch`: DurableOutbox commits them
+        // atomically with the metadata write into a Postgres outbox
+        // (drained by a separate publisher task); Direct enqueues
+        // them via `Frontier::submit_batch` after the metadata
+        // commit, accepting bounded loss on transient errors.
         let outbound = compute_outbound(&self.entry, &doc, self.deps.config.max_depth);
         self.finalize(&resp, &doc, outbound).await;
     }
 
     /// Returns `true` iff politeness allows the fetch. `false` means
-    /// the pipeline is already finalized (acked on Disallow, nacked on
-    /// Delay or check-error). No metadata write on Disallow: the
-    /// verdict is per-run policy, not a URL-level failure.
+    /// the pipeline is already finalized (acked on Disallow, lease
+    /// left to expire on check-error).
+    ///
+    /// No metadata write on Disallow: the verdict is per-run policy
+    /// (robots / blocklist / circuit-open), not a URL-level failure
+    /// worth recording in the ledger.
     async fn politeness_allows(&self) -> bool {
         match self.deps.politeness.check(self.url()).await {
             Ok(PoliteDecision::Allow) => true,
@@ -245,23 +230,20 @@ impl UrlPipeline {
                 let _ = self.deps.frontier.ack(self.attempt()).await;
                 false
             }
-            Ok(PoliteDecision::Delay(d)) => {
-                debug!(url = %self.url(), delay_ms = d.as_millis() as u64, "politeness delay; nacking");
-                let _ = self.deps.frontier.nack(self.attempt()).await;
-                false
-            }
             Err(e) => {
-                warn!(url = %self.url(), error = %e, "politeness.check failed");
-                let _ = self.deps.frontier.nack(self.attempt()).await;
+                warn!(url = %self.url(), error = %e, "politeness.check failed; leasing expires");
+                // Don't ack: the URL stays in the inflight ZSET. When
+                // the lease expires, the frontier's reclaim path
+                // re-pushes it to its host_queue for re-delivery.
                 false
             }
         }
     }
 
     /// Best-effort: stamp the metadata ledger before any fetch I/O.
-    /// If the worker dies before ack/nack the row is left InProgress
-    /// and `XAUTOCLAIM` hands the URL to a peer who'll redo this
-    /// transition.
+    /// If the worker dies before ack, the row is left InProgress
+    /// and the lease-expiry reclaim hands the URL to a peer who'll
+    /// redo this transition.
     async fn mark_attempting(&self) {
         let result = self
             .deps
@@ -275,7 +257,8 @@ impl UrlPipeline {
 
     /// Fetch + classification + politeness recording. Returns
     /// `Some(resp)` only on a clean status; `None` means the failure
-    /// path already finalized the URL (handled retry budget + ack/nack).
+    /// path already finalized the URL (handled retry budget + ack /
+    /// lease-expiry).
     async fn fetch(&self) -> Option<FetchResponse> {
         let mut req = FetchRequest::new(self.url().clone());
         if let Some(user_agent) = &self.deps.config.user_agent {
@@ -288,11 +271,12 @@ impl UrlPipeline {
             Err(e) => {
                 let kind = classify_transport_error(&e);
                 warn!(url = %self.url(), error = %e, kind = ?kind, "fetch transport error");
-                let _ = self
+                let plan = self
                     .deps
                     .politeness
                     .record_failure(self.url(), kind, None)
                     .await;
+                self.apply_wake_plan(plan).await;
                 self.handle_failure(kind, &format!("transport: {e}")).await;
                 return None;
             }
@@ -307,18 +291,41 @@ impl UrlPipeline {
                 retry_after_ms = retry_after.map(|d| d.as_millis() as u64).unwrap_or(0),
                 "fetch http failure",
             );
-            let _ = self
+            let plan = self
                 .deps
                 .politeness
                 .record_failure(self.url(), kind, retry_after)
                 .await;
+            self.apply_wake_plan(plan).await;
             self.handle_failure(kind, &format!("http {}", resp.status))
                 .await;
             return None;
         }
 
-        let _ = self.deps.politeness.record_fetch(self.url()).await;
+        let plan = self.deps.politeness.record_fetch(self.url()).await;
+        self.apply_wake_plan(plan).await;
         Some(resp)
+    }
+
+    /// Apply a politeness-computed `NextWake` plan via the frontier.
+    /// Per ADR-0020 politeness returns the plan and the runtime owns
+    /// the write. Frontier errors are warned and dropped: the lease
+    /// is the safety net (a missed wake-time defaults to the lease
+    /// timeout via the claim-time wake stamp).
+    async fn apply_wake_plan(&self, plan: crawlrs_core::Result<NextWake>) {
+        match plan {
+            Ok(next) => {
+                if let Err(e) = self
+                    .deps
+                    .frontier
+                    .advance_wake(&next.host, next.until)
+                    .await
+                {
+                    warn!(host = %next.host, error = %e, "frontier.advance_wake failed");
+                }
+            }
+            Err(e) => warn!(url = %self.url(), error = %e, "politeness record_* failed"),
+        }
     }
 
     /// Site-adapter first, generic parser fallback. Returns `None` if
@@ -428,7 +435,10 @@ impl UrlPipeline {
     /// Common path for transport + HTTP-status failures: increment
     /// retry count via the metadata ledger; if the budget is
     /// exhausted, move to DLQ + ack so the URL stops cycling.
-    /// Otherwise nack and let `XAUTOCLAIM` re-deliver later.
+    /// Otherwise leave the lease in place: the frontier's reclaim
+    /// path re-pushes the URL when the lease expires, and the
+    /// host's wake-time (already advanced by `apply_wake_plan`
+    /// upstream) gates when the re-claim happens.
     async fn handle_failure(&self, kind: FailureKind, reason: &str) {
         metrics::counter!(
             crate::metrics::URLS_FAILED_TOTAL,
@@ -438,8 +448,7 @@ impl UrlPipeline {
         let new_count = match self.deps.metadata.mark_failed(self.url(), kind).await {
             Ok(c) => c,
             Err(e) => {
-                warn!(url = %self.url(), error = %e, "metadata.mark_failed failed; nacking conservatively");
-                let _ = self.deps.frontier.nack(self.attempt()).await;
+                warn!(url = %self.url(), error = %e, "metadata.mark_failed failed; leaving lease to expire");
                 return;
             }
         };
@@ -454,8 +463,13 @@ impl UrlPipeline {
                 .await;
             let _ = self.deps.frontier.ack(self.attempt()).await;
         } else {
-            debug!(url = %self.url(), retry_count = new_count, "retry budget remaining; nacking");
-            let _ = self.deps.frontier.nack(self.attempt()).await;
+            debug!(
+                url = %self.url(),
+                retry_count = new_count,
+                "retry budget remaining; lease expires for re-delivery",
+            );
+            // No ack: the lease will time out and the frontier's
+            // reclaim path re-pushes the URL onto its host_queue.
         }
     }
 }

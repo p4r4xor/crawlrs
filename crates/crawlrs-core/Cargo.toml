@@ -9,6 +9,7 @@ authors.workspace    = true
 
 [dependencies]
 async-trait.workspace = true
+blake3.workspace      = true
 bytes.workspace       = true
 chrono.workspace      = true
 serde.workspace       = true

@@ -26,6 +26,12 @@ pub trait ShardingPolicy: Send + Sync {
     /// politeness state.
     fn shard_key(&self, url: &CanonicalUrl) -> ShardKey;
 
+    /// Map a host directly to its owning shard. Useful when the
+    /// caller has the host but no full URL (e.g. resolving a
+    /// `Politeness::record_*`-produced `NextWake` plan into the
+    /// frontier shard whose wake ZSET owns this host).
+    fn shard_key_from_host(&self, host: &str) -> ShardKey;
+
     /// Total number of shards this policy generates. Used by the
     /// frontier impl to size keyspaces and by deployment tools to
     /// validate ownership coverage.
@@ -40,6 +46,9 @@ pub struct SingleShardPolicy;
 
 impl ShardingPolicy for SingleShardPolicy {
     fn shard_key(&self, _url: &CanonicalUrl) -> ShardKey {
+        0
+    }
+    fn shard_key_from_host(&self, _host: &str) -> ShardKey {
         0
     }
     fn shard_count(&self) -> u32 {
@@ -68,7 +77,9 @@ impl HostHashShardPolicy {
 
 impl ShardingPolicy for HostHashShardPolicy {
     fn shard_key(&self, url: &CanonicalUrl) -> ShardKey {
-        let host = url.host().unwrap_or("");
+        self.shard_key_from_host(url.host().unwrap_or(""))
+    }
+    fn shard_key_from_host(&self, host: &str) -> ShardKey {
         let hash = fnv1a_64(host.as_bytes());
         (hash % self.num_shards as u64) as ShardKey
     }

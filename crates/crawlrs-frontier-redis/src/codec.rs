@@ -4,14 +4,11 @@
 //! JSON, faster to (de)serialise, varint-packed for compactness on small
 //! integers (depth, etc.). Spec is stable.
 //!
-//! All Redis Stream entries store the encoded `UrlEntry` under field
-//! `body`. See `scripts/batch_submit.lua` for the producer side and
-//! `frontier.rs` for the consumer side.
+//! The frontier stores each encoded `UrlEntry` as the value of the
+//! per-shard URL HASH (`urls:s<N>`) keyed by `url_id`. Claim
+//! materialises it; ack deletes it.
 
 use crawlrs_core::{Error, Result, UrlEntry};
-
-/// Field name for the postcard payload inside a stream entry.
-pub const STREAM_FIELD_BODY: &str = "body";
 
 pub fn encode(entry: &UrlEntry) -> Result<Vec<u8>> {
     postcard::to_allocvec(entry).map_err(|e| Error::Frontier(format!("postcard encode: {e}")))
