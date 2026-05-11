@@ -1,42 +1,41 @@
-// Harness-gated: factory wires up `RedisFrontier` + `RedisPoliteness`,
-// both currently stubbed. Re-enable once those impls land.
-#![cfg(any())]
-
 //! Factory smoke test against testcontainer-backed dependencies.
 //!
-//! Spins up Redis + Postgres (the stateful backing services a real
-//! `crawlrs crawl` requires), constructs a `CrawlrsConfig` pointing
-//! at those endpoints with a local-FS store backend in a tempdir,
-//! and verifies `factory::build` returns a `Built` without errors.
-//! Then submits one URL to the frontier and confirms it round-trips
-//! through `submit_batch` -> `claim`.
+//! Spins up Redis Stack + Postgres (the stateful backing services a
+//! real `crawlrs crawl` requires), constructs a `CrawlrsConfig`
+//! pointing at those endpoints with a local-FS store backend in a
+//! tempdir, and verifies `factory::build` returns a `Built` without
+//! errors. Then submits one URL to the frontier and confirms it
+//! round-trips through `submit_batch` -> `tick` -> `claim` -> `ack`.
 //!
 //! This test exercises the binary's wiring at the lib level. The
 //! end-to-end fetch path (URL -> store object -> metadata row) is
 //! covered by `crawlrs-runtime/tests/integration.rs`; replicating
-//! it here would re-test the runtime, not the binary's wiring. The
-//! S3 store backend's wire path is owned by the upstream
-//! `object_store` crate's own test suite.
+//! it here would re-test the runtime, not the binary's wiring.
 
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use crawlrs_bin::config::{
-    BackoffPolicy, CrawlrsConfig, FetchConfig, PolitenessConfig, PostgresConfig, RedisConfig,
-    RuntimeConfig, ServerConfig, ShardingConfig, StoreBackend, StoreConfig,
+    BackoffPolicy, CrawlrsConfig, FetchConfig, FrontierConfig, PolitenessConfig, PostgresConfig,
+    RedisConfig, RuntimeConfig, ServerConfig, ShardingConfig, StoreBackend, StoreConfig,
 };
 use crawlrs_bin::factory;
-use crawlrs_core::{CanonicalUrl, Frontier, UrlEntry, WorkerIdentity};
-use testcontainers::ImageExt;
+use crawlrs_core::{CanonicalUrl, ClaimOutcome, Frontier, UrlEntry, WorkerIdentity};
+use testcontainers::core::WaitFor;
 use testcontainers::runners::AsyncRunner;
+use testcontainers::{GenericImage, ImageExt};
 use testcontainers_modules::postgres::Postgres;
-use testcontainers_modules::redis::Redis;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn factory_builds_against_real_backends() {
-    // Redis 7.2 for XAUTOCLAIM support (added in 6.2); same tag the
-    // crawlrs-frontier-redis integration tests pin.
-    let redis = Redis::default().with_tag("7.2").start().await.unwrap();
+    // Redis Stack: the frontier requires the RedisBloom module for
+    // submit-time dedup; stock Redis lacks BF.RESERVE.
+    let redis = GenericImage::new("redis/redis-stack-server", "7.4.0-v0")
+        .with_exposed_port(6379.into())
+        .with_wait_for(WaitFor::message_on_stdout("Ready to accept connections"))
+        .start()
+        .await
+        .unwrap();
     let redis_port = redis.get_host_port_ipv4(6379).await.unwrap();
 
     // Postgres 16-alpine for sqlx 0.8 compatibility; same tag the
@@ -74,6 +73,7 @@ async fn factory_builds_against_real_backends() {
             per_domain: HashMap::new(),
         },
         runtime: RuntimeConfig::default(),
+        frontier: FrontierConfig::default(),
         store: StoreConfig {
             parquet: true,
             warc: true,
@@ -93,7 +93,10 @@ async fn factory_builds_against_real_backends() {
     let built = factory::build(&config).await.expect("factory::build");
 
     // Round-trip a URL through the frontier to prove the wiring is
-    // genuinely live (not just constructed): submit -> claim -> ack.
+    // genuinely live (not just constructed): submit -> tick -> claim
+    // -> ack. The tick is required because `claim` only pops from
+    // `ready`, and `submit` only places the host into `wake`; the
+    // promoter pass in `tick` moves it.
     let url = CanonicalUrl::parse("https://example.test/page").unwrap();
     let n = built
         .frontier
@@ -102,16 +105,19 @@ async fn factory_builds_against_real_backends() {
         .expect("submit_batch");
     assert_eq!(n, 1, "exactly one URL should be newly inserted");
 
-    let identity = WorkerIdentity::new(0, 0);
-    let claimed = built
-        .frontier
-        .claim(&identity)
-        .await
-        .expect("claim")
-        .expect("frontier should yield the URL we just submitted");
-    assert_eq!(claimed.entry.url, url);
+    built.frontier.tick().await.expect("tick promotes the host");
 
-    built.frontier.ack(&claimed.attempt_id).await.expect("ack");
+    let identity = WorkerIdentity::new(0, 0);
+    let outcome = built.frontier.claim(&identity).await.expect("claim");
+    match outcome {
+        ClaimOutcome::Claimed {
+            entry, attempt_id, ..
+        } => {
+            assert_eq!(entry.url, url);
+            built.frontier.ack(&attempt_id).await.expect("ack");
+        }
+        other => panic!("expected Claimed after submit + tick; got {other:?}"),
+    }
 
     // Smoke a Postgres write through the metadata layer; if migrations
     // didn't apply, this would fail with a missing-table error.
@@ -120,13 +126,4 @@ async fn factory_builds_against_real_backends() {
         .dlq_size()
         .await
         .expect("metadata.dlq_size (proves schema is in place)");
-
-    // Don't spin up a real workload via crawler.run(); construction
-    // success + frontier round-trip + Postgres reachability is what
-    // this test verifies. End-to-end fetch is covered in
-    // crawlrs-runtime/tests/integration.rs.
-    //
-    // The migrate_pool path on the factory is exercised implicitly
-    // here: if the factory forgot to migrate, the dlq_size() call
-    // above would fail with a missing-table error.
 }

@@ -75,6 +75,33 @@ runtime:
   # write rate vs `durable_outbox`.
   linkDispatch: "direct"
 
+# ---- Frontier ------------------------------------------------------
+# Operator-tunable knobs for the Redis-backed Frontier. Defaults are
+# sized for the standard per-shard layout; raise `bloomCapacity` for
+# runs expected to submit more than ~1M unique URLs (oversizing
+# wastes some Redis RAM at startup; undersizing causes RedisBloom to
+# stack additional sub-filters, which costs per-op CPU and memory).
+frontier:
+  # Per-host queue depth cap. Submits past this divert to the
+  # per-shard overflow list. ~10k * ~150B/entry => ~1.5MB/host worst
+  # case.
+  maxHostBacklog: 10000
+  # Lease expiry on an in-flight URL. Workers that hold a URL past
+  # this are presumed dead; the reclaim pass re-pushes the URL.
+  leaseTimeout: "60s"
+  # Cadence at which the runtime drives `Frontier::tick` (promoter +
+  # lease-reclaim passes). 50ms keeps the latency tail collapsed
+  # under sustained load.
+  promoterTick: "50ms"
+  # Initial capacity of the RedisBloom filter that fronts submit.
+  # Size to expected unique URLs in the run with ~20% headroom.
+  bloomCapacity: 1000000
+  # Target false-positive rate at `bloomCapacity`. Each false
+  # positive silently drops a URL at submit; 0.1% is a good default
+  # for runs that re-crawl periodically. 0.001 ~ 1.8 bytes/URL of
+  # Redis RAM.
+  bloomFpr: 0.001
+
 # Optional initial seed URLs loaded into the frontier at startup.
 # When `content` is non-empty, the chart renders it into the same
 # ConfigMap as crawl.toml (mounted at /etc/crawlrs/seeds.txt) and

@@ -90,11 +90,23 @@ impl KeyPrefix {
         format!("{}:urls", self.shard_tag(shard))
     }
 
-    /// `crawlrs:{run_s<shard>}:seen`. RedisBloom filter for
-    /// submit-time dedup keyed on `url_id_hex`. Replaces the
-    /// per-run-cleared SET from the prior shape.
+    /// `crawlrs:{s<shard>}:seen`. RedisBloom filter for submit-time
+    /// dedup keyed on `url_id_hex`.
+    ///
+    /// Deliberately scoped per-shard but *not* per-run: a URL
+    /// submitted under any prior `run_id` for this shard is
+    /// recognised as duplicate without re-fetching. That's the
+    /// whole point of bloom-based cross-run dedup.
+    ///
+    /// Tradeoff: this key uses a different Redis Cluster hash tag
+    /// than the per-run keys, so the single-RTT `submit.lua` (which
+    /// touches `seen` plus the per-run `urls` / `host_queue` /
+    /// `wake` / `overflow`) is single-node-only. On a future
+    /// clustered deployment, submit would split into two
+    /// round-trips: `BF.ADD seen` first, then the per-run atomic
+    /// script if and only if the URL was new.
     pub fn seen(&self, shard: ShardKey) -> String {
-        format!("{}:seen", self.shard_tag(shard))
+        format!("crawlrs:{{s{shard}}}:seen")
     }
 }
 
@@ -116,9 +128,23 @@ mod tests {
     }
 
     #[test]
-    fn all_per_shard_keys_share_the_same_hash_tag() {
-        // Cluster co-location depends on every per-shard key carrying
-        // the same `{...}` block. Lock that.
+    fn seen_key_is_deployment_wide_not_run_scoped() {
+        // Two different run_ids must land on the same seen key for
+        // a given shard: that's the cross-run dedup contract.
+        let a = KeyPrefix::new("run-a");
+        let b = KeyPrefix::new("run-b");
+        assert_eq!(a.seen(0), "crawlrs:{s0}:seen");
+        assert_eq!(a.seen(0), b.seen(0));
+        // But the per-run keys do still scope by run_id.
+        assert_ne!(a.wake(0), b.wake(0));
+    }
+
+    #[test]
+    fn all_per_run_keys_share_the_same_hash_tag() {
+        // Cluster co-location depends on every per-run-per-shard key
+        // carrying the same `{<run>_s<N>}` block. Lock that.
+        // `seen` is deliberately excluded here: its different hash
+        // tag is the tradeoff for cross-run dedup.
         let prefix = KeyPrefix::new("r");
         let tag = "{r_s0}";
         for key in [
@@ -128,7 +154,6 @@ mod tests {
             prefix.inflight(0),
             prefix.overflow(0),
             prefix.urls(0),
-            prefix.seen(0),
         ] {
             assert!(
                 key.contains(tag),

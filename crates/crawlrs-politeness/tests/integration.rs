@@ -1,21 +1,21 @@
-// Harness-gated: the old suite asserts on wake-time ZSET writes that
-// have moved out of the politeness crate per ADR-0020. Re-enable once
-// the suite is trimmed to the surviving cases (robots, blocklist,
-// circuit-breaker, backoff math).
-#![cfg(any())]
-
 //! Integration tests for `RedisPoliteness`.
 //!
 //! Each test brings up its own Redis container via `testcontainers-rs`
 //! and uses a unique `run_id` so tests don't collide. A small in-test
-//! `FakeFetcher` impl is used wherever robots.txt fetching is exercised;
-//! its canned responses let us verify the politeness-side behaviour
-//! without a real HTTP server.
+//! `FakeFetcher` impl is used wherever robots.txt fetching is
+//! exercised; its canned responses let us verify the politeness-side
+//! behaviour without a real HTTP server.
+//!
+//! The politeness layer is policy-only (per ADR-0020). It owns
+//! `check` (Allow / Disallow), `record_fetch` and `record_failure`
+//! (return `NextWake` plans). Wake-time storage and the
+//! ready-host-list / lease ZSET live in the frontier crate; tests
+//! for that behaviour live there.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use bb8::Pool;
@@ -129,8 +129,13 @@ async fn build(
         .unwrap()
 }
 
+/// Helper: extract `until` as a Duration-from-now from a `NextWake`.
+fn delay_from_now(until: Instant) -> Duration {
+    until.saturating_duration_since(Instant::now())
+}
+
 // ---------------------------------------------------------------------------
-// Tests
+// check(): allow / disallow
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -150,50 +155,6 @@ async fn unseen_host_is_allowed() {
 }
 
 #[tokio::test]
-async fn record_fetch_sets_delay_for_same_host() {
-    let fx = fixture().await;
-    let fake = Arc::new(FakeFetcher::default());
-    let p = build(
-        &fx.pool,
-        fake.clone(),
-        config_with(Duration::from_millis(5_000), false),
-    )
-    .await;
-
-    p.record_fetch(&url("https://a.test/")).await.unwrap();
-    let decision = p.check(&url("https://a.test/page2")).await.unwrap();
-    match decision {
-        PoliteDecision::Delay(d) => {
-            let ms = d.as_millis() as u64;
-            assert!(
-                ms > 0 && ms <= 5_000,
-                "expected delay in [0, 5000]; got {ms}"
-            );
-        }
-        other => panic!("expected Delay; got {:?}", other),
-    }
-}
-
-#[tokio::test]
-async fn delay_elapses_and_host_is_allowed_again() {
-    let fx = fixture().await;
-    let fake = Arc::new(FakeFetcher::default());
-    let p = build(
-        &fx.pool,
-        fake.clone(),
-        config_with(Duration::from_millis(100), false),
-    )
-    .await;
-
-    p.record_fetch(&url("https://a.test/")).await.unwrap();
-    tokio::time::sleep(Duration::from_millis(150)).await;
-    assert_eq!(
-        p.check(&url("https://a.test/")).await.unwrap(),
-        PoliteDecision::Allow
-    );
-}
-
-#[tokio::test]
 async fn blocklist_returns_disallow() {
     let fx = fixture().await;
     let fake = Arc::new(FakeFetcher::default());
@@ -205,120 +166,6 @@ async fn blocklist_returns_disallow() {
         p.check(&url("https://excluded.test/page")).await.unwrap(),
         PoliteDecision::Disallow,
     );
-}
-
-#[tokio::test]
-async fn per_domain_override_uses_custom_delay() {
-    let fx = fixture().await;
-    let fake = Arc::new(FakeFetcher::default());
-    let mut config = config_with(Duration::from_millis(100), false);
-    config.per_domain.insert(
-        "slow.test".into(),
-        PolitenessOverride {
-            host_delay: Some(Duration::from_millis(5_000)),
-            obey_robots_txt: None,
-        },
-    );
-
-    let p = build(&fx.pool, fake.clone(), config).await;
-    p.record_fetch(&url("https://slow.test/")).await.unwrap();
-
-    let decision = p.check(&url("https://slow.test/x")).await.unwrap();
-    match decision {
-        PoliteDecision::Delay(d) => {
-            let ms = d.as_millis() as u64;
-            assert!(ms > 1_000, "override should produce a long delay; got {ms}");
-        }
-        other => panic!("expected long Delay; got {:?}", other),
-    }
-}
-
-#[tokio::test]
-async fn record_failure_applies_backoff() {
-    let fx = fixture().await;
-    let fake = Arc::new(FakeFetcher::default());
-    let mut config = config_with(Duration::from_millis(100), false);
-    // Tighten backoff so the test is fast.
-    config.backoff = BackoffPolicy {
-        initial_backoff: Duration::from_millis(1_000),
-        max_backoff: Duration::from_millis(60_000),
-        multiplier: 2.0,
-        failure_threshold: 100,
-    };
-    let p = build(&fx.pool, fake.clone(), config).await;
-
-    p.record_failure(
-        &url("https://flaky.test/"),
-        FailureKind::TooManyRequests,
-        None,
-    )
-    .await
-    .unwrap();
-
-    let decision = p.check(&url("https://flaky.test/page")).await.unwrap();
-    match decision {
-        PoliteDecision::Delay(d) => {
-            let ms = d.as_millis() as u64;
-            assert!(ms > 500, "first 429 should apply ~1s backoff; got {ms}");
-        }
-        other => panic!("expected Delay after failure; got {:?}", other),
-    }
-}
-
-#[tokio::test]
-async fn consecutive_failures_grow_backoff() {
-    let fx = fixture().await;
-    let fake = Arc::new(FakeFetcher::default());
-    let mut config = config_with(Duration::from_millis(100), false);
-    config.backoff = BackoffPolicy {
-        initial_backoff: Duration::from_millis(500),
-        max_backoff: Duration::from_millis(60_000),
-        multiplier: 2.0,
-        failure_threshold: 100,
-    };
-    let p = build(&fx.pool, fake.clone(), config).await;
-
-    let u = url("https://flaky.test/");
-    p.record_failure(&u, FailureKind::TooManyRequests, None)
-        .await
-        .unwrap();
-    let first = match p.check(&u).await.unwrap() {
-        PoliteDecision::Delay(d) => d.as_millis() as u64,
-        other => panic!("expected delay after 1 failure; got {:?}", other),
-    };
-
-    p.record_failure(&u, FailureKind::TooManyRequests, None)
-        .await
-        .unwrap();
-    let second = match p.check(&u).await.unwrap() {
-        PoliteDecision::Delay(d) => d.as_millis() as u64,
-        other => panic!("expected delay after 2 failures; got {:?}", other),
-    };
-
-    assert!(
-        second > first,
-        "backoff should grow; first={first} second={second}"
-    );
-}
-
-#[tokio::test]
-async fn record_fetch_resets_failure_state() {
-    let fx = fixture().await;
-    let fake = Arc::new(FakeFetcher::default());
-    let mut config = config_with(Duration::from_millis(100), false);
-    config.backoff.initial_backoff = Duration::from_millis(1_000);
-    let p = build(&fx.pool, fake.clone(), config).await;
-
-    let u = url("https://flaky.test/");
-    p.record_failure(&u, FailureKind::TooManyRequests, None)
-        .await
-        .unwrap();
-    p.record_fetch(&u).await.unwrap();
-
-    // After record_fetch resets state, the only delay should come from the
-    // 100 ms host_delay, not the 1s backoff.
-    tokio::time::sleep(Duration::from_millis(150)).await;
-    assert_eq!(p.check(&u).await.unwrap(), PoliteDecision::Allow);
 }
 
 #[tokio::test]
@@ -343,47 +190,173 @@ async fn circuit_opens_after_threshold_consecutive_failures() {
     assert_eq!(p.check(&u).await.unwrap(), PoliteDecision::Disallow);
 }
 
+// ---------------------------------------------------------------------------
+// record_fetch(): NextWake math
+// ---------------------------------------------------------------------------
+
 #[tokio::test]
-async fn next_ready_at_finds_soonest_host() {
+async fn record_fetch_returns_next_wake_at_now_plus_host_delay() {
     let fx = fixture().await;
     let fake = Arc::new(FakeFetcher::default());
     let p = build(
         &fx.pool,
         fake.clone(),
-        config_with(Duration::from_millis(60_000), false),
+        config_with(Duration::from_millis(5_000), false),
     )
     .await;
 
-    p.record_fetch(&url("https://a.test/")).await.unwrap();
-    let ready = p.next_ready_at().await.unwrap();
+    let plan = p.record_fetch(&url("https://a.test/")).await.unwrap();
+    assert_eq!(plan.host, "a.test");
+    let delay = delay_from_now(plan.until);
     assert!(
-        ready.is_some(),
-        "next_ready_at should find the host we just recorded"
-    );
-
-    let when = ready.unwrap();
-    let now = std::time::Instant::now();
-    let delta = when.saturating_duration_since(now);
-    assert!(
-        delta <= Duration::from_secs(60),
-        "next_ready_at should be within the configured 60s window; got {:?}",
-        delta
+        delay >= Duration::from_millis(4_500) && delay <= Duration::from_millis(5_000),
+        "expected NextWake ~5s out; got {delay:?}",
     );
 }
 
 #[tokio::test]
-async fn next_ready_at_is_none_when_no_hosts_tracked() {
+async fn per_domain_override_uses_custom_host_delay() {
     let fx = fixture().await;
     let fake = Arc::new(FakeFetcher::default());
-    let p = build(
-        &fx.pool,
-        fake.clone(),
-        config_with(Duration::from_millis(1_000), false),
-    )
-    .await;
+    let mut config = config_with(Duration::from_millis(100), false);
+    config.per_domain.insert(
+        "slow.test".into(),
+        PolitenessOverride {
+            host_delay: Some(Duration::from_millis(5_000)),
+            obey_robots_txt: None,
+        },
+    );
 
-    assert!(p.next_ready_at().await.unwrap().is_none());
+    let p = build(&fx.pool, fake.clone(), config).await;
+    let plan = p.record_fetch(&url("https://slow.test/")).await.unwrap();
+    let delay = delay_from_now(plan.until);
+    assert!(
+        delay >= Duration::from_millis(4_500),
+        "override should produce ~5s delay, not the default 100ms; got {delay:?}",
+    );
 }
+
+#[tokio::test]
+async fn record_fetch_resets_circuit_breaker_state() {
+    // After a successful fetch, the failure counter is cleared and
+    // subsequent `check` calls return Allow even if there were
+    // recent failures.
+    let fx = fixture().await;
+    let fake = Arc::new(FakeFetcher::default());
+    let mut config = config_with(Duration::from_millis(100), false);
+    config.backoff = BackoffPolicy {
+        initial_backoff: Duration::from_millis(50),
+        max_backoff: Duration::from_millis(1_000),
+        multiplier: 2.0,
+        failure_threshold: 3,
+    };
+    let p = build(&fx.pool, fake.clone(), config).await;
+
+    let u = url("https://flaky.test/");
+    // Three failures: circuit opens.
+    for _ in 0..3 {
+        p.record_failure(&u, FailureKind::TooManyRequests, None)
+            .await
+            .unwrap();
+    }
+    assert_eq!(p.check(&u).await.unwrap(), PoliteDecision::Disallow);
+
+    // One success: circuit closes.
+    p.record_fetch(&u).await.unwrap();
+    assert_eq!(p.check(&u).await.unwrap(), PoliteDecision::Allow);
+}
+
+// ---------------------------------------------------------------------------
+// record_failure(): NextWake math
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn record_failure_returns_next_wake_with_backoff() {
+    let fx = fixture().await;
+    let fake = Arc::new(FakeFetcher::default());
+    let mut config = config_with(Duration::from_millis(100), false);
+    config.backoff = BackoffPolicy {
+        initial_backoff: Duration::from_millis(1_000),
+        max_backoff: Duration::from_millis(60_000),
+        multiplier: 2.0,
+        failure_threshold: 100,
+    };
+    let p = build(&fx.pool, fake.clone(), config).await;
+
+    let plan = p
+        .record_failure(&url("https://flaky.test/"), FailureKind::TooManyRequests, None)
+        .await
+        .unwrap();
+    let delay = delay_from_now(plan.until);
+    assert!(
+        delay >= Duration::from_millis(500) && delay <= Duration::from_millis(1_500),
+        "first 429 should produce ~1s backoff; got {delay:?}",
+    );
+}
+
+#[tokio::test]
+async fn consecutive_failures_grow_next_wake() {
+    let fx = fixture().await;
+    let fake = Arc::new(FakeFetcher::default());
+    let mut config = config_with(Duration::from_millis(100), false);
+    config.backoff = BackoffPolicy {
+        initial_backoff: Duration::from_millis(500),
+        max_backoff: Duration::from_millis(60_000),
+        multiplier: 2.0,
+        failure_threshold: 100,
+    };
+    let p = build(&fx.pool, fake.clone(), config).await;
+
+    let u = url("https://flaky.test/");
+    let first = p
+        .record_failure(&u, FailureKind::TooManyRequests, None)
+        .await
+        .unwrap();
+    let second = p
+        .record_failure(&u, FailureKind::TooManyRequests, None)
+        .await
+        .unwrap();
+    let first_ms = delay_from_now(first.until).as_millis() as u64;
+    let second_ms = delay_from_now(second.until).as_millis() as u64;
+    assert!(
+        second_ms > first_ms,
+        "backoff should grow across consecutive failures; first={first_ms}ms second={second_ms}ms",
+    );
+}
+
+#[tokio::test]
+async fn record_failure_honors_retry_after_as_floor() {
+    let fx = fixture().await;
+    let fake = Arc::new(FakeFetcher::default());
+    let mut config = config_with(Duration::from_millis(100), false);
+    // Computed backoff for the first failure would be small (50ms);
+    // the server's 10-second Retry-After must dominate.
+    config.backoff = BackoffPolicy {
+        initial_backoff: Duration::from_millis(50),
+        max_backoff: Duration::from_secs(120),
+        multiplier: 2.0,
+        failure_threshold: 100,
+    };
+    let p = build(&fx.pool, fake.clone(), config).await;
+
+    let plan = p
+        .record_failure(
+            &url("https://server.test/"),
+            FailureKind::ServiceUnavailable,
+            Some(Duration::from_secs(10)),
+        )
+        .await
+        .unwrap();
+    let delay = delay_from_now(plan.until);
+    assert!(
+        delay >= Duration::from_secs(9) && delay <= Duration::from_secs(11),
+        "server Retry-After 10s should be honored as the floor; got {delay:?}",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// robots.txt
+// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn robots_txt_blocks_disallowed_path_and_caches_body() {
@@ -448,8 +421,6 @@ async fn robots_txt_404_treated_as_no_rules() {
 async fn robots_per_domain_override_disables_check() {
     let fx = fixture().await;
     let fake = Arc::new(FakeFetcher::default());
-    // robots.txt that would block everything; without the override
-    // we'd get Disallow.
     fake.install(
         "https://staging.test/robots.txt",
         200,
@@ -466,7 +437,6 @@ async fn robots_per_domain_override_disables_check() {
     );
 
     let p = build(&fx.pool, fake.clone(), config).await;
-    // Override flips obey_robots_txt off for this host; check passes.
     let decision = p
         .check(&url("https://staging.test/anything"))
         .await
@@ -474,24 +444,6 @@ async fn robots_per_domain_override_disables_check() {
     assert_ne!(decision, PoliteDecision::Disallow);
     // Robots.txt is never fetched because the gate is disabled.
     assert_eq!(fake.request_count(), 0);
-}
-
-#[tokio::test]
-async fn host_count_reflects_record_fetch() {
-    let fx = fixture().await;
-    let fake = Arc::new(FakeFetcher::default());
-    let p = build(
-        &fx.pool,
-        fake.clone(),
-        config_with(Duration::from_millis(1_000), false),
-    )
-    .await;
-
-    assert_eq!(p.host_count().await.unwrap(), 0);
-    p.record_fetch(&url("https://a.test/")).await.unwrap();
-    p.record_fetch(&url("https://b.test/")).await.unwrap();
-    p.record_fetch(&url("https://a.test/page2")).await.unwrap(); // same host
-    assert_eq!(p.host_count().await.unwrap(), 2, "two distinct hosts");
 }
 
 #[tokio::test]
@@ -514,10 +466,6 @@ async fn in_process_robots_lru_populates_after_first_check() {
     assert_eq!(p.robots().cache_len(), 0, "LRU empty at startup");
 
     let _ = p.check(&url("https://lru.test/some/page")).await.unwrap();
-
-    // moka::sync::Cache::entry_count is eventually consistent; it can
-    // lag inserts by a tick. Run the cache's pending tasks so the
-    // assertion is deterministic.
     p.robots().run_pending_tasks();
 
     assert_eq!(
@@ -526,9 +474,6 @@ async fn in_process_robots_lru_populates_after_first_check() {
         "LRU should hold the one host we just checked",
     );
 
-    // Second check on a different path of the same host: still one
-    // entry, no eviction, no extra fetch (verified by the existing
-    // robots_txt_blocks_disallowed_path_and_caches_body test).
     let _ = p.check(&url("https://lru.test/another")).await.unwrap();
     p.robots().run_pending_tasks();
     assert_eq!(p.robots().cache_len(), 1);

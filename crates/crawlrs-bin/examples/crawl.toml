@@ -15,8 +15,7 @@ url = "redis://localhost:6379"
 # that politeness checks and frontier ops don't contend.
 pool_size = 16
 
-# Postgres backend for the metadata ledger (per-URL state, history,
-# DLQ).
+# Postgres backend for the metadata ledger (per-URL state, history, DLQ).
 [postgres]
 url = "postgres://crawlrs:crawlrs@localhost/crawlrs"
 pool_size = 8
@@ -86,6 +85,19 @@ max_retries      = 5      # after this many consecutive failures, URL -> DLQ
 # single component crash; costs ~100x the per-fetch Postgres write
 # rate (one row per outbound URL).
 link_dispatch    = "direct"
+
+# Per-shard Frontier knobs. Defaults are sized for the standard
+# per-shard layout; raise `bloom_capacity` for runs expected to
+# submit more than ~1M unique URLs. The bloom_fpr
+# governs the silent-drop budget at submit time (each false positive
+# is a URL we never fetch); 0.1% is a sensible default for runs that
+# re-crawl periodically.
+[frontier]
+max_host_backlog          = 10000      # divert excess to overflow LIST
+lease_timeout             = "60s"      # crash-recovery floor
+promoter_tick             = "50ms"     # wake -> ready / lease reclaim cadence
+bloom_capacity            = 1_000_000  # ~1.8 MB at fpr=0.001
+bloom_fpr                 = 0.001      # false-positive rate at capacity
 
 # Output stores. Parquet is the analytical primary; WARC is the
 # archival mirror that preserves the original HTTP wire framing. Both

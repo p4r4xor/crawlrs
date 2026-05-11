@@ -1,7 +1,3 @@
-// Harness-gated: depends on the real `RedisFrontier` and
-// `RedisPoliteness`. Re-enable once those impls land.
-#![cfg(any())]
-
 //! End-to-end smoke test that wires the runtime against the real
 //! `PostgresMetadataStore` and verifies state transitions land on
 //! disk. Exists separately from `tests/integration.rs` so the
@@ -9,8 +5,9 @@
 //! every run; this file is the "are we wiring the production
 //! impl correctly?" backstop.
 //!
-//! Test doubles come from `crawlrs-fakes`; this file only owns the
-//! Redis + Postgres testcontainer fixture.
+//! Test doubles come from `crawlrs-fakes`; this file owns the
+//! Redis Stack + Postgres testcontainer fixture. Redis Stack is
+//! required because the frontier uses RedisBloom.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -22,33 +19,30 @@ use crawlrs_core::{
     UrlStatus,
 };
 use crawlrs_fakes::{FakeFetcher, InMemoryStore};
-use crawlrs_frontier_redis::RedisFrontier;
+use crawlrs_frontier_redis::{BloomConfig, RedisFrontier};
 use crawlrs_metadata::PostgresMetadataStore;
 use crawlrs_parse::LolHtmlParser;
 use crawlrs_politeness::{BackoffPolicy, PolitenessConfig, RedisPoliteness};
 use crawlrs_runtime::{Crawler, CrawlerConfig};
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
+use testcontainers::core::WaitFor;
+use testcontainers::runners::AsyncRunner;
+use testcontainers::{ContainerAsync, GenericImage, ImageExt};
 use testcontainers_modules::postgres::Postgres;
-use testcontainers_modules::redis::Redis;
-use testcontainers_modules::testcontainers::runners::AsyncRunner;
-use testcontainers_modules::testcontainers::{ContainerAsync, ImageExt};
-
-// ---------------------------------------------------------------------------
-// Fixture: spins up Redis + Postgres, returns ready-to-use pools.
-// ---------------------------------------------------------------------------
 
 #[allow(dead_code)] // containers must outlive the test; we hold them in fields
 struct Fixture {
-    redis_container: ContainerAsync<Redis>,
+    redis_container: ContainerAsync<GenericImage>,
     postgres_container: ContainerAsync<Postgres>,
     redis_pool: Pool<RedisConnectionManager>,
     pg_pool: PgPool,
 }
 
 async fn fixture() -> Fixture {
-    let redis_container = Redis::default()
-        .with_tag("7.2")
+    let redis_container = GenericImage::new("redis/redis-stack-server", "7.4.0-v0")
+        .with_exposed_port(6379.into())
+        .with_wait_for(WaitFor::message_on_stdout("Ready to accept connections"))
         .start()
         .await
         .expect("docker must be running for integration tests");
@@ -95,18 +89,21 @@ fn url(s: &str) -> CanonicalUrl {
 
 #[tokio::test]
 async fn end_to_end_against_postgres_metadata_store() {
-    // Build the full runtime with the real Postgres metadata impl,
-    // run one URL through, assert the ledger reflects Succeeded with
-    // blob_path + content_hash recorded.
     let fx = fixture().await;
     let policy: Arc<dyn ShardingPolicy> = Arc::new(SingleShardPolicy);
     let rid = run_id();
 
     let frontier = Arc::new(
-        RedisFrontier::new(fx.redis_pool.clone(), policy.clone(), vec![0], rid.clone())
-            .await
-            .unwrap()
-            .with_autoclaim_idle(Duration::from_millis(50)),
+        RedisFrontier::new(
+            fx.redis_pool.clone(),
+            policy.clone(),
+            vec![0],
+            rid.clone(),
+            BloomConfig::default(),
+        )
+        .await
+        .unwrap()
+        .with_lease_timeout(Duration::from_millis(200)),
     );
     let fetcher = Arc::new(FakeFetcher::default());
     fetcher.install_html(
@@ -140,9 +137,6 @@ async fn end_to_end_against_postgres_metadata_store() {
     );
     let parser = Arc::new(LolHtmlParser);
     let store = Arc::new(InMemoryStore::new());
-    // Build the concrete store first; the same Arc satisfies both
-    // MetadataStore (write-side) and Outbox (publisher's drain path)
-    // so writer and publisher share one connection pool.
     let pg_store = Arc::new(PostgresMetadataStore::with_pool(fx.pg_pool.clone()));
     let metadata: Arc<dyn MetadataStore> = pg_store.clone();
     let outbox: Arc<dyn crawlrs_core::Outbox> = pg_store;
@@ -153,8 +147,8 @@ async fn end_to_end_against_postgres_metadata_store() {
         user_agent: Some("PgWireTest/1.0".into()),
         max_depth: Some(1),
         maintenance_interval: Duration::from_secs(60),
+        promoter_tick: Duration::from_millis(20),
         empty_queue_poll: Duration::from_millis(50),
-        startup_poll: Duration::from_millis(20),
         max_idle_sleep: Duration::from_millis(200),
         error_backoff: Duration::from_millis(200),
         max_retries: 3,

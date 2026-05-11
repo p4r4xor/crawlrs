@@ -69,6 +69,13 @@ data:
     max_retries      = {{ .Values.runtime.maxRetries | int64 }}
     link_dispatch    = {{ .Values.runtime.linkDispatch | quote }}
 
+    [frontier]
+    max_host_backlog          = {{ .Values.frontier.maxHostBacklog | int64 }}
+    lease_timeout             = {{ .Values.frontier.leaseTimeout | quote }}
+    promoter_tick             = {{ .Values.frontier.promoterTick | quote }}
+    bloom_capacity            = {{ .Values.frontier.bloomCapacity | int64 }}
+    bloom_fpr                 = {{ .Values.frontier.bloomFpr | float64 }}
+
     [store]
     parquet     = {{ .Values.store.parquet }}
     warc        = {{ .Values.store.warc }}

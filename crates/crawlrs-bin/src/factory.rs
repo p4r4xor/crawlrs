@@ -54,10 +54,15 @@ pub async fn build(config: &CrawlrsConfig) -> Result<Built> {
             sharding_policy.clone(),
             owned_shards.clone(),
             &config.run_id,
-            crawlrs_frontier_redis::BloomConfig::default(),
+            crawlrs_frontier_redis::BloomConfig {
+                capacity: config.frontier.bloom_capacity,
+                fpr: config.frontier.bloom_fpr,
+            },
         )
         .await
-        .context("constructing RedisFrontier")?,
+        .context("constructing RedisFrontier")?
+        .with_lease_timeout(config.frontier.lease_timeout)
+        .with_max_host_backlog(config.frontier.max_host_backlog),
     );
 
     let politeness = Arc::new(
@@ -194,6 +199,7 @@ fn build_runtime_config(config: &CrawlrsConfig) -> CrawlerConfig {
         max_retries: config.runtime.max_retries,
         pod_ordinal: pod_ordinal_from_env(),
         link_dispatch: config.runtime.link_dispatch,
+        promoter_tick: config.frontier.promoter_tick,
         ..CrawlerConfig::default()
     }
 }

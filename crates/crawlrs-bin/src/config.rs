@@ -74,6 +74,8 @@ pub struct CrawlrsConfig {
     #[serde(default)]
     pub runtime: RuntimeConfig,
     #[serde(default)]
+    pub frontier: FrontierConfig,
+    #[serde(default)]
     pub store: StoreConfig,
     #[serde(default)]
     pub server: ServerConfig,
@@ -201,6 +203,55 @@ impl Default for RuntimeConfig {
             max_depth: Some(5),
             max_retries: 5,
             link_dispatch: LinkDispatch::default(),
+        }
+    }
+}
+
+/// Operator-tunable knobs for the Redis-backed frontier.
+///
+/// Defaults match the per-shard sizing rules from the design ADRs;
+/// `bloom_capacity` is the most likely value to tune for production
+/// runs (size to expected unique URLs for the run, with ~20%
+/// headroom). See `BloomConfig` in `crawlrs-frontier-redis` for the
+/// memory / FPR tradeoff.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct FrontierConfig {
+    /// Per-host queue length cap. Submits past this cap divert to
+    /// the per-shard overflow list. 10,000 caps memory at
+    /// ~1.5 MB/host worst case.
+    pub max_host_backlog: u64,
+    /// Lease expiry for an in-flight URL. A worker holding a URL for
+    /// longer is presumed dead; the reclaim pass re-pushes the URL.
+    /// 60 s comfortably exceeds typical fetch durations.
+    #[serde(with = "humantime_serde")]
+    pub lease_timeout: Duration,
+    /// Cadence at which the runtime drives `Frontier::tick` (which
+    /// runs both the promoter wake -> ready pass and the lease
+    /// reclaim pass). 50 ms keeps the latency tail collapsed under
+    /// sustained load.
+    #[serde(with = "humantime_serde")]
+    pub promoter_tick: Duration,
+    /// Initial capacity of the RedisBloom filter that fronts submit.
+    /// Sized once at startup; RedisBloom scales past capacity via
+    /// stacked sub-filters but pays a per-op CPU and memory cost per
+    /// added layer. Size to expected unique URLs with ~20% headroom.
+    pub bloom_capacity: u64,
+    /// Target false-positive rate of the RedisBloom filter. Each
+    /// false positive silently drops a URL at submit; tune this for
+    /// the "missed coverage" budget you can tolerate.
+    /// 0.001 (0.1 %) costs ~1.8 bytes per URL.
+    pub bloom_fpr: f64,
+}
+
+impl Default for FrontierConfig {
+    fn default() -> Self {
+        Self {
+            max_host_backlog: 10_000,
+            lease_timeout: Duration::from_secs(60),
+            promoter_tick: Duration::from_millis(50),
+            bloom_capacity: 1_000_000,
+            bloom_fpr: 0.001,
         }
     }
 }

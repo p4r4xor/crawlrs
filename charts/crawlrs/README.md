@@ -1,13 +1,34 @@
 # crawlrs Helm chart
 
 Deploys the crawlrs binary as a `StatefulSet` against externally-
-provided Redis, Postgres, and (for `kind=s3` store backends) an
-S3-compatible object store.
+provided Redis Stack, Postgres, and (for `kind=s3` store backends)
+an S3-compatible object store.
 
 By default also deploys a self-contained observability stack
 (`vmsingle` + Grafana with 3 provisioned dashboards). Operators with
 their own Prometheus / VM / Grafana fleet can disable the bundled
 instances via `--set o11y.enabled=false`.
+
+## Redis requirements
+
+The frontier requires the **RedisBloom** module for submit-time
+dedup (`BF.RESERVE` / `BF.ADD` / `BF.EXISTS`). The supported
+deployment shape is **Redis Stack** (the official redis-stack-server
+image bundles RedisBloom alongside the other modules) or stock
+Redis with the `redisbloom` module loaded.
+
+Durability: RDB snapshots only. The default save thresholds
+(`save 60 10000 / save 300 10 / save 900 1`) give a progressively-
+sparser snapshot cadence that suits the frontier's write pattern.
+AOF is intentionally disabled - bloom-filter state survives RDB
+snapshots and AOF replay's per-op overhead isn't worth it for this
+workload.
+
+Managed services: cloud-managed Redis (ElastiCache, Memorystore,
+Upstash) must support RedisBloom for the frontier to work. AWS
+ElastiCache supports it on the Redis 7+ "extended" engine variants;
+Google Memorystore for Redis does not at the time of writing. Verify
+before deploying.
 
 ## TL;DR
 

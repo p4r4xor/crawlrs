@@ -18,24 +18,40 @@ spec:
         {{- include "crawlrs-demo.labels" . | nindent 8 }}
         app.kubernetes.io/component: redis
     spec:
-      # The official redis-alpine image runs as uid 999 by default;
+      # redis-stack-server's image runs as uid 1000 by default;
       # fsGroup makes the mounted volume writable for that uid.
       securityContext:
         runAsNonRoot: true
-        runAsUser: 999
-        runAsGroup: 999
-        fsGroup: 999
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
       containers:
         - name: redis
           image: {{ .Values.redis.image | quote }}
           imagePullPolicy: {{ .Values.redis.imagePullPolicy | quote }}
-          # AOF persistence (--appendonly yes) trades a small write
-          # amplification for survivability across pod restarts. AOF
-          # rewriting keeps the file bounded.
+          # RDB-only durability. Three save thresholds give a
+          # progressively-sparser snapshot cadence:
+          #   `save 60 10000`  - every 60s if >=10k keys changed
+          #   `save 300 10`    - every 5min if >=10 keys changed
+          #   `save 900 1`     - every 15min if >=1 key changed
+          # AOF is disabled. RedisBloom state survives RDB snapshots,
+          # so the bloom's cross-run dedup substrate survives pod
+          # restarts.
+          # Each `--save SECONDS CHANGES` pair must be its own pair of
+          # argv tokens; Redis CLI parses them positionally.
           args:
             - redis-server
             - --appendonly
-            - "yes"
+            - "no"
+            - --save
+            - "60"
+            - "10000"
+            - --save
+            - "300"
+            - "10"
+            - --save
+            - "900"
+            - "1"
             - --dir
             - /data
           ports:

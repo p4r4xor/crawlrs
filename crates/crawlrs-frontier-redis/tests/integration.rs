@@ -1,18 +1,13 @@
-// Harness-gated: the streams-based test shape cannot be expressed
-// against the per-host queue + atomic-Lua + lease ZSET design from
-// ADR-0019. Re-enable once the Redis-backed `Frontier` impl lands and
-// rewrite the suite around the new surface.
-#![cfg(any())]
-
-//! Integration tests for `RedisFrontier` against a real Redis instance.
+//! Integration tests for `RedisFrontier` against Redis Stack.
 //!
-//! Each test spins up its own Redis container via `testcontainers-rs` and
-//! uses a unique `run_id`, so tests are isolated from each other and
-//! from any local Redis the developer might be running.
+//! Each test spins up its own `redis/redis-stack-server` container
+//! via `testcontainers-rs`; per-test isolation comes from a fresh
+//! `run_id` so the per-run keys don't collide. The seen-set
+//! (deployment-wide bloom) is naturally fresh because each container
+//! has its own Redis instance.
 //!
-//! Requires Docker on the host. Tests are not gated by a feature flag;
-//! if Docker is unreachable, the container startup fails fast with a
-//! clear error.
+//! Requires Docker on the host. If Docker isn't available, container
+//! startup fails fast with a clear error.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -20,35 +15,35 @@ use std::time::Duration;
 use bb8::Pool;
 use bb8_redis::RedisConnectionManager;
 use crawlrs_core::{
-    CanonicalUrl, Frontier, HostHashShardPolicy, ShardingPolicy, SingleShardPolicy, UrlEntry,
-    WorkerIdentity,
+    CanonicalUrl, ClaimOutcome, Frontier, HostHashShardPolicy, ShardingPolicy, SingleShardPolicy,
+    SubmitOutcome, UrlEntry, UrlId, WorkerIdentity,
 };
+use crawlrs_frontier_redis::{BloomConfig, RedisFrontier};
+use testcontainers::core::WaitFor;
+use testcontainers::runners::AsyncRunner;
+use testcontainers::{ContainerAsync, GenericImage};
 
-const TEST_IDENTITY_A: WorkerIdentity = WorkerIdentity::new(0, 0);
-const TEST_IDENTITY_B: WorkerIdentity = WorkerIdentity::new(0, 1);
-use crawlrs_frontier_redis::RedisFrontier;
-use testcontainers_modules::redis::Redis;
-use testcontainers_modules::testcontainers::runners::AsyncRunner;
-use testcontainers_modules::testcontainers::{ContainerAsync, ImageExt};
+const IDENTITY: WorkerIdentity = WorkerIdentity::new(0, 0);
 
 // ---------------------------------------------------------------------------
-// Test fixtures
+// Fixture
 // ---------------------------------------------------------------------------
 
-/// Owns the testcontainers Redis container and a bb8 pool wired to it.
-/// Tests keep this around for the test's lifetime; dropping it stops
-/// the container.
+/// Owns the testcontainers Redis Stack container and a bb8 pool wired
+/// to it. Dropping the fixture stops the container.
 struct RedisFixture {
-    _container: ContainerAsync<Redis>,
+    _container: ContainerAsync<GenericImage>,
     pool: Pool<RedisConnectionManager>,
 }
 
 async fn fixture() -> RedisFixture {
-    // Pin a modern Redis tag so XAUTOCLAIM (introduced in 6.2) is
-    // available. testcontainers-modules' default image tag may lag
-    // behind what we need.
-    let container = Redis::default()
-        .with_tag("7.2")
+    // Redis Stack ships RedisBloom (and JSON / Search / TimeSeries),
+    // which is what the frontier's submit-time bloom requires. A
+    // plain `redis:7-alpine` image would reject `BF.RESERVE` with
+    // "unknown command".
+    let container = GenericImage::new("redis/redis-stack-server", "7.4.0-v0")
+        .with_exposed_port(6379.into())
+        .with_wait_for(WaitFor::message_on_stdout("Ready to accept connections"))
         .start()
         .await
         .expect("docker must be running for integration tests");
@@ -75,376 +70,325 @@ fn entry(s: &str) -> UrlEntry {
     UrlEntry::seed(url(s))
 }
 
+/// Build a `RedisFrontier` bound to `SingleShardPolicy`. Most tests
+/// don't care about sharding; the few that do build their own.
 async fn single_shard_frontier(pool: &Pool<RedisConnectionManager>) -> RedisFrontier {
+    single_shard_frontier_with_run_id(pool, &run_id()).await
+}
+
+async fn single_shard_frontier_with_run_id(
+    pool: &Pool<RedisConnectionManager>,
+    run_id: &str,
+) -> RedisFrontier {
     let policy: Arc<dyn ShardingPolicy> = Arc::new(SingleShardPolicy);
-    RedisFrontier::new(pool.clone(), policy, vec![0], run_id())
-        .await
-        .unwrap()
+    RedisFrontier::new(
+        pool.clone(),
+        policy,
+        vec![0],
+        run_id,
+        BloomConfig::default(),
+    )
+    .await
+    .unwrap()
+}
+
+/// Helper: unwrap a `Claimed` outcome or panic with the actual variant.
+fn unwrap_claimed(outcome: ClaimOutcome) -> (UrlId, UrlEntry, crawlrs_core::AttemptId) {
+    match outcome {
+        ClaimOutcome::Claimed {
+            url_id,
+            entry,
+            attempt_id,
+        } => (url_id, *entry, attempt_id),
+        other => panic!("expected Claimed, got {other:?}"),
+    }
 }
 
 // ---------------------------------------------------------------------------
-// Tests
+// Submit
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn submit_then_claim_yields_same_url() {
+async fn submit_first_url_returns_queued() {
     let fx = fixture().await;
     let frontier = single_shard_frontier(&fx.pool).await;
-
-    let was_new = frontier.submit(entry("https://a.test/")).await.unwrap();
-    assert!(was_new, "first submit should be newly enqueued");
-
-    let claimed = frontier
-        .claim(&TEST_IDENTITY_A)
-        .await
-        .unwrap()
-        .expect("queue should yield the entry");
-    assert_eq!(claimed.entry.url.as_str(), "https://a.test/");
+    let outcome = frontier.submit(entry("https://a.test/")).await.unwrap();
+    assert!(matches!(outcome, SubmitOutcome::Queued));
 }
 
 #[tokio::test]
-async fn duplicate_submit_is_dropped_at_seen_set() {
+async fn submit_dedups_via_bloom_within_run() {
     let fx = fixture().await;
     let frontier = single_shard_frontier(&fx.pool).await;
-
-    let first = frontier.submit(entry("https://a.test/")).await.unwrap();
-    let second = frontier.submit(entry("https://a.test/")).await.unwrap();
-
-    assert!(first, "first submit returns true (newly enqueued)");
-    assert!(!second, "second submit returns false (already seen)");
-
-    let depth = frontier.len().await.unwrap();
-    assert_eq!(depth, 1, "queue holds exactly one entry");
+    assert!(matches!(
+        frontier.submit(entry("https://a.test/")).await.unwrap(),
+        SubmitOutcome::Queued
+    ));
+    assert!(matches!(
+        frontier.submit(entry("https://a.test/")).await.unwrap(),
+        SubmitOutcome::SkippedDuplicate
+    ));
 }
 
 #[tokio::test]
-async fn submit_batch_counts_only_new_entries() {
+async fn submit_dedups_across_runs() {
+    // Cross-run dedup: a URL submitted under one `run_id` is
+    // recognised as duplicate under any other `run_id` for the same
+    // Redis deployment. This is the whole point of `seen` being
+    // scoped per-shard, not per-run.
+    let fx = fixture().await;
+    let run_a = run_id();
+    let run_b = run_id();
+    let frontier_a = single_shard_frontier_with_run_id(&fx.pool, &run_a).await;
+    let frontier_b = single_shard_frontier_with_run_id(&fx.pool, &run_b).await;
+    assert!(matches!(
+        frontier_a.submit(entry("https://a.test/")).await.unwrap(),
+        SubmitOutcome::Queued
+    ));
+    assert!(matches!(
+        frontier_b.submit(entry("https://a.test/")).await.unwrap(),
+        SubmitOutcome::SkippedDuplicate
+    ));
+}
+
+#[tokio::test]
+async fn submit_overflows_when_host_backlog_full() {
+    let fx = fixture().await;
+    let policy: Arc<dyn ShardingPolicy> = Arc::new(SingleShardPolicy);
+    let frontier = RedisFrontier::new(
+        fx.pool.clone(),
+        policy,
+        vec![0],
+        run_id(),
+        BloomConfig::default(),
+    )
+    .await
+    .unwrap()
+    .with_max_host_backlog(2);
+
+    // Three distinct URLs for the same host. The third one cannot
+    // join the per-host queue and is rerouted to overflow.
+    assert!(matches!(
+        frontier.submit(entry("https://a.test/1")).await.unwrap(),
+        SubmitOutcome::Queued
+    ));
+    assert!(matches!(
+        frontier.submit(entry("https://a.test/2")).await.unwrap(),
+        SubmitOutcome::Queued
+    ));
+    assert!(matches!(
+        frontier.submit(entry("https://a.test/3")).await.unwrap(),
+        SubmitOutcome::Overflowed
+    ));
+}
+
+// ---------------------------------------------------------------------------
+// Claim / Promote / Empty
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn claim_returns_empty_when_no_urls_submitted() {
     let fx = fixture().await;
     let frontier = single_shard_frontier(&fx.pool).await;
+    let outcome = frontier.claim(&IDENTITY).await.unwrap();
+    assert!(matches!(outcome, ClaimOutcome::Empty));
+}
 
-    // Pre-seed one URL.
+#[tokio::test]
+async fn submit_then_tick_then_claim_yields_url() {
+    let fx = fixture().await;
+    let frontier = single_shard_frontier(&fx.pool).await;
     frontier.submit(entry("https://a.test/")).await.unwrap();
 
-    let mixed = vec![
-        entry("https://a.test/"), // dupe
-        entry("https://b.test/"), // new
-        entry("https://c.test/"), // new
-        entry("https://b.test/"), // dupe within the same batch
-    ];
-    let newly = frontier.submit_batch(mixed).await.unwrap();
-    assert_eq!(newly, 2, "only b.test and c.test are newly enqueued");
+    // Without a `tick` the host is in `wake` (score = 0) but not yet
+    // promoted to `ready`. Claim returns EmptyHint with the
+    // soonest-wake score, or Empty if the score was already in the
+    // past — either is acceptable behavior before tick.
+    frontier.tick().await.unwrap();
 
-    let depth = frontier.len().await.unwrap();
-    assert_eq!(depth, 3, "queue holds a, b, c");
+    let (_, entry, _) = unwrap_claimed(frontier.claim(&IDENTITY).await.unwrap());
+    assert_eq!(entry.url.as_str(), "https://a.test/");
 }
 
 #[tokio::test]
-async fn ack_after_claim_drops_pending_count() {
+async fn claim_returns_empty_hint_when_only_wake_has_entries() {
     let fx = fixture().await;
     let frontier = single_shard_frontier(&fx.pool).await;
 
+    // Submit and claim once to drive the host into `wake` (the
+    // claim's safety-margin write).
     frontier.submit(entry("https://a.test/")).await.unwrap();
-    let claimed = frontier.claim(&TEST_IDENTITY_A).await.unwrap().unwrap();
-    assert_eq!(frontier.claim_count(), 1, "in-flight after claim");
+    frontier.tick().await.unwrap();
+    let (_, _, attempt) = unwrap_claimed(frontier.claim(&IDENTITY).await.unwrap());
 
-    frontier.ack(&claimed.attempt_id).await.unwrap();
-    assert_eq!(frontier.claim_count(), 0, "drained after ack");
+    // Push the host's wake-time deliberately into the future so a
+    // second claim must surface EmptyHint, not Claimed.
+    let until = std::time::Instant::now() + Duration::from_secs(30);
+    frontier.advance_wake("a.test", until).await.unwrap();
+    frontier.ack(&attempt).await.unwrap();
 
-    // Idempotent: ack again is a no-op, not an error.
-    frontier.ack(&claimed.attempt_id).await.unwrap();
-}
-
-#[tokio::test]
-async fn nack_clears_local_tracking_only() {
-    let fx = fixture().await;
-    let frontier = single_shard_frontier(&fx.pool).await;
-
-    frontier.submit(entry("https://a.test/")).await.unwrap();
-    let claimed = frontier.claim(&TEST_IDENTITY_A).await.unwrap().unwrap();
-    assert_eq!(frontier.claim_count(), 1);
-
-    frontier.nack(&claimed.attempt_id).await.unwrap();
-    assert_eq!(frontier.claim_count(), 0, "local tracking dropped");
-}
-
-#[tokio::test]
-async fn nacked_entry_resurfaces_via_tier_1_and_re_counts() {
-    // After nack, the entry stays in this consumer's Redis-side PEL.
-    // The next claim() surfaces it via tier-1 and the local in-flight
-    // tracking must reflect that the worker is once again actively
-    // processing the entry. A subsequent ack drains the count cleanly.
-    let fx = fixture().await;
-    let frontier = single_shard_frontier(&fx.pool).await;
-
-    frontier.submit(entry("https://a.test/")).await.unwrap();
-    let first = frontier.claim(&TEST_IDENTITY_A).await.unwrap().unwrap();
-    assert_eq!(frontier.claim_count(), 1);
-    frontier.nack(&first.attempt_id).await.unwrap();
-    assert_eq!(frontier.claim_count(), 0, "nack drops local tracking");
-
-    let resurfaced = frontier.claim(&TEST_IDENTITY_A).await.unwrap().unwrap();
-    assert_eq!(
-        resurfaced.attempt_id, first.attempt_id,
-        "tier-1 PEL replay must hand back the same AttemptId",
+    let outcome = frontier.claim(&IDENTITY).await.unwrap();
+    assert!(
+        matches!(outcome, ClaimOutcome::EmptyHint { .. } | ClaimOutcome::Empty),
+        "expected EmptyHint (host still in wake) or Empty (host_queue drained); got {outcome:?}",
     );
-    assert_eq!(
-        frontier.claim_count(),
-        1,
-        "post-nack reclaim re-counts the entry as in-flight",
-    );
-
-    frontier.ack(&resurfaced.attempt_id).await.unwrap();
-    assert_eq!(frontier.claim_count(), 0, "ack drains the count");
 }
 
 #[tokio::test]
-async fn host_hash_policy_routes_same_host_to_same_shard() {
-    // Build a fresh frontier per shard, both pointing at the same Redis,
-    // with a HostHashShardPolicy of width 4.
+async fn advance_wake_blocks_re_claim_until_promoted() {
+    let fx = fixture().await;
+    let frontier = single_shard_frontier(&fx.pool).await;
+
+    // Two URLs for the same host so we can claim once, push the host
+    // into wake, then assert a re-claim doesn't yield until tick
+    // promotes the wake-elapsed host back into ready.
+    frontier.submit(entry("https://a.test/1")).await.unwrap();
+    frontier.submit(entry("https://a.test/2")).await.unwrap();
+    frontier.tick().await.unwrap();
+
+    let (_, _, attempt) = unwrap_claimed(frontier.claim(&IDENTITY).await.unwrap());
+
+    // Set the host's wake to 200ms out, ack the claim.
+    let until = std::time::Instant::now() + Duration::from_millis(200);
+    frontier.advance_wake("a.test", until).await.unwrap();
+    frontier.ack(&attempt).await.unwrap();
+
+    // Immediately, the host is in wake; a tick now does not promote.
+    frontier.tick().await.unwrap();
+    let outcome_during_wake = frontier.claim(&IDENTITY).await.unwrap();
+    assert!(
+        !matches!(outcome_during_wake, ClaimOutcome::Claimed { .. }),
+        "should not claim during wake window; got {outcome_during_wake:?}",
+    );
+
+    // After the wake elapses, tick promotes; next claim succeeds.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    frontier.tick().await.unwrap();
+    let claimed = frontier.claim(&IDENTITY).await.unwrap();
+    let (_, entry, _) = unwrap_claimed(claimed);
+    assert_eq!(entry.url.as_str(), "https://a.test/2");
+}
+
+// ---------------------------------------------------------------------------
+// Lease + reclaim
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn expired_lease_is_reclaimed_and_url_re_pushed() {
+    let fx = fixture().await;
+    let policy: Arc<dyn ShardingPolicy> = Arc::new(SingleShardPolicy);
+    let frontier = RedisFrontier::new(
+        fx.pool.clone(),
+        policy,
+        vec![0],
+        run_id(),
+        BloomConfig::default(),
+    )
+    .await
+    .unwrap()
+    .with_lease_timeout(Duration::from_millis(150));
+
+    frontier.submit(entry("https://a.test/")).await.unwrap();
+    frontier.tick().await.unwrap();
+    let _ = unwrap_claimed(frontier.claim(&IDENTITY).await.unwrap());
+    // Deliberately don't ack: simulate worker crash mid-fetch.
+
+    // Wait past the lease + claim-safety wake, then tick to reclaim
+    // + promote.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let affected = frontier.tick().await.unwrap();
+    assert!(
+        affected >= 1,
+        "tick should reclaim at least one expired lease; got affected={affected}"
+    );
+
+    // One more tick to be sure the now-eligible host gets promoted
+    // into ready (reclaim re-stamps wake to now_ms, so the next tick
+    // moves it).
+    frontier.tick().await.unwrap();
+
+    let (_, entry, _) = unwrap_claimed(frontier.claim(&IDENTITY).await.unwrap());
+    assert_eq!(entry.url.as_str(), "https://a.test/");
+}
+
+// ---------------------------------------------------------------------------
+// AttemptId + ack
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn ack_removes_url_from_state() {
+    let fx = fixture().await;
+    let frontier = single_shard_frontier(&fx.pool).await;
+    frontier.submit(entry("https://a.test/")).await.unwrap();
+    frontier.tick().await.unwrap();
+    let (_, _, attempt) = unwrap_claimed(frontier.claim(&IDENTITY).await.unwrap());
+    frontier.ack(&attempt).await.unwrap();
+    // Idempotent: a second ack is a no-op.
+    frontier.ack(&attempt).await.unwrap();
+
+    // No more URLs queued for this host.
+    let outcome = frontier.claim(&IDENTITY).await.unwrap();
+    assert!(matches!(outcome, ClaimOutcome::Empty | ClaimOutcome::EmptyHint { .. }));
+    assert_eq!(frontier.len().await.unwrap(), 0);
+}
+
+// ---------------------------------------------------------------------------
+// Sharding
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn host_hash_policy_routes_urls_to_owned_shard() {
     let fx = fixture().await;
     let policy: Arc<dyn ShardingPolicy> = Arc::new(HostHashShardPolicy::new(4));
-    let rid = run_id();
-
-    // Determine which shard reddit.test would land on.
-    let target_shard = policy.shard_key(&url("https://reddit.test/"));
-
-    // Owner of that shard.
-    let owner = RedisFrontier::new(
+    // Compute which shard "example.com" falls into so we can own it.
+    let shard = policy.shard_key_from_host("example.com");
+    let frontier = RedisFrontier::new(
         fx.pool.clone(),
-        policy.clone(),
-        vec![target_shard],
-        rid.clone(),
+        policy,
+        vec![shard],
+        run_id(),
+        BloomConfig::default(),
     )
     .await
     .unwrap();
 
-    // Submit two URLs from the same host: both route to `target_shard`,
-    // both accepted by the owner.
-    assert!(
-        owner
-            .submit(entry("https://reddit.test/foo"))
-            .await
-            .unwrap()
-    );
-    assert!(
-        owner
-            .submit(entry("https://reddit.test/bar"))
-            .await
-            .unwrap()
-    );
+    let outcome = frontier.submit(entry("https://example.com/p1")).await.unwrap();
+    assert!(matches!(outcome, SubmitOutcome::Queued));
 
-    let depth = owner.len().await.unwrap();
-    assert_eq!(depth, 2);
+    frontier.tick().await.unwrap();
+    let (_, entry, _) = unwrap_claimed(frontier.claim(&IDENTITY).await.unwrap());
+    assert_eq!(entry.url.as_str(), "https://example.com/p1");
 }
 
 #[tokio::test]
-async fn frontier_rejects_unowned_shard_submit() {
+async fn submit_rejects_url_for_unowned_shard() {
     let fx = fixture().await;
-    let policy: Arc<dyn ShardingPolicy> = Arc::new(HostHashShardPolicy::new(4));
-    let rid = run_id();
+    let policy: Arc<dyn ShardingPolicy> = Arc::new(HostHashShardPolicy::new(8));
+    // Own only shard 0; submit a URL whose host hashes elsewhere.
+    let owned = vec![0];
+    let frontier = RedisFrontier::new(
+        fx.pool.clone(),
+        policy.clone(),
+        owned,
+        run_id(),
+        BloomConfig::default(),
+    )
+    .await
+    .unwrap();
 
-    // Pick a shard, then own only the *other* shards.
-    let bad_shard = policy.shard_key(&url("https://reddit.test/"));
-    let owned: Vec<_> = (0..4u32).filter(|s| *s != bad_shard).collect();
-
-    let frontier = RedisFrontier::new(fx.pool.clone(), policy.clone(), owned, rid)
-        .await
-        .unwrap();
-
-    // Submitting a URL whose shard we don't own should error.
-    let err = frontier.submit(entry("https://reddit.test/page")).await;
-    assert!(err.is_err(), "submitting to unowned shard should error");
-}
-
-#[tokio::test]
-async fn xautoclaim_reclaims_stranded_entries_to_a_second_consumer() {
-    let fx = fixture().await;
-    let policy: Arc<dyn ShardingPolicy> = Arc::new(SingleShardPolicy);
-    let rid = run_id();
-
-    // Worker A submits + claims, never acks.
-    let worker_a = RedisFrontier::new(fx.pool.clone(), policy.clone(), vec![0], rid.clone())
-        .await
-        .unwrap()
-        .with_autoclaim_idle(Duration::ZERO);
-    worker_a.submit(entry("https://a.test/")).await.unwrap();
-    let _claim_a = worker_a.claim(&TEST_IDENTITY_A).await.unwrap().unwrap();
-    assert_eq!(worker_a.claim_count(), 1);
-
-    // Worker B starts up (different identity) and ticks autoclaim with
-    // idle_ms=0, which immediately reclaims A's pending entry.
-    let worker_b = RedisFrontier::new(fx.pool.clone(), policy.clone(), vec![0], rid)
-        .await
-        .unwrap()
-        .with_autoclaim_idle(Duration::ZERO);
-    let reclaimed = worker_b.reclaim_stranded(&TEST_IDENTITY_B).await.unwrap();
-    assert_eq!(reclaimed, 1, "worker B should reclaim 1 stranded entry");
-    assert_eq!(
-        worker_b.claim_count(),
-        1,
-        "B's in-flight count now reflects the reclaimed entry"
-    );
-
-    // B's next claim returns the stranded URL (read from B's PEL).
-    let claimed_by_b = worker_b.claim(&TEST_IDENTITY_B).await.unwrap().unwrap();
-    assert_eq!(claimed_by_b.entry.url.as_str(), "https://a.test/");
-
-    // B acks; queue is empty.
-    worker_b.ack(&claimed_by_b.attempt_id).await.unwrap();
-    assert_eq!(worker_b.claim_count(), 0);
-}
-
-#[tokio::test]
-async fn run_id_isolates_two_concurrent_crawls() {
-    let fx = fixture().await;
-    let policy: Arc<dyn ShardingPolicy> = Arc::new(SingleShardPolicy);
-
-    let crawl_one = RedisFrontier::new(fx.pool.clone(), policy.clone(), vec![0], "crawl-one")
-        .await
-        .unwrap();
-    let crawl_two = RedisFrontier::new(fx.pool.clone(), policy.clone(), vec![0], "crawl-two")
-        .await
-        .unwrap();
-
-    crawl_one.submit(entry("https://a.test/")).await.unwrap();
-    crawl_two.submit(entry("https://b.test/")).await.unwrap();
-
-    assert_eq!(crawl_one.len().await.unwrap(), 1);
-    assert_eq!(crawl_two.len().await.unwrap(), 1);
-
-    let from_one = crawl_one.claim(&TEST_IDENTITY_A).await.unwrap().unwrap();
-    let from_two = crawl_two.claim(&TEST_IDENTITY_A).await.unwrap().unwrap();
-    assert_eq!(from_one.entry.url.as_str(), "https://a.test/");
-    assert_eq!(from_two.entry.url.as_str(), "https://b.test/");
-}
-
-#[tokio::test]
-async fn shard_depths_reports_per_shard_xlen() {
-    let fx = fixture().await;
-    let policy: Arc<dyn ShardingPolicy> = Arc::new(HostHashShardPolicy::new(4));
-    let rid = run_id();
-
-    let frontier = RedisFrontier::new(fx.pool.clone(), policy.clone(), vec![0, 1, 2, 3], rid)
-        .await
-        .unwrap();
-
-    // Submit a handful of distinct hosts; they spread across shards.
-    for host in [
-        "alpha.test",
-        "bravo.test",
-        "charlie.test",
-        "delta.test",
-        "echo.test",
-    ] {
-        frontier
-            .submit(entry(&format!("https://{host}/")))
-            .await
-            .unwrap();
-    }
-
-    let depths = frontier.shard_depths().await.unwrap();
-    assert_eq!(depths.len(), 4, "one entry per owned shard");
-    assert_eq!(depths.values().sum::<usize>(), 5, "five total submissions");
-}
-
-#[tokio::test]
-async fn submit_batch_fans_out_one_eval_per_shard() {
-    // submit_batch groups by shard and runs one EVAL per shard chunk.
-    // Build a batch whose URLs deliberately span all 4 shards, submit
-    // it in one call, verify each shard ended up with the right URLs.
-    let fx = fixture().await;
-    let policy: Arc<dyn ShardingPolicy> = Arc::new(HostHashShardPolicy::new(4));
-    let rid = run_id();
-
-    let frontier = RedisFrontier::new(fx.pool.clone(), policy.clone(), vec![0, 1, 2, 3], rid)
-        .await
-        .unwrap();
-
-    // 12 distinct hosts: FNV-1a should distribute them across all 4
-    // shards. (The test asserts the total, not the per-shard split,
-    // because the exact distribution is hash-dependent.)
-    let hosts = [
-        "alpha.test",
-        "bravo.test",
-        "charlie.test",
-        "delta.test",
-        "echo.test",
-        "foxtrot.test",
-        "golf.test",
-        "hotel.test",
-        "india.test",
-        "juliet.test",
-        "kilo.test",
-        "lima.test",
-    ];
-    let entries: Vec<UrlEntry> = hosts
+    // Find a host that DOESN'T hash to shard 0.
+    let candidates = ["a.test", "b.test", "c.test", "d.test", "e.test", "f.test"];
+    let foreign = candidates
         .iter()
-        .map(|h| entry(&format!("https://{h}/")))
-        .collect();
-
-    let newly = frontier.submit_batch(entries).await.unwrap();
-    assert_eq!(newly, hosts.len(), "all 12 hosts are new");
-
-    let depths = frontier.shard_depths().await.unwrap();
-    assert_eq!(
-        depths.values().sum::<usize>(),
-        hosts.len(),
-        "every entry landed on exactly one shard",
-    );
-    assert!(
-        depths.values().filter(|&&d| d > 0).count() >= 2,
-        "FNV-1a should put 12 hosts across at least 2 of 4 shards",
-    );
-}
-
-#[tokio::test]
-async fn max_queue_depth_trims_oldest_entries() {
-    // With max_queue_depth set, XADD MAXLEN ~ kicks in; the queue
-    // should never grow much beyond the cap. (Approximate trim means
-    // depth can transiently exceed the cap; we just assert it stays
-    // within a reasonable factor.)
-    let fx = fixture().await;
-    let policy: Arc<dyn ShardingPolicy> = Arc::new(SingleShardPolicy);
-    let frontier = RedisFrontier::new(fx.pool.clone(), policy, vec![0], run_id())
+        .find(|h| policy.shard_key_from_host(h) != 0)
+        .expect("at least one candidate should not hash to shard 0");
+    let err = frontier
+        .submit(entry(&format!("https://{foreign}/")))
         .await
-        .unwrap()
-        .with_max_queue_depth(50);
-
-    // Submit 200 distinct URLs in one batch. 4x the cap: easy to detect
-    // if the trim isn't happening.
-    let entries: Vec<UrlEntry> = (0..200)
-        .map(|i| entry(&format!("https://example.test/{i}")))
-        .collect();
-    let newly = frontier.submit_batch(entries).await.unwrap();
-    assert_eq!(newly, 200, "all 200 URLs are new in seen-set");
-
-    // Depth should be capped near 50. Approximate trim allows some
-    // overshoot; assert the cap is broadly respected, not exact.
-    let depth = frontier.len().await.unwrap();
+        .unwrap_err();
+    let msg = err.to_string();
     assert!(
-        depth <= 150,
-        "approximate MAXLEN should keep depth below ~3x cap; got {depth}",
+        msg.contains("not owned"),
+        "expected ShardNotOwned error; got {msg}",
     );
-}
-
-#[tokio::test]
-async fn submit_batch_with_duplicates_only_counts_new() {
-    // Within one batch, duplicate URLs must be deduped exactly the same
-    // as if submitted singly. Send the same host twice in one batch and
-    // verify newly-count is 1 (the SADD inside the Lua loop dedups).
-    let fx = fixture().await;
-    let policy: Arc<dyn ShardingPolicy> = Arc::new(HostHashShardPolicy::new(2));
-    let rid = run_id();
-    let frontier = RedisFrontier::new(fx.pool.clone(), policy.clone(), vec![0, 1], rid)
-        .await
-        .unwrap();
-
-    let entries = vec![
-        entry("https://twin.test/foo"),
-        entry("https://twin.test/foo"), // duplicate
-        entry("https://other.test/bar"),
-    ];
-    let newly = frontier.submit_batch(entries).await.unwrap();
-    assert_eq!(newly, 2, "duplicate within the batch is dropped");
-    assert_eq!(frontier.len().await.unwrap(), 2);
 }

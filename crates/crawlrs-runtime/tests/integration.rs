@@ -1,13 +1,8 @@
-// Harness-gated: depends on the real `RedisFrontier` and
-// `RedisPoliteness`, both currently stubbed. Re-enable once those
-// impls return real values and the assertions match the new trait
-// surface.
-#![cfg(any())]
-
-//! End-to-end runtime tests against a real Redis frontier + real
+//! End-to-end runtime tests against the real Redis frontier + real
 //! politeness + a fake Fetcher + the real lol_html parser + an
-//! in-memory test Store. Each test brings up its own Redis container
-//! via testcontainers-rs.
+//! in-memory test Store. Each test brings up its own Redis Stack
+//! container via testcontainers-rs (Redis Stack is required because
+//! the frontier uses RedisBloom for submit-time dedup).
 //!
 //! Test doubles (FakeFetcher, InMemoryStore, InMemoryMetadataStore)
 //! live in `crawlrs-fakes` so this file stays focused on test
@@ -24,26 +19,27 @@ use crawlrs_core::{
     SiteAdapterRegistry, UrlEntry, UrlStatus,
 };
 use crawlrs_fakes::{FakeFetcher, InMemoryMetadataStore, InMemoryStore};
-use crawlrs_frontier_redis::RedisFrontier;
+use crawlrs_frontier_redis::{BloomConfig, RedisFrontier};
 use crawlrs_parse::LolHtmlParser;
 use crawlrs_politeness::{PolitenessConfig, RedisPoliteness};
 use crawlrs_runtime::{Crawler, CrawlerConfig};
-use testcontainers_modules::redis::Redis;
-use testcontainers_modules::testcontainers::runners::AsyncRunner;
-use testcontainers_modules::testcontainers::{ContainerAsync, ImageExt};
+use testcontainers::core::WaitFor;
+use testcontainers::runners::AsyncRunner;
+use testcontainers::{ContainerAsync, GenericImage};
 
 // ---------------------------------------------------------------------------
 // Fixture
 // ---------------------------------------------------------------------------
 
 struct Fixture {
-    _container: ContainerAsync<Redis>,
+    _container: ContainerAsync<GenericImage>,
     pool: Pool<RedisConnectionManager>,
 }
 
 async fn fixture() -> Fixture {
-    let container = Redis::default()
-        .with_tag("7.2")
+    let container = GenericImage::new("redis/redis-stack-server", "7.4.0-v0")
+        .with_exposed_port(6379.into())
+        .with_wait_for(WaitFor::message_on_stdout("Ready to accept connections"))
         .start()
         .await
         .expect("docker must be running for integration tests");
@@ -70,10 +66,11 @@ fn entry(s: &str) -> UrlEntry {
     UrlEntry::seed(url(s))
 }
 
-/// Build a crawler with the standard test setup. Returns the crawler
-/// plus handles to the fake fetcher, store, and metadata so the test
-/// can install canned responses and assert on stored docs / ledger
-/// transitions.
+/// Build a crawler with the standard test setup. The frontier is
+/// configured with a short lease timeout so transient-failure retry
+/// paths fire within the test observation window. Returns handles to
+/// the fake fetcher, store, and metadata so the test can install
+/// canned responses and assert on stored docs / ledger transitions.
 async fn build_crawler(
     fx: &Fixture,
     config: CrawlerConfig,
@@ -88,13 +85,20 @@ async fn build_crawler(
     let rid = run_id();
 
     let frontier = Arc::new(
-        RedisFrontier::new(fx.pool.clone(), policy.clone(), vec![0], rid.clone())
-            .await
-            .unwrap()
-            // 50ms gives the original consumer time to ack/nack
-            // before a peer worker tries to steal the entry; healthy
-            // workers complete in ~1ms.
-            .with_autoclaim_idle(Duration::from_millis(50)),
+        RedisFrontier::new(
+            fx.pool.clone(),
+            policy.clone(),
+            vec![0],
+            rid.clone(),
+            BloomConfig::default(),
+        )
+        .await
+        .unwrap()
+        // Short lease: transient-failure paths rely on the reclaim
+        // pass to re-push the URL onto its host_queue. 200ms is past
+        // the typical happy-path fetch + advance_wake call (~ms) but
+        // short enough that tests don't drag.
+        .with_lease_timeout(Duration::from_millis(200)),
     );
     let fetcher = Arc::new(FakeFetcher::default());
     let politeness = Arc::new(
@@ -133,15 +137,16 @@ async fn build_crawler(
 
 /// Default test config. `link_dispatch` inherits the project default
 /// (`LinkDispatch::Direct`); tests that need a specific dispatch mode
-/// set the field explicitly after this returns.
+/// set the field explicitly after this returns. `promoter_tick` is
+/// short so the wake -> ready transition isn't the bottleneck.
 fn fast_config() -> CrawlerConfig {
     CrawlerConfig {
         workers: 2,
         user_agent: Some("TestBot/1.0".into()),
         max_depth: Some(2),
         maintenance_interval: Duration::from_secs(60),
+        promoter_tick: Duration::from_millis(20),
         empty_queue_poll: Duration::from_millis(50),
-        startup_poll: Duration::from_millis(20),
         max_idle_sleep: Duration::from_millis(200),
         error_backoff: Duration::from_millis(200),
         max_retries: 3,
@@ -168,19 +173,10 @@ fn fast_politeness() -> PolitenessConfig {
 
 // ---------------------------------------------------------------------------
 // Tests
-//
-// Tests in this section exercise behavior invariant under
-// LinkDispatch (failure paths, retry budget, politeness windows,
-// cross-run dedup, depth filtering). They do not run mark_succeeded
-// on a non-empty outbound, so the dispatch branch never executes.
-// Running them under both modes would double the testcontainer
-// startup cost for zero parity coverage. The dispatch-sensitive
-// success-path tests live in the LinkDispatch section below and are
-// parameterized over both modes.
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn rate_limit_response_triggers_failure_recording_and_nack() {
+async fn rate_limit_response_records_failure_and_leaves_lease_to_expire() {
     let fx = fixture().await;
     let (crawler, fetcher, _store, _metadata) =
         build_crawler(&fx, fast_config(), fast_politeness()).await;
@@ -202,9 +198,6 @@ async fn rate_limit_response_triggers_failure_recording_and_nack() {
     crawler.shutdown();
     run_handle.await.unwrap().unwrap();
 
-    // The 429 should have caused the URL to be classified as
-    // TooManyRequests, recorded in politeness state, and nacked
-    // (so the URL stays in the consumer's PEL until reclaim).
     assert!(
         fetcher.calls().contains(&"https://flaky.test/".to_string()),
         "URL was attempted",
@@ -221,7 +214,7 @@ async fn graceful_shutdown_returns_promptly() {
     let crawler_clone = crawler.clone();
     let run_handle = tokio::spawn(async move { crawler_clone.run().await });
 
-    // No URLs in the queue; workers idle on `next_ready_at` -> None.
+    // No URLs in the queue; workers idle on Empty/EmptyHint returns.
     // Send shutdown immediately and verify run() returns within a
     // bounded window.
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -253,7 +246,7 @@ async fn missing_canned_response_records_transport_failure() {
     run_handle.await.unwrap().unwrap();
     // Survival is the assertion; the worker must not panic on a
     // FakeFetcher transport error and must have processed the failure
-    // through politeness + nack paths.
+    // through politeness + lease-expiry paths.
 }
 
 #[tokio::test]
@@ -263,9 +256,6 @@ async fn discovered_links_respect_max_depth() {
     config.max_depth = Some(1); // seed -> depth 0; children -> depth 1; depth 2 dropped
     let (crawler, fetcher, store, _metadata) = build_crawler(&fx, config, fast_politeness()).await;
 
-    // Seed at depth 0 has one link to depth 1; depth 1 page has one
-    // link to depth 2. With max_depth=1, depth-2 should not be
-    // submitted.
     fetcher.install_html(
         "https://a.test/",
         r#"<html><body><a href="/d1">d1</a></body></html>"#,
@@ -274,8 +264,6 @@ async fn discovered_links_respect_max_depth() {
         "https://a.test/d1",
         r#"<html><body><a href="/d2">d2</a></body></html>"#,
     );
-    // Note: do NOT install /d2; if we ever did fetch it, we'd see a
-    // transport-error class entry, but we shouldn't.
 
     crawler
         .deps()
@@ -299,13 +287,11 @@ async fn discovered_links_respect_max_depth() {
         !calls.contains(&"https://a.test/d2".to_string()),
         "d2 is at depth 2 and should be dropped under max_depth=1; calls: {calls:?}",
     );
-    let _ = store; // unused; kept for parity with other tests
+    let _ = store;
 }
 
 #[tokio::test]
 async fn successful_fetch_records_metadata_succeeded() {
-    // After a successful fetch + parse + store, the metadata ledger
-    // shows status=Succeeded, blob_path set, content_hash set.
     let fx = fixture().await;
     let (crawler, fetcher, _store, metadata) =
         build_crawler(&fx, fast_config(), fast_politeness()).await;
@@ -349,8 +335,6 @@ async fn successful_fetch_records_metadata_succeeded() {
 
 #[tokio::test]
 async fn repeated_failure_exhausts_retry_budget_and_lands_in_dlq() {
-    // Server returns 503 forever. After max_retries failures the URL
-    // should move to PermanentlyFailed and stop being re-claimed.
     let fx = fixture().await;
     let mut config = fast_config();
     config.max_retries = 2; // 2 attempts then DLQ
@@ -368,10 +352,11 @@ async fn repeated_failure_exhausts_retry_budget_and_lands_in_dlq() {
     let crawler = Arc::new(crawler);
     let crawler_clone = crawler.clone();
     let run_handle = tokio::spawn(async move { crawler_clone.run().await });
-    // Long enough that the worker reclaims via XAUTOCLAIM and exhausts
-    // the budget; autoclaim_idle is set to 0 in the fixture so retries
-    // are immediate.
-    tokio::time::sleep(Duration::from_millis(1500)).await;
+    // Long enough for the worker to: claim, fail, wait lease (~200ms),
+    // tick reclaims, re-claim, fail, lease expires, reclaim, claim
+    // again, fail -> exhaust budget -> DLQ. Two retries at ~250ms
+    // each plus the final attempt fits comfortably in 2s.
+    tokio::time::sleep(Duration::from_millis(2_000)).await;
     crawler.shutdown();
     run_handle.await.unwrap().unwrap();
 
@@ -392,18 +377,17 @@ async fn repeated_failure_exhausts_retry_budget_and_lands_in_dlq() {
 #[tokio::test]
 async fn retry_after_header_extends_politeness_wake_time() {
     // Server returns 503 with Retry-After: 2 (seconds). compute_backoff
-    // should take max(computed=50ms, hint=2s) = 2s, parking the host
-    // for that long.
+    // takes max(computed=50ms, hint=2s) = 2s. The host's wake-time
+    // (written by Frontier::advance_wake from the politeness plan)
+    // parks all URLs for that host for ~2s.
     //
     // We verify by counting fetch calls within a short observation
     // window: with the hint honored, we should see ~1 attempt; without,
-    // we'd see many more (50ms backoff × N retries).
+    // we'd see many more.
     let fx = fixture().await;
     let mut config = fast_config();
-    config.max_retries = 100; // disable DLQ short-circuit so we observe retry pacing only
+    config.max_retries = 100;
 
-    // max_backoff must be larger than the server hint so the cap
-    // doesn't clip the 2s value.
     let politeness_cfg = PolitenessConfig {
         host_delay: Duration::from_millis(50),
         obey_robots_txt: false,
@@ -432,7 +416,6 @@ async fn retry_after_header_extends_politeness_wake_time() {
     let crawler = Arc::new(crawler);
     let crawler_clone = crawler.clone();
     let run_handle = tokio::spawn(async move { crawler_clone.run().await });
-    // Observe for ~800ms; Retry-After: 2 means at most 1 attempt fits.
     tokio::time::sleep(Duration::from_millis(800)).await;
     crawler.shutdown();
     run_handle.await.unwrap().unwrap();
@@ -454,10 +437,6 @@ async fn retry_after_header_extends_politeness_wake_time() {
 
 #[tokio::test]
 async fn direct_mode_skips_outbox_and_enqueues_outbound_directly() {
-    // Pin LinkDispatch::Direct's contract: outbound URLs go straight
-    // from the worker into the Frontier after the metadata commit.
-    // The outbox table sits empty (no row ever written) and the
-    // publisher daemon never spawns.
     let fx = fixture().await;
     let mut config = fast_config();
     config.link_dispatch = LinkDispatch::Direct;
@@ -487,17 +466,12 @@ async fn direct_mode_skips_outbox_and_enqueues_outbound_directly() {
     crawler.shutdown();
     run_handle.await.unwrap().unwrap();
 
-    // Direct mode passes outbound: &[] to mark_succeeded; no outbox
-    // rows are ever written. This is the load-bearing assertion.
     assert_eq!(
         metadata.outbox_row_count(),
         0,
         "Direct mode must not write to the outbox table",
     );
 
-    // Children were fetched, which means they reached the Frontier
-    // via the worker's direct submit_batch call (no outbox publisher
-    // ran in Direct mode).
     let calls = fetcher.calls();
     assert!(
         calls.iter().any(|u| u == "https://child1.test/"),
@@ -511,10 +485,6 @@ async fn direct_mode_skips_outbox_and_enqueues_outbound_directly() {
 
 #[tokio::test]
 async fn durable_outbox_mode_writes_outbound_through_outbox() {
-    // Pin LinkDispatch::DurableOutbox's contract: outbound URLs
-    // commit atomically with the metadata write, the publisher
-    // drains them, and they reach the Frontier eventually. The
-    // outbox table records the rows for at-least-once replay.
     let fx = fixture().await;
     let mut config = fast_config();
     config.link_dispatch = LinkDispatch::DurableOutbox;
@@ -540,34 +510,22 @@ async fn durable_outbox_mode_writes_outbound_through_outbox() {
     crawler.shutdown();
     run_handle.await.unwrap().unwrap();
 
-    // The outbox table received at least one row for the child URL.
-    // (`>=` because the seed and child both run mark_succeeded; the
-    // child's own outbound is empty, so we expect exactly 1 here in
-    // practice, but `>=` is the contract assertion.)
     assert!(
         metadata.outbox_row_count() >= 1,
         "DurableOutbox must write outbound URLs into the outbox table; got {}",
         metadata.outbox_row_count(),
     );
-    // After the publisher drained, no rows remain unpublished.
     assert_eq!(
         metadata.unpublished_outbox_count(),
         0,
         "publisher must have drained all outbox rows by shutdown",
     );
-    // child1 was fetched -> publisher drained the outbox row -> the
-    // Frontier received the URL -> the worker claimed and fetched it.
     assert!(
         fetcher.calls().iter().any(|u| u == "https://child1.test/"),
         "child1 should have been fetched after publisher drain",
     );
 }
 
-/// Comprehensive E2E parity body: 1 seed across 3 hosts, 2 children,
-/// distinct politeness windows. Asserts the seed and its children all
-/// land in the store regardless of dispatch mode. Wrapped by two
-/// `#[tokio::test]` entry points below so a regression in either
-/// dispatch path fails its own named test in CI.
 async fn run_end_to_end_crawl_one_seed_two_pages(dispatch: LinkDispatch) {
     let fx = fixture().await;
     let mut config = fast_config();
@@ -588,14 +546,10 @@ async fn run_end_to_end_crawl_one_seed_two_pages(dispatch: LinkDispatch) {
         .await
         .unwrap();
 
-    // Run the crawler in a task; trigger shutdown after enough time
-    // for the seed + its 2 children to have been fetched.
     let crawler = Arc::new(crawler);
     let crawler_clone = crawler.clone();
     let run_handle = tokio::spawn(async move { crawler_clone.run().await });
 
-    // Give it time to drain; with host_delay=50ms and 3 distinct
-    // hosts, ~1s is plenty.
     tokio::time::sleep(Duration::from_millis(800)).await;
     crawler.shutdown();
     run_handle.await.unwrap().unwrap();

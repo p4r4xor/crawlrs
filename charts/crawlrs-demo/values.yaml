@@ -13,17 +13,26 @@
 # directly with `--set store.backend.kind=s3` and your own bucket /
 # region / credentials.
 
-# ---- Redis (official upstream image) --------------------------------
+# ---- Redis Stack (official upstream image) --------------------------
+# The frontier requires the RedisBloom module for submit-time dedup;
+# stock `redis:7-alpine` lacks `BF.RESERVE`. `redis-stack-server`
+# bundles RedisBloom + RedisJSON + RediSearch + RedisTimeSeries on top
+# of stock Redis.
 redis:
-  image: redis:7.4.2-alpine
+  image: redis/redis-stack-server:7.4.0-v0
   imagePullPolicy: IfNotPresent
-  # AOF persistence on by default. `make local-cluster-down` (kind
-  # delete) wipes the PVC; `helm uninstall` keeps it.
+  # RDB-only durability: snapshot at progressively-sparser thresholds
+  # so frequent writes flush often, idle periods still snapshot
+  # eventually. AOF is intentionally disabled (the bloom-filter state
+  # survives via RDB; AOF replay's per-op overhead isn't worth it for
+  # this workload). `make local-cluster-down` wipes the PVC; `helm
+  # uninstall` keeps it.
   persistence:
     size: 5Gi
-  # Memory limit needs headroom for Redis to load AOF on startup
-  # plus working set (seen-set hash, frontier streams). 256Mi caused
-  # OOMKill on restart with ~200MB of persisted state.
+  # Memory limit covers Redis working set: per-shard host queues +
+  # wake/ready/inflight ZSETs + URL HASH + the RedisBloom filter
+  # (~1.8 MB per 1M URLs at fpr=0.001). 1Gi covers small-to-medium
+  # runs; raise for larger bloom capacity.
   resources:
     requests:
       cpu: 50m

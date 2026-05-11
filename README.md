@@ -6,20 +6,27 @@ metadata ledger, and S3-compatible object storage for crawled blobs.
 
 ## Components
 
-**Frontier.** Per-shard Redis Streams + consumer groups for
-at-least-once URL delivery. Per-worker consumer names so multiple
-tokio tasks in one process don't collide. `XAUTOCLAIM` reclaims
-stranded entries from crashed peers without a separate maintenance
-process. Sharding via `HostHashShardPolicy` (default 8 shards);
-swappable for `SingleShardPolicy` in tests or a custom policy in
-production.
+**Frontier.** Per-shard per-host URL queue on Redis Stack. URLs flow
+through atomic Lua scripts: submit dedups via RedisBloom and pushes
+to the host queue (or per-shard overflow if the backlog cap is hit);
+claim pops the next ready host, then its next queued URL, and stamps
+a lease ZSET entry. A background promoter loop drains the wake ZSET
+into the ready list at a configurable tick (50 ms default), so claim
+is O(1) under any host count. Stranded URLs whose worker crashed are
+re-pushed onto their host queue once the lease expires; the operator
+sees this via `crawlrs_frontier_lease_reclaim_total`. Sharding via
+`HostHashShardPolicy` (default 8 shards); swappable for
+`SingleShardPolicy` in tests or a custom policy in production.
 
-**Politeness.** Per-host wake-time scheduling via Redis ZSETs
-(sub-millisecond decisions). Three-tier robots.txt cache:
-in-process LRU -> Redis hash -> network fetch, TTL-aligned. Per-domain
-delay overrides, manual exclude list, exponential backoff on
-429 / 503 / transport errors with `Retry-After` honored as a floor,
-circuit breaker after N consecutive failures.
+**Politeness.** Policy layer that gates fetches without owning
+scheduling state. `check` returns Allow / Disallow on the basis of
+robots.txt, the blocklist, and a per-host circuit breaker;
+`record_fetch` / `record_failure` return a `NextWake` plan that the
+runtime applies via `Frontier::advance_wake`. Three-tier robots.txt
+cache (in-process LRU -> Redis hash -> network fetch). Per-domain
+overrides, exponential backoff on 429 / 503 / transport errors with
+`Retry-After` honored as a floor, circuit breaker after N
+consecutive failures.
 
 **Storage.** Two output paths shipped in parallel:
 
@@ -41,7 +48,7 @@ shape: `url_metadata` (current state per URL) and `url_history`
 (append-only event log). Drives cross-run dedup, retry budgeting, and
 the dead-letter queue.
 
-**Observability.** 29-metric Prometheus contract. The Helm chart
+**Observability.** 33-metric Prometheus contract. The Helm chart
 bundles a single-node VictoriaMetrics for storage and Grafana with
 three provisioned dashboards (crawler health overview, fetch
 pipeline, frontier + storage). Operators with their own Prometheus or
@@ -78,7 +85,7 @@ make local-deps-check
 | Tool | Purpose | Install |
 |---|---|---|
 | **Rust toolchain** | rustup auto-installs the 1.94.1 pin from `rust-toolchain.toml` | [rustup.rs](https://rustup.rs/) |
-| **Redis** | Frontier + politeness backend | `docker run --rm -d -p 6379:6379 redis:7-alpine` (or system install) |
+| **Redis Stack** | Frontier + politeness backend (RedisBloom is required) | `docker run --rm -d -p 6379:6379 redis/redis-stack-server:7.4.0-v0` |
 | **Postgres** | Metadata ledger | `docker run --rm -d -p 5432:5432 -e POSTGRES_PASSWORD=crawlrs -e POSTGRES_DB=crawlrs postgres:17-alpine` |
 
 System libs the Rust build needs (Debian/Ubuntu names; equivalents on
@@ -208,7 +215,7 @@ flowchart TB
         Pod2["crawlrs-2\n- 4 tokio worker tasks\n- owns shards 2, 5\nsame shape as Pod-0"]
     end
 
-    Redis["Redis (Sentinel-backed; Redis Cluster is a v2 promotion trigger)\n- 8 logical shards via key prefixes\n- per-shard stream + consumer group ('fetchers')\n- per-shard ZSETs (host wake times) and hashes\n  (backoff state, robots cache)\n- XAUTOCLAIM reclaims stranded entries (idle over 5min)\n  from crashed peers; no separate maintenance pod\ndoes not: execute application logic; just\ncoordinates queues + politeness state"]
+    Redis["Redis Stack (RedisBloom module required; Sentinel-backed; Redis Cluster is a v2 promotion trigger)\n- 8 logical shards via hash-tagged key prefixes\n- per-shard host_queue LISTs + wake/ready/inflight ZSETs\n- per-shard URL HASH (content-addressed UrlId -> payload)\n- per-shard RedisBloom 'seen' (deployment-wide; cross-run dedup)\n- RDB-only durability (save 60 10000 / 300 10 / 900 1)\ndoes not: execute application logic; just\ncoordinates queues + scheduling state"]
 
     Postgres["Postgres (single primary; HA is your own replicas)\n- url_metadata: 1 row/URL, mutable; drives cross-run dedup\n- url_history: append-only event log; audit trail\n- schema migrations applied automatically by the binary\ndoes not: shard. Single source of truth\nacross every pod in the StatefulSet."]
 
@@ -240,8 +247,8 @@ for an in-memory frontier (in tests) or Postgres for DynamoDB (in
 v2) is bounded to the matching adapter crate. Pods don't talk to
 each other directly. Coordination is entirely through Redis (queue
 distribution + per-host backoff) and Postgres (per-URL state).
-Failure recovery is built into the queue protocol via XAUTOCLAIM,
-not into a separate control plane.
+Failure recovery is built into the queue protocol via the lease
+ZSET and the reclaim pass, not into a separate control plane.
 
 ## Workspace layout
 
@@ -249,7 +256,7 @@ not into a separate control plane.
 |---|---|
 | `crawlrs-core` | Domain types + traits + errors. Zero I/O. |
 | `crawlrs-fetch` | `Fetcher` impl backed by `wreq`. |
-| `crawlrs-frontier-redis` | `Frontier` impl: Redis Streams + consumer groups. |
+| `crawlrs-frontier-redis` | `Frontier` impl: per-host queues + atomic-Lua claim + lease ZSET + RedisBloom dedup. |
 | `crawlrs-parse` | `Parser` impl backed by `lol_html`. |
 | `crawlrs-politeness` | `Politeness` impl: per-host scheduling, robots cache, backoff. |
 | `crawlrs-metadata` | `MetadataStore` impl: Postgres + sqlx. |
