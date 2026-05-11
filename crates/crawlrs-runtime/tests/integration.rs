@@ -14,8 +14,8 @@ use std::time::Duration;
 use bb8::Pool;
 use bb8_redis::RedisConnectionManager;
 use crawlrs_core::{
-    AttemptId, CanonicalUrl, LinkDispatch, MetadataStore, ShardingPolicy, SingleShardPolicy,
-    SiteAdapterRegistry, SuccessRecord, UrlEntry, UrlStatus,
+    CanonicalUrl, LinkDispatch, MetadataStore, ShardingPolicy, SingleShardPolicy,
+    SiteAdapterRegistry, UrlEntry, UrlStatus,
 };
 use crawlrs_fakes::{FakeFetcher, InMemoryMetadataStore, InMemoryStore};
 use crawlrs_frontier_redis::RedisFrontier;
@@ -139,7 +139,6 @@ fn fast_config() -> CrawlerConfig {
         max_idle_sleep: Duration::from_millis(200),
         error_backoff: Duration::from_millis(200),
         max_retries: 3,
-        cross_run_dedup: true,
         pod_ordinal: 0,
         restart_policy: Default::default(),
         link_dispatch: Default::default(),
@@ -155,7 +154,7 @@ fn fast_politeness() -> PolitenessConfig {
             initial_backoff: Duration::from_millis(50),
             max_backoff: Duration::from_millis(200),
             multiplier: 2.0,
-            circuit_open_after_failures: 100,
+            failure_threshold: 100,
         },
         ..Default::default()
     }
@@ -385,58 +384,6 @@ async fn repeated_failure_exhausts_retry_budget_and_lands_in_dlq() {
 }
 
 #[tokio::test]
-async fn cross_run_dedup_skips_previously_succeeded_url() {
-    // Pre-seed the metadata ledger with a Succeeded row for some URL.
-    // When the runtime claims that URL, it must ack without fetching.
-    let fx = fixture().await;
-    let (crawler, fetcher, _store, metadata) =
-        build_crawler(&fx, fast_config(), fast_politeness()).await;
-
-    let already_done = url("https://done.test/");
-    metadata
-        .mark_attempting(&already_done, "prior-run", 0)
-        .await
-        .unwrap();
-    let prior_attempt = AttemptId::new("prior-attempt");
-    metadata
-        .mark_succeeded(&SuccessRecord {
-            url: &already_done,
-            attempt_id: &prior_attempt,
-            blob_path: "memory://prior",
-            content_hash: 0xdead_beef,
-            outbound: &[],
-        })
-        .await
-        .unwrap();
-
-    // Install a canned response so we'd detect a fetch if it happened.
-    fetcher.install_html(
-        "https://done.test/",
-        "<html><body>should not be fetched</body></html>",
-    );
-
-    crawler
-        .deps()
-        .frontier
-        .submit(UrlEntry::seed(already_done.clone()))
-        .await
-        .unwrap();
-
-    let crawler = Arc::new(crawler);
-    let crawler_clone = crawler.clone();
-    let run_handle = tokio::spawn(async move { crawler_clone.run().await });
-    tokio::time::sleep(Duration::from_millis(400)).await;
-    crawler.shutdown();
-    run_handle.await.unwrap().unwrap();
-
-    assert!(
-        !fetcher.calls().contains(&"https://done.test/".to_string()),
-        "cross-run dedup should have prevented the fetch; calls: {:?}",
-        fetcher.calls(),
-    );
-}
-
-#[tokio::test]
 async fn retry_after_header_extends_politeness_wake_time() {
     // Server returns 503 with Retry-After: 2 (seconds). compute_backoff
     // should take max(computed=50ms, hint=2s) = 2s, parking the host
@@ -459,7 +406,7 @@ async fn retry_after_header_extends_politeness_wake_time() {
             initial_backoff: Duration::from_millis(50),
             max_backoff: Duration::from_secs(60),
             multiplier: 2.0,
-            circuit_open_after_failures: 1000,
+            failure_threshold: 1000,
         },
         ..Default::default()
     };

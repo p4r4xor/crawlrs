@@ -27,13 +27,12 @@
 //! initial_backoff = "30s"
 //! max_backoff = "10m"
 //! multiplier = 2.0
-//! circuit_open_after_failures = 10
+//! failure_threshold = 10
 //!
 //! [runtime]
 //! workers = 4
 //! max_depth = 5
 //! max_retries = 5
-//! cross_run_dedup = true
 //! link_dispatch = "durable_outbox"  # or "direct"
 //!
 //! [store]
@@ -133,7 +132,7 @@ pub struct PolitenessConfig {
     pub robots_ttl: Duration,
     pub backoff: BackoffPolicy,
     #[serde(default)]
-    pub manual_excludes: HashSet<String>,
+    pub blocklist: HashSet<String>,
     #[serde(default)]
     pub per_domain: HashMap<String, PerDomainOverride>,
 }
@@ -145,7 +144,7 @@ impl Default for PolitenessConfig {
             obey_robots_txt: true,
             robots_ttl: Duration::from_secs(24 * 60 * 60),
             backoff: BackoffPolicy::default(),
-            manual_excludes: HashSet::new(),
+            blocklist: HashSet::new(),
             per_domain: HashMap::new(),
         }
     }
@@ -159,7 +158,7 @@ pub struct BackoffPolicy {
     #[serde(with = "humantime_serde")]
     pub max_backoff: Duration,
     pub multiplier: f64,
-    pub circuit_open_after_failures: u32,
+    pub failure_threshold: u32,
 }
 
 impl Default for BackoffPolicy {
@@ -168,7 +167,7 @@ impl Default for BackoffPolicy {
             initial_backoff: Duration::from_secs(30),
             max_backoff: Duration::from_secs(600),
             multiplier: 2.0,
-            circuit_open_after_failures: 10,
+            failure_threshold: 10,
         }
     }
 }
@@ -187,7 +186,6 @@ pub struct RuntimeConfig {
     pub workers: usize,
     pub max_depth: Option<u32>,
     pub max_retries: u32,
-    pub cross_run_dedup: bool,
     /// Strategy for moving discovered outbound URLs into the
     /// Frontier. Default `Direct` is the lower-cost path that loses
     /// URLs during transient Frontier errors; `DurableOutbox` is the
@@ -202,7 +200,6 @@ impl Default for RuntimeConfig {
             workers: 4,
             max_depth: Some(5),
             max_retries: 5,
-            cross_run_dedup: true,
             link_dispatch: LinkDispatch::default(),
         }
     }

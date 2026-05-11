@@ -188,11 +188,11 @@ async fn delay_elapses_and_host_is_allowed_again() {
 }
 
 #[tokio::test]
-async fn manual_excludes_returns_disallow() {
+async fn blocklist_returns_disallow() {
     let fx = fixture().await;
     let fake = Arc::new(FakeFetcher::default());
     let mut config = config_with(Duration::from_millis(1_000), false);
-    config.manual_excludes.insert("excluded.test".into());
+    config.blocklist.insert("excluded.test".into());
 
     let p = build(&fx.pool, fake.clone(), config).await;
     assert_eq!(
@@ -237,7 +237,7 @@ async fn record_failure_applies_backoff() {
         initial_backoff: Duration::from_millis(1_000),
         max_backoff: Duration::from_millis(60_000),
         multiplier: 2.0,
-        circuit_open_after_failures: 100,
+        failure_threshold: 100,
     };
     let p = build(&fx.pool, fake.clone(), config).await;
 
@@ -268,7 +268,7 @@ async fn consecutive_failures_grow_backoff() {
         initial_backoff: Duration::from_millis(500),
         max_backoff: Duration::from_millis(60_000),
         multiplier: 2.0,
-        circuit_open_after_failures: 100,
+        failure_threshold: 100,
     };
     let p = build(&fx.pool, fake.clone(), config).await;
 
@@ -324,7 +324,7 @@ async fn circuit_opens_after_threshold_consecutive_failures() {
         initial_backoff: Duration::from_millis(1),
         max_backoff: Duration::from_millis(100),
         multiplier: 1.0,
-        circuit_open_after_failures: 3,
+        failure_threshold: 3,
     };
     let p = build(&fx.pool, fake.clone(), config).await;
 

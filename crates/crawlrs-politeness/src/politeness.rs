@@ -72,7 +72,7 @@ impl std::fmt::Debug for RedisPoliteness {
             .field("owned_shards", &self.owned_shards)
             .field("host_delay", &self.config.host_delay)
             .field("obey_robots_txt", &self.config.obey_robots_txt)
-            .field("manual_excludes", &self.config.manual_excludes.len())
+            .field("blocklist", &self.config.blocklist.len())
             .field("per_domain_overrides", &self.config.per_domain.len())
             .finish()
     }
@@ -198,8 +198,8 @@ impl RedisPoliteness {
             .unwrap_or(self.config.obey_robots_txt)
     }
 
-    fn is_excluded(&self, host: &str) -> bool {
-        self.config.manual_excludes.contains(host)
+    fn is_blocked(&self, host: &str) -> bool {
+        self.config.blocklist.contains(host)
     }
 }
 
@@ -208,8 +208,8 @@ impl Politeness for RedisPoliteness {
     #[tracing::instrument(skip(self), fields(url = %url))]
     async fn check(&self, url: &CanonicalUrl) -> Result<PoliteDecision> {
         let host = self.host_of(url).map_err(Error::from)?;
-        if self.is_excluded(host) {
-            record_check_decision(crate::metrics::DECISION_DISALLOW_EXCLUDED);
+        if self.is_blocked(host) {
+            record_check_decision(crate::metrics::DECISION_DISALLOW_BLOCKED);
             return Ok(PoliteDecision::Disallow);
         }
 
@@ -238,7 +238,7 @@ impl Politeness for RedisPoliteness {
             .await
             .map_err(RedisPolitenessError::from)
             .map_err(Error::from)?;
-        if failures.unwrap_or(0) >= self.config.backoff.circuit_open_after_failures {
+        if failures.unwrap_or(0) >= self.config.backoff.failure_threshold {
             metrics::counter!(crate::metrics::POLITENESS_CIRCUIT_OPEN_TOTAL).increment(1);
             record_check_decision(crate::metrics::DECISION_DISALLOW_CIRCUIT);
             return Ok(PoliteDecision::Disallow);

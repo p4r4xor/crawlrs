@@ -11,7 +11,7 @@ fn defaults_are_sensible() {
     let c = PolitenessConfig::default();
     assert_eq!(c.host_delay, Duration::from_secs(1));
     assert!(c.obey_robots_txt);
-    assert!(c.manual_excludes.is_empty());
+    assert!(c.blocklist.is_empty());
     assert!(c.per_domain.is_empty());
 }
 

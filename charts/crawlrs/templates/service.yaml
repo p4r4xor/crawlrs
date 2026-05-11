@@ -7,7 +7,7 @@ metadata:
   annotations:
     # Mark as a headless service for stable per-pod DNS. Pods get
     # `<statefulset>-<ordinal>.<headless-service>` resolution. vmsingle
-    # (Phase 6c) scrapes per-pod via this DNS.
+    # scrapes per-pod via this DNS.
     service.kubernetes.io/headless: "true"
 spec:
   type: ClusterIP

@@ -66,7 +66,7 @@ async fn factory_builds_against_real_backends() {
             obey_robots_txt: true,
             robots_ttl: Duration::from_secs(24 * 60 * 60),
             backoff: BackoffPolicy::default(),
-            manual_excludes: HashSet::new(),
+            blocklist: HashSet::new(),
             per_domain: HashMap::new(),
         },
         runtime: RuntimeConfig::default(),

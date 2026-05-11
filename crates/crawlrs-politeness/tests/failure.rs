@@ -11,7 +11,7 @@ fn policy() -> BackoffPolicy {
         initial_backoff: Duration::from_secs(30),
         max_backoff: Duration::from_secs(600),
         multiplier: 2.0,
-        circuit_open_after_failures: 10,
+        failure_threshold: 10,
     }
 }
 

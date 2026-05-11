@@ -19,7 +19,7 @@ use crawlrs_core::{
     AttemptId, CanonicalUrl, ClaimedMessage, Clock, FailureKind, FetchRequest, FetchResponse,
     Fetcher, Frontier, LinkDispatch, MetadataStore, ParsedDocument, Parser, PoliteDecision,
     Politeness, ShardingPolicy, SiteAdapterRegistry, Store, StoreRecord, SuccessRecord, UrlEntry,
-    UrlStatus, WorkerIdentity, content_hash,
+    WorkerIdentity, content_hash,
 };
 use tokio::sync::watch;
 use tokio::time::Instant as TokioInstant;
@@ -207,9 +207,6 @@ impl UrlPipeline {
     /// and writing any metadata transition), they signal that to
     /// `run` via the return type so we exit early.
     async fn run(self) {
-        if self.is_already_done().await {
-            return;
-        }
         if !self.politeness_allows().await {
             return;
         }
@@ -229,44 +226,6 @@ impl UrlPipeline {
         // crash.
         let outbound = compute_outbound(&self.entry, &doc, self.deps.config.max_depth);
         self.finalize(&resp, &doc, outbound).await;
-    }
-
-    /// Cross-run dedup. Returns `true` iff a prior run already
-    /// terminally handled this URL (Succeeded or in DLQ); the caller
-    /// (in this case `run()`) treats `true` as "ack and skip." Costs
-    /// one metadata `get` per claim; opt out via
-    /// `CrawlerConfig::cross_run_dedup`.
-    async fn is_already_done(&self) -> bool {
-        if !self.deps.config.cross_run_dedup {
-            return false;
-        }
-        let prior = match self.deps.metadata.get(self.url()).await {
-            Ok(Some(p)) => p,
-            Ok(None) | Err(_) => return false,
-        };
-        match prior.status {
-            UrlStatus::Succeeded => {
-                debug!(url = %self.url(), "cross-run dedup hit; acking without fetch");
-                metrics::counter!(
-                    crate::metrics::URLS_SKIPPED_TOTAL,
-                    "reason" => crate::metrics::SKIP_ALREADY_SUCCEEDED,
-                )
-                .increment(1);
-                let _ = self.deps.frontier.ack(self.attempt()).await;
-                true
-            }
-            UrlStatus::PermanentlyFailed => {
-                debug!(url = %self.url(), "URL is in DLQ; acking without fetch");
-                metrics::counter!(
-                    crate::metrics::URLS_SKIPPED_TOTAL,
-                    "reason" => crate::metrics::SKIP_ALREADY_DLQ,
-                )
-                .increment(1);
-                let _ = self.deps.frontier.ack(self.attempt()).await;
-                true
-            }
-            _ => false,
-        }
     }
 
     /// Returns `true` iff politeness allows the fetch. `false` means

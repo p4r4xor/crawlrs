@@ -110,7 +110,7 @@ async fn build_redis_pool(config: &CrawlrsConfig) -> Result<bb8::Pool<RedisConne
     // rather than silently producing a connection failure.
     if config.redis.url.starts_with("redis-sentinel://") {
         bail!(
-            "redis-sentinel:// URLs aren't supported yet (Phase 6a v1); \
+            "redis-sentinel:// URLs aren't supported yet; \
              use redis:// against a Sentinel-aware proxy or pin a primary"
         );
     }
@@ -165,9 +165,9 @@ fn build_politeness_config(config: &CrawlrsConfig) -> CorePolitenessConfig {
             initial_backoff: config.politeness.backoff.initial_backoff,
             max_backoff: config.politeness.backoff.max_backoff,
             multiplier: config.politeness.backoff.multiplier,
-            circuit_open_after_failures: config.politeness.backoff.circuit_open_after_failures,
+            failure_threshold: config.politeness.backoff.failure_threshold,
         },
-        manual_excludes: config.politeness.manual_excludes.clone(),
+        blocklist: config.politeness.blocklist.clone(),
         per_domain: config
             .politeness
             .per_domain
@@ -191,7 +191,6 @@ fn build_runtime_config(config: &CrawlrsConfig) -> CrawlerConfig {
         user_agent: config.fetch.user_agent.clone(),
         max_depth: config.runtime.max_depth,
         max_retries: config.runtime.max_retries,
-        cross_run_dedup: config.runtime.cross_run_dedup,
         pod_ordinal: pod_ordinal_from_env(),
         link_dispatch: config.runtime.link_dispatch,
         ..CrawlerConfig::default()

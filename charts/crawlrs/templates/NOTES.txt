@@ -25,7 +25,7 @@ kubectl exec -n {{ .Release.Namespace }} \
   {{ include "crawlrs.fullname" . }}-0 -- \
   wget -qO- http://localhost:{{ .Values.server.port }}/metrics | head
 
-# Per-pod stable DNS (for vmsingle scrape config in Phase 6c):
+# Per-pod stable DNS:
 {{- range $i, $_ := until (int .Values.replicaCount) }}
   {{ include "crawlrs.fullname" $ }}-{{ $i }}.{{ include "crawlrs.headlessServiceName" $ }}.{{ $.Release.Namespace }}.svc.cluster.local:{{ $.Values.server.port }}
 {{- end }}
@@ -46,7 +46,7 @@ Secret via secrets.existingSecret.
 
 {{- if .Values.o11y.enabled }}
 
-# Observability stack (Phase 6c)
+# Observability stack
 
 vmsingle  : http://{{ include "crawlrs.vmsingleName" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.o11y.vmsingle.service.port }}
             (built-in PromQL UI at /vmui)

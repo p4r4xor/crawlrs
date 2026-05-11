@@ -36,8 +36,6 @@ pub const PROCESS_FDS: &str = "crawlrs_process_fds";
 pub const TOKIO_ALIVE_TASKS: &str = "crawlrs_tokio_alive_tasks";
 pub const TOKIO_WORKERS: &str = "crawlrs_tokio_workers";
 
-pub const SKIP_ALREADY_SUCCEEDED: &str = "already_succeeded";
-pub const SKIP_ALREADY_DLQ: &str = "already_dlq";
 pub const SKIP_POLITENESS_DISALLOWED: &str = "politeness_disallowed";
 pub const SKIP_DEPTH_LIMIT: &str = "depth_limit";
 

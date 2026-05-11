@@ -118,7 +118,7 @@ async fn end_to_end_against_postgres_metadata_store() {
             initial_backoff: Duration::from_millis(50),
             max_backoff: Duration::from_millis(200),
             multiplier: 2.0,
-            circuit_open_after_failures: 100,
+            failure_threshold: 100,
         },
         ..Default::default()
     };
@@ -154,7 +154,6 @@ async fn end_to_end_against_postgres_metadata_store() {
         max_idle_sleep: Duration::from_millis(200),
         error_backoff: Duration::from_millis(200),
         max_retries: 3,
-        cross_run_dedup: true,
         pod_ordinal: 0,
         restart_policy: Default::default(),
         link_dispatch: Default::default(),

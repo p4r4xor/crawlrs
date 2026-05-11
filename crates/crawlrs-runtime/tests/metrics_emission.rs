@@ -28,7 +28,7 @@ fn metric_name_contract_holds() {
     metrics::counter!(crawlrs_runtime::metrics::URLS_FAILED_TOTAL, "kind" => "other").increment(1);
     metrics::counter!(
         crawlrs_runtime::metrics::URLS_SKIPPED_TOTAL,
-        "reason" => crawlrs_runtime::metrics::SKIP_ALREADY_SUCCEEDED,
+        "reason" => crawlrs_runtime::metrics::SKIP_POLITENESS_DISALLOWED,
     )
     .increment(1);
     metrics::gauge!(crawlrs_runtime::metrics::WORKERS_ACTIVE).set(0.0);

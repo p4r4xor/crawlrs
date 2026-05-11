@@ -427,8 +427,8 @@ impl RedisFrontier {
     /// Refresh the periodic frontier gauges:
     /// `crawlrs_frontier_pending_claims{shard}` (XLEN per shard) and
     /// `crawlrs_frontier_pool_pending` (bb8 pool active count).
-    /// Called by the binary's maintenance loop per scrape interval
-    /// (Phase 6); not on the hot path because XLEN per shard per
+    /// Called by the binary's maintenance loop per scrape interval;
+    /// not on the hot path because XLEN per shard per
     /// claim would dominate Redis traffic at scale.
     pub async fn record_pending_metrics(&self) -> Result<()> {
         let depths = self.shard_depths().await?;

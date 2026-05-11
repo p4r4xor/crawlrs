@@ -59,7 +59,7 @@ data:
     initial_backoff             = {{ .Values.politeness.backoff.initialBackoff | quote }}
     max_backoff                 = {{ .Values.politeness.backoff.maxBackoff | quote }}
     multiplier                  = {{ .Values.politeness.backoff.multiplier | float64 }}
-    circuit_open_after_failures = {{ .Values.politeness.backoff.circuitOpenAfterFailures | int64 }}
+    failure_threshold           = {{ .Values.politeness.backoff.failureThreshold | int64 }}
 
     [runtime]
     workers          = {{ .Values.runtime.workers | int64 }}
@@ -67,7 +67,6 @@ data:
     max_depth        = {{ .Values.runtime.maxDepth | int64 }}
     {{- end }}
     max_retries      = {{ .Values.runtime.maxRetries | int64 }}
-    cross_run_dedup  = {{ .Values.runtime.crossRunDedup }}
     link_dispatch    = {{ .Values.runtime.linkDispatch | quote }}
 
     [store]

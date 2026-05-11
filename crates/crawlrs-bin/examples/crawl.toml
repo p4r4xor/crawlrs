@@ -55,10 +55,10 @@ robots_ttl = "24h"
 initial_backoff             = "30s"
 max_backoff                 = "10m"
 multiplier                  = 2.0
-circuit_open_after_failures = 10
+failure_threshold           = 10
 
 # Hosts to never crawl (in addition to robots.txt).
-# manual_excludes = ["example.com", "do-not-crawl.org"]
+# blocklist = ["example.com", "do-not-crawl.org"]
 
 # Per-host overrides. Each entry can adjust host_delay and / or
 # obey_robots_txt for that host without touching the global default.
@@ -70,7 +70,6 @@ circuit_open_after_failures = 10
 workers          = 4
 max_depth        = 5      # null/unset = unbounded
 max_retries      = 5      # after this many consecutive failures, URL -> DLQ
-cross_run_dedup  = true   # skip URLs already succeeded in a prior run
 
 # Strategy for moving discovered outbound URLs into the Frontier.
 #

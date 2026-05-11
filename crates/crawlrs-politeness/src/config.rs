@@ -49,7 +49,7 @@ pub struct PolitenessConfig {
     /// Loaded from a file at startup typically; the runtime adds
     /// to this set if it observes runtime indicators (e.g. operator
     /// emails the project, gets the host blacklisted live).
-    pub manual_excludes: HashSet<String>,
+    pub blocklist: HashSet<String>,
 
     /// Per-domain overrides keyed by registrable domain. Resolution is
     /// exact-match in v1; glob/regex matching can be added without
@@ -65,7 +65,7 @@ impl Default for PolitenessConfig {
             robots_ttl: Duration::from_secs(24 * 60 * 60),
             user_agent: "crawlrs/0.0.1 (+https://github.com/p4r4xor/crawlrs)".into(),
             backoff: BackoffPolicy::default(),
-            manual_excludes: HashSet::new(),
+            blocklist: HashSet::new(),
             per_domain: HashMap::new(),
         }
     }
@@ -106,7 +106,7 @@ pub struct BackoffPolicy {
     /// After this many consecutive failures, the host's circuit is
     /// considered "open" and `check` returns `Disallow` rather than
     /// `Delay`. The runtime can probe with a manual reset later.
-    pub circuit_open_after_failures: u32,
+    pub failure_threshold: u32,
 }
 
 impl Default for BackoffPolicy {
@@ -115,7 +115,7 @@ impl Default for BackoffPolicy {
             initial_backoff: Duration::from_secs(30),
             max_backoff: Duration::from_secs(600),
             multiplier: 2.0,
-            circuit_open_after_failures: 10,
+            failure_threshold: 10,
         }
     }
 }

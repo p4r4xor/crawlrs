@@ -155,7 +155,7 @@ volume at `store.backend.path`. Blobs written there are lost on pod
 restart. Acceptable for sandboxes; production should use
 `store.backend.kind=s3`.
 
-A future revision (likely Phase 6c.x) will add a
+A future revision will add a
 `volumeClaimTemplates` mode for persistent local storage if a real
 use case emerges.
 

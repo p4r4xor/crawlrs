@@ -90,7 +90,7 @@ timeoutSeconds: {{ .probe.timeoutSeconds | int64 }}
 failureThreshold: {{ .probe.failureThreshold | int64 }}
 {{- end -}}
 
-{{/* o11y helpers (Phase 6c). */}}
+{{/* o11y helpers */}}
 {{- define "crawlrs.vmsingleName" -}}
 {{- printf "%s-vmsingle" (include "crawlrs.fullname" .) | trunc 63 | trimSuffix "-" -}}
 {{- end -}}

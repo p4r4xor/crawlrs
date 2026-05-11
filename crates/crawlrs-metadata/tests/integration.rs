@@ -228,7 +228,12 @@ async fn mark_permanently_failed_lands_in_dlq() {
 }
 
 #[tokio::test]
-async fn cross_run_dedup_lookup_works() {
+async fn get_returns_state_from_prior_run() {
+    // `get(url)` is the operator-facing read of the metadata ledger:
+    // "what state is this URL in right now, including last successful
+    // run + blob path?" Used by operator forensics and DLQ queries;
+    // no longer on the hot path (cross-run dedup moved to the
+    // frontier bloom filter).
     let fx = fixture().await;
     let store = PostgresMetadataStore::with_pool(fx.pool.clone());
     let url = unique_url("cross-run");

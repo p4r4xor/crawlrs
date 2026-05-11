@@ -25,9 +25,6 @@ crawlrs:
 
   replicaCount: 1
 
-  # Resource asks scaled for a developer laptop. The crawler itself
-  # is mostly IO-bound; bump cpu.limit if you increase `runtime.workers`
-  # well past 50 and watch CPU saturation in Grafana.
   resources:
     requests:
       cpu: 200m
@@ -37,17 +34,12 @@ crawlrs:
       memory: 2Gi
 
   runtime:
-    # Starting low to find the memory ceiling on this laptop. Each
-    # worker holds a tokio task + Redis/PG connection pools + lol_html
-    # parser state (~30-50MB at peak). 50 workers OOM'd at the 2Gi
-    # limit; ramp up after the stack comes up cleanly.
     workers: 10
     maxDepth: 4
     maxRetries: 5
-    crossRunDedup: true
 
   fetch:
-    maxBodyBytes: 5242880  # 5 MiB; truncate larger bodies
+    maxBodyBytes: 5242880
     userAgent: "crawlrs-local/0.0.1 (+https://github.com/p4r4xor/crawlrs)"
     defaultTimeout: "30s"
 
@@ -59,13 +51,11 @@ crawlrs:
       initialBackoff: "30s"
       maxBackoff: "10m"
       multiplier: 2.0
-      circuitOpenAfterFailures: 10
+      failureThreshold: 10
 
   store:
     parquet: true
-    warc: false  # Disable archival mirror locally to halve disk usage;
-                 # flip on for research-mode runs that need byte-exact
-                 # HTTP wire framing preserved.
+    warc: false
     backend:
       kind: local
       path: /var/lib/crawlrs/data

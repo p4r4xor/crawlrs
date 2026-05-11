@@ -71,13 +71,6 @@ pub struct CrawlerConfig {
     /// down on hostile networks, up on tolerant corpora.
     pub max_retries: u32,
 
-    /// When true, every claimed URL is checked against the metadata
-    /// ledger before fetching; if a prior run already succeeded, the
-    /// runtime acks immediately without re-fetching. Costs one
-    /// metadata `get` per claim. Disable for runs that *want* to
-    /// re-fetch (re-crawl mode, content-freshness validation).
-    pub cross_run_dedup: bool,
-
     /// StatefulSet pod ordinal for this process. Combined with each
     /// worker's task index it forms the [`crawlrs_core::WorkerIdentity`]
     /// rendered as the Redis Streams consumer name (`pod-N:M`). Stable
@@ -120,7 +113,6 @@ impl Default for CrawlerConfig {
             max_idle_sleep: Duration::from_secs(5),
             error_backoff: Duration::from_secs(1),
             max_retries: 5,
-            cross_run_dedup: true,
             pod_ordinal: 0,
             restart_policy: crate::supervisor::RestartPolicy::default(),
             link_dispatch: LinkDispatch::default(),

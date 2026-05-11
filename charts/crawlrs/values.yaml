@@ -60,13 +60,12 @@ politeness:
     initialBackoff: "30s"
     maxBackoff: "10m"
     multiplier: 2.0
-    circuitOpenAfterFailures: 10
+    failureThreshold: 10
 
 runtime:
   workers: 4
   maxDepth: 5
   maxRetries: 5
-  crossRunDedup: true
   # Strategy for moving discovered outbound URLs into the Frontier.
   # "direct" (default): worker calls Frontier::submit_batch itself
   # after the metadata commit; loses URLs during transient Frontier
@@ -141,7 +140,6 @@ secrets:
     s3AccessKeyId: ""
     s3SecretAccessKey: ""
 
-# ---- Pod / container shape ------------------------------------------
 resources:
   requests:
     cpu: 250m
@@ -204,7 +202,6 @@ serviceAccount:
   name: ""
   annotations: {}
 
-# ---- Bundled observability (Phase 6c) -------------------------------
 # The chart ships its own vmsingle + Grafana so the crawler stack is
 # self-contained. Operators with their own Prometheus / VM / Grafana
 # fleet should set `o11y.enabled: false` and point their own scraper
