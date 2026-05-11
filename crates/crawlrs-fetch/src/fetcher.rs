@@ -10,6 +10,7 @@ use crawlrs_core::{
 };
 use futures::StreamExt;
 use wreq::{Client, redirect};
+use wreq_util::Emulation;
 
 use crate::config::WreqFetcherConfig;
 
@@ -21,11 +22,18 @@ pub struct WreqFetcher {
 impl WreqFetcher {
     pub fn new(config: WreqFetcherConfig) -> Result<Self> {
         let mut client_builder = Client::builder()
-            .emulation(config.emulation)
             .connect_timeout(config.connect_timeout)
             .timeout(config.default_timeout)
             .pool_max_idle_per_host(config.pool_max_idle_per_host)
             .redirect(redirect::Policy::limited(config.max_redirects));
+
+        // Pinned profile -> lock it on the client so the connection
+        // pool can fully reuse. Unpinned -> leave the client neutral;
+        // `fetch()` attaches a fresh `Emulation::random()` per request
+        // for fingerprint diversity.
+        if let Some(emulation) = config.emulation {
+            client_builder = client_builder.emulation(emulation);
+        }
 
         if let Some(user_agent_override) = &config.user_agent {
             client_builder = client_builder.user_agent(user_agent_override.as_str());
@@ -53,7 +61,7 @@ impl WreqFetcher {
 #[async_trait]
 impl Fetcher for WreqFetcher {
     async fn fetch(&self, request: FetchRequest) -> Result<FetchResponse> {
-        let kind_label = crate::metrics::fetch_kind_label(&request.url);
+        let kind_label = crate::classify::fetch_kind(&request.url);
         let proxy_selection = self.config.proxy.resolve(&request).await?;
         let started_at = chrono::Utc::now();
         let start_instant = Instant::now();
@@ -62,6 +70,16 @@ impl Fetcher for WreqFetcher {
             .client
             .get(request.url.as_str())
             .timeout(request.timeout);
+
+        // No pinned profile -> roll a fresh random emulation per
+        // request. The client-level fingerprint stays unset so the
+        // per-request override fully governs TLS / HTTP/2 / headers
+        // for this fetch only. wreq pools connections per-emulation,
+        // so a same-emulation hit can still reuse a pooled connection
+        // on the next request that happens to land on the same profile.
+        if self.config.emulation.is_none() {
+            request_builder = request_builder.emulation(Emulation::random());
+        }
 
         for (header_name, header_value) in &request.headers {
             request_builder = request_builder.header(header_name.as_str(), header_value.as_str());
@@ -79,6 +97,14 @@ impl Fetcher for WreqFetcher {
 
         let result: Result<FetchResponse> = match request_builder.send().await {
             Ok(response) => {
+                // Stage split: `request` covers connect + TLS + send +
+                // headers (everything wreq did before returning);
+                // `body` covers the streaming body read below. Total is
+                // emitted separately so dashboards can compare the
+                // sum-of-parts to the wall-clock to spot drift.
+                let request_elapsed = start_instant.elapsed();
+                let body_started_at = Instant::now();
+
                 let status_code = response.status().as_u16();
                 let final_uri_string = response.uri().to_string();
                 let response_headers = response
@@ -90,6 +116,9 @@ impl Fetcher for WreqFetcher {
                         })
                     })
                     .collect::<HashMap<_, _>>();
+                let content_type_label = crate::classify::content_type(
+                    response_headers.get("content-type").map(String::as_str),
+                );
                 let redirect_history = response.extensions().get::<redirect::History>().cloned();
 
                 // Pre-check Content-Length when the server provided it.
@@ -106,6 +135,25 @@ impl Fetcher for WreqFetcher {
                 }
 
                 let response_body = read_body(response, self.config.max_body_bytes).await?;
+                let body_elapsed = body_started_at.elapsed();
+                metrics::histogram!(
+                    crate::metrics::FETCH_STAGE_SECONDS,
+                    "kind" => kind_label,
+                    "stage" => crate::classify::STAGE_REQUEST,
+                )
+                .record(request_elapsed.as_secs_f64());
+                metrics::histogram!(
+                    crate::metrics::FETCH_STAGE_SECONDS,
+                    "kind" => kind_label,
+                    "stage" => crate::classify::STAGE_BODY,
+                )
+                .record(body_elapsed.as_secs_f64());
+                metrics::histogram!(
+                    crate::metrics::FETCH_BODY_BYTES,
+                    "kind" => kind_label,
+                    "content_type" => content_type_label,
+                )
+                .record(response_body.len() as f64);
 
                 let final_url =
                     CanonicalUrl::parse(&final_uri_string).unwrap_or_else(|_| request.url.clone());
@@ -158,12 +206,17 @@ impl Fetcher for WreqFetcher {
                 "kind" => kind_label,
             )
             .record(resp.duration.as_secs_f64());
+            metrics::histogram!(
+                crate::metrics::FETCH_STAGE_SECONDS,
+                "kind" => kind_label,
+                "stage" => crate::classify::STAGE_TOTAL,
+            )
+            .record(resp.duration.as_secs_f64());
             metrics::counter!(
                 crate::metrics::FETCH_RESPONSE_TOTAL,
-                "status_class" => crate::metrics::status_class_label(resp.status),
+                "status_class" => crate::classify::status_class(resp.status),
             )
             .increment(1);
-            metrics::histogram!(crate::metrics::FETCH_BODY_BYTES).record(resp.body.len() as f64);
         }
         result
     }

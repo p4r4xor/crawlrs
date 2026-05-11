@@ -75,7 +75,7 @@ fn metric_name_contract_holds() {
     // ---- fetch layer ----
     metrics::histogram!(
         crawlrs_fetch::metrics::FETCH_SECONDS,
-        "kind" => crawlrs_fetch::metrics::KIND_PAGE,
+        "kind" => crawlrs_fetch::classify::KIND_PAGE,
     )
     .record(0.5);
     metrics::counter!(
@@ -83,7 +83,18 @@ fn metric_name_contract_holds() {
         "status_class" => "2xx",
     )
     .increment(1);
-    metrics::histogram!(crawlrs_fetch::metrics::FETCH_BODY_BYTES).record(1024.0);
+    metrics::histogram!(
+        crawlrs_fetch::metrics::FETCH_BODY_BYTES,
+        "kind" => "page",
+        "content_type" => "html",
+    )
+    .record(1024.0);
+    metrics::histogram!(
+        crawlrs_fetch::metrics::FETCH_STAGE_SECONDS,
+        "kind" => "page",
+        "stage" => "total",
+    )
+    .record(0.5);
 
     // ---- parse layer ----
     metrics::histogram!(crawlrs_parse::metrics::PARSE_SECONDS).record(0.005);

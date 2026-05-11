@@ -47,6 +47,23 @@ pub enum FailureKind {
     Other,
 }
 
+impl FailureKind {
+    /// Stable lowercase wire-format string for the variant. Used as
+    /// the `kind` label value on failure-related metrics, and as a
+    /// structured-log field. The strings are part of the operational
+    /// contract: dashboards and alerts depend on them, so don't
+    /// rename a variant's `as_str` without also updating consumers.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::TooManyRequests => "too_many_requests",
+            Self::ServiceUnavailable => "service_unavailable",
+            Self::ConnectReset => "connect_reset",
+            Self::Timeout => "timeout",
+            Self::Other => "other",
+        }
+    }
+}
+
 #[async_trait]
 pub trait Politeness: Send + Sync {
     /// May this URL be fetched right now? Honors per-host wake-time,

@@ -1,7 +1,7 @@
 # Local kind cluster for crawlrs end-to-end deployment.
 #
 # Single control-plane node (no separate worker). Pinned to K8s 1.31
-# which matches the version tier most managed clouds (EKS, GKE, AKS)
+# which matches the version tier most managed clouds (EKS, GKE etc)
 # expose; staying close to that floor means YAMLs that work locally
 # work in prod with no rev-bump surprises.
 #

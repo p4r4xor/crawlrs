@@ -31,10 +31,12 @@ pub struct CrawlerConfig {
     /// at a time.
     pub workers: usize,
 
-    /// User-agent header sent on every fetch. Should match the
-    /// politeness layer's `user_agent` so robots.txt rules apply
-    /// consistently.
-    pub user_agent: String,
+    /// User-Agent header sent on every fetch. `None` (recommended)
+    /// lets wreq's emulation profile drive the UA so the wire string
+    /// stays coherent with the TLS / HTTP/2 fingerprint. Set this only
+    /// when impersonating a specific crawler identity; mismatched
+    /// browser-fingerprint vs. UA is a textbook bot-detection signal.
+    pub user_agent: Option<String>,
 
     /// Maximum link depth from any seed. `None` means unbounded.
     /// Discovered links beyond this depth are dropped at submit time.
@@ -110,7 +112,7 @@ impl Default for CrawlerConfig {
     fn default() -> Self {
         Self {
             workers: 4,
-            user_agent: "crawlrs/0.0.1 (+https://github.com/p4r4xor/crawlrs)".into(),
+            user_agent: None,
             max_depth: Some(5),
             maintenance_interval: Duration::from_secs(30),
             empty_queue_poll: Duration::from_millis(500),
@@ -168,7 +170,7 @@ impl Crawler {
         info!(
             workers = self.deps.config.workers,
             max_depth = ?self.deps.config.max_depth,
-            user_agent = %self.deps.config.user_agent,
+            user_agent = self.deps.config.user_agent.as_deref().unwrap_or("<emulation default>"),
             "Crawler starting",
         );
 

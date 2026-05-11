@@ -1,0 +1,51 @@
+{{- if and .Values.o11y.enabled .Values.o11y.vmsingle.cadvisor.enabled }}
+# RBAC for vmsingle to scrape kubelet's cAdvisor endpoint.
+#
+# vmsingle's scrape-config (`role: node` Kubernetes service discovery)
+# needs to LIST/WATCH nodes from the apiserver, then proxy through
+# `/api/v1/nodes/<name>/proxy/metrics/cadvisor` to each kubelet.
+# The ClusterRole below is the minimal grant for that path.
+#
+# Scope justification:
+#   nodes              get/list/watch  - service discovery
+#   nodes/proxy        get             - apiserver proxy to kubelet
+#   nodes/metrics      get             - direct kubelet metrics scope
+#   /metrics/cadvisor  get             - non-resource URL kubelet exposes
+#
+# Deliberately NOT granted: pods, services, endpoints, secrets,
+# anything cluster-mutating. vmsingle is a read-only scraper.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "crawlrs.vmsingleName" . }}
+  labels:
+    {{- include "crawlrs.componentLabels" (dict "component" "vmsingle" "context" .) | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "crawlrs.vmsingleName" . }}-cadvisor-scrape
+  labels:
+    {{- include "crawlrs.componentLabels" (dict "component" "vmsingle" "context" .) | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "nodes/proxy", "nodes/metrics"]
+    verbs: ["get", "list", "watch"]
+  - nonResourceURLs: ["/metrics", "/metrics/cadvisor"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "crawlrs.vmsingleName" . }}-cadvisor-scrape
+  labels:
+    {{- include "crawlrs.componentLabels" (dict "component" "vmsingle" "context" .) | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "crawlrs.vmsingleName" . }}-cadvisor-scrape
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "crawlrs.vmsingleName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

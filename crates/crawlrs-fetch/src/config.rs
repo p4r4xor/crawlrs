@@ -13,10 +13,18 @@ use crate::proxy::NoProxyResolver;
 #[derive(Clone)]
 pub struct WreqFetcherConfig {
     /// Browser-fingerprint profile to emulate (TLS + HTTP/2 + headers).
-    pub emulation: Emulation,
+    /// `None` rotates randomly across the set of profiles `wreq_util`
+    /// ships, picking a fresh profile each time a `WreqFetcher` is
+    /// built. Pinning to a specific profile only when the operator
+    /// has a concrete reason (e.g. reproducible tests, a target site
+    /// that gates on a particular fingerprint) keeps our default
+    /// behaviour broadly anti-bot-resistant rather than predictable.
+    pub emulation: Option<Emulation>,
 
     /// Override the User-Agent. `None` falls through to the value baked into
-    /// the emulation profile (recommended for fingerprint coherence).
+    /// the emulation profile (recommended for fingerprint coherence; lying
+    /// about the UA while sending a Chrome TLS fingerprint is the textbook
+    /// way to get flagged).
     pub user_agent: Option<String>,
 
     /// Per-request total timeout (used when [`FetchRequest::timeout`] is
@@ -47,7 +55,7 @@ pub struct WreqFetcherConfig {
 impl Default for WreqFetcherConfig {
     fn default() -> Self {
         Self {
-            emulation: Emulation::Chrome145,
+            emulation: None,
             user_agent: None,
             default_timeout: Duration::from_secs(30),
             connect_timeout: Duration::from_secs(10),

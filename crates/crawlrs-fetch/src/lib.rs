@@ -9,6 +9,7 @@
 //!
 //! [`ProxyResolver`]: crawlrs_core::ProxyResolver
 
+pub mod classify;
 pub mod config;
 pub mod fetcher;
 pub mod metrics;

@@ -70,8 +70,8 @@ impl std::fmt::Debug for RedisPoliteness {
         f.debug_struct("RedisPoliteness")
             .field("run_id", &self.keys.run_id())
             .field("owned_shards", &self.owned_shards)
-            .field("min_delay", &self.config.min_delay)
-            .field("honor_robots_txt", &self.config.honor_robots_txt)
+            .field("host_delay", &self.config.host_delay)
+            .field("obey_robots_txt", &self.config.obey_robots_txt)
             .field("manual_excludes", &self.config.manual_excludes.len())
             .field("per_domain_overrides", &self.config.per_domain.len())
             .finish()
@@ -101,14 +101,14 @@ impl RedisPoliteness {
             sharding_policy.clone(),
             fetcher,
             config.user_agent.clone(),
-            config.robots_cache_ttl,
+            config.robots_ttl,
         );
 
         info!(
             run_id = keys.run_id(),
             owned_shards = ?owned_shards,
-            min_delay_ms = config.min_delay.as_millis() as u64,
-            honor_robots_txt = config.honor_robots_txt,
+            host_delay_ms = config.host_delay.as_millis() as u64,
+            obey_robots_txt = config.obey_robots_txt,
             "RedisPoliteness ready",
         );
 
@@ -182,20 +182,20 @@ impl RedisPoliteness {
         Ok(())
     }
 
-    fn effective_min_delay(&self, host: &str) -> std::time::Duration {
+    fn effective_host_delay(&self, host: &str) -> std::time::Duration {
         self.config
             .per_domain
             .get(host)
-            .and_then(|o| o.min_delay)
-            .unwrap_or(self.config.min_delay)
+            .and_then(|o| o.host_delay)
+            .unwrap_or(self.config.host_delay)
     }
 
-    fn effective_honor_robots(&self, host: &str) -> bool {
+    fn effective_obey_robots(&self, host: &str) -> bool {
         self.config
             .per_domain
             .get(host)
-            .and_then(|o| o.honor_robots_txt)
-            .unwrap_or(self.config.honor_robots_txt)
+            .and_then(|o| o.obey_robots_txt)
+            .unwrap_or(self.config.obey_robots_txt)
     }
 
     fn is_excluded(&self, host: &str) -> bool {
@@ -217,7 +217,7 @@ impl Politeness for RedisPoliteness {
         self.assert_owned(shard).map_err(Error::from)?;
 
         // Robots check (config-gated per-host).
-        if self.effective_honor_robots(host) {
+        if self.effective_obey_robots(host) {
             let allowed = self
                 .robots
                 .allowed(url, &self.config.user_agent)
@@ -277,7 +277,7 @@ impl Politeness for RedisPoliteness {
         let shard = self.sharding_policy.shard_key(url);
         self.assert_owned(shard).map_err(Error::from)?;
 
-        let delay = self.effective_min_delay(host);
+        let delay = self.effective_host_delay(host);
         let next_allowed = SystemTime::now() + delay;
         let sched_key = self.keys.hostsched(shard);
         let state_key = self.keys.hoststate(shard, host);

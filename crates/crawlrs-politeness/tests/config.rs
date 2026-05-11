@@ -9,8 +9,8 @@ use crawlrs_politeness::{BackoffPolicy, PolitenessConfig, PolitenessOverride};
 #[test]
 fn defaults_are_sensible() {
     let c = PolitenessConfig::default();
-    assert_eq!(c.min_delay, Duration::from_secs(1));
-    assert!(c.honor_robots_txt);
+    assert_eq!(c.host_delay, Duration::from_secs(1));
+    assert!(c.obey_robots_txt);
     assert!(c.manual_excludes.is_empty());
     assert!(c.per_domain.is_empty());
 }
@@ -18,8 +18,8 @@ fn defaults_are_sensible() {
 #[test]
 fn override_default_inherits_everything() {
     let o = PolitenessOverride::default();
-    assert_eq!(o.min_delay, None);
-    assert_eq!(o.honor_robots_txt, None);
+    assert_eq!(o.host_delay, None);
+    assert_eq!(o.obey_robots_txt, None);
 }
 
 #[test]

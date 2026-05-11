@@ -319,8 +319,10 @@ impl UrlPipeline {
     /// path already finalized the URL (handled retry budget + ack/nack).
     async fn fetch(&self) -> Option<FetchResponse> {
         let mut req = FetchRequest::new(self.url().clone());
-        req.headers
-            .insert("User-Agent".into(), self.deps.config.user_agent.clone());
+        if let Some(user_agent) = &self.deps.config.user_agent {
+            req.headers
+                .insert("User-Agent".into(), user_agent.clone());
+        }
 
         let resp = match self.deps.fetcher.fetch(req).await {
             Ok(r) => r,
@@ -471,7 +473,7 @@ impl UrlPipeline {
     async fn handle_failure(&self, kind: FailureKind, reason: &str) {
         metrics::counter!(
             crate::metrics::URLS_FAILED_TOTAL,
-            "kind" => crate::metrics::failure_kind_label(kind),
+            "kind" => kind.as_str(),
         )
         .increment(1);
         let new_count = match self.deps.metadata.mark_failed(self.url(), kind).await {

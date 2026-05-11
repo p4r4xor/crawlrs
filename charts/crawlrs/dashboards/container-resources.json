@@ -1,8 +1,9 @@
 {
-  "uid": "crawlrs-frontier-storage",
-  "title": "Frontier + Storage",
+  "uid": "crawlrs-resources",
+  "title": "Container Resources",
   "tags": [
-    "crawlrs"
+    "crawlrs",
+    "resources"
   ],
   "timezone": "browser",
   "schemaVersion": 39,
@@ -12,66 +13,63 @@
     "to": "now"
   },
   "templating": {
-    "list": [
-      {
-        "name": "shard",
-        "type": "query",
-        "label": "Shard",
-        "query": "label_values(crawlrs_frontier_pending_claims, shard)",
-        "datasource": {
-          "type": "prometheus",
-          "uid": "crawlrs-vm"
-        },
-        "refresh": 2,
-        "sort": 1,
-        "multi": true,
-        "includeAll": true,
-        "allValue": ".*",
-        "current": {
-          "selected": true,
-          "text": [
-            "All"
-          ],
-          "value": [
-            "$__all"
-          ]
-        }
-      }
-    ]
+    "list": []
   },
   "panels": [
     {
       "id": 1,
       "type": "timeseries",
-      "title": "Pending claims (total)",
-      "description": "Sum of `crawlrs_frontier_pending_claims` across shards. Filter to specific shards via the Shard variable. The adjacent panel surfaces the loudest 5 shards independently.",
+      "title": "Memory % of limit (cAdvisor working set / limit)",
+      "description": "container_memory_working_set_bytes / container_spec_memory_limit_bytes. cAdvisor's working set is what the kernel OOM killer compares against the limit, so this is the ratio that actually triggers OOMKill at 100%.",
       "datasource": {
         "type": "prometheus",
         "uid": "crawlrs-vm"
       },
       "targets": [
         {
-          "expr": "sum(crawlrs_frontier_pending_claims{shard=~\"$shard\"})",
-          "legendFormat": "total",
+          "expr": "100 * container_memory_working_set_bytes{namespace=\"crawlrs\", container=\"crawlrs\"} / on(pod, container) container_spec_memory_limit_bytes{namespace=\"crawlrs\", container=\"crawlrs\"}",
+          "legendFormat": "{{pod}}",
           "refId": "A"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "short",
-          "color": {
-            "mode": "palette-classic"
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 70
+              },
+              {
+                "color": "red",
+                "value": 85
+              }
+            ]
           },
           "custom": {
+            "thresholdsStyle": {
+              "mode": "line"
+            },
             "lineWidth": 2,
             "gradientMode": "opacity",
             "fillOpacity": 15,
             "showPoints": "never"
+          },
+          "color": {
+            "mode": "palette-classic"
           }
         }
       },
       "gridPos": {
-        "h": 8,
+        "h": 7,
         "w": 12,
         "x": 0,
         "y": 0
@@ -95,37 +93,35 @@
     {
       "id": 2,
       "type": "timeseries",
-      "title": "Claim outcomes (by outcome)",
+      "title": "Container RSS (cAdvisor)",
+      "description": "container_memory_rss: anonymous + file pages mapped into the container. Diverges from process /proc rss when the container runs sidecars.",
       "datasource": {
         "type": "prometheus",
         "uid": "crawlrs-vm"
       },
       "targets": [
         {
-          "expr": "sum by (outcome) (rate(crawlrs_frontier_claim_total{shard=~\"$shard\"}[5m]))",
-          "legendFormat": "{{outcome}}",
+          "expr": "container_memory_rss{namespace=\"crawlrs\", container=\"crawlrs\"}",
+          "legendFormat": "{{pod}}",
           "refId": "A"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "ops",
+          "unit": "bytes",
           "color": {
             "mode": "palette-classic"
           },
           "custom": {
             "lineWidth": 2,
             "gradientMode": "opacity",
-            "fillOpacity": 50,
-            "showPoints": "never",
-            "stacking": {
-              "mode": "normal"
-            }
+            "fillOpacity": 15,
+            "showPoints": "never"
           }
         }
       },
       "gridPos": {
-        "h": 8,
+        "h": 7,
         "w": 12,
         "x": 12,
         "y": 0
@@ -144,27 +140,32 @@
           "mode": "multi",
           "sort": "desc"
         }
-      },
-      "description": "Rate of frontier claim attempts, broken down by outcome only (success / empty / conflict). Shard is summed out of the visual to keep the panel readable at high shard counts; use the Shard variable to drill in."
+      }
     },
     {
       "id": 3,
       "type": "timeseries",
-      "title": "Frontier op latency p95 by op",
+      "title": "Process RSS (heartbeat /proc/self/status)",
+      "description": "VmRSS from /proc/self/status, scraped via the crawler's own /metrics. Should track cAdvisor RSS closely; a steady gap means the process is allocating but not touching the pages.",
       "datasource": {
         "type": "prometheus",
         "uid": "crawlrs-vm"
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.95, sum by (op, le) (rate(crawlrs_frontier_call_seconds_bucket[5m])))",
-          "legendFormat": "{{op}}",
+          "expr": "crawlrs_process_rss_bytes",
+          "legendFormat": "{{instance}}",
           "refId": "A"
+        },
+        {
+          "expr": "crawlrs_process_hwm_bytes",
+          "legendFormat": "{{instance}} hwm",
+          "refId": "B"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "s",
+          "unit": "bytes",
           "color": {
             "mode": "palette-classic"
           },
@@ -180,7 +181,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 8
+        "y": 7
       },
       "options": {
         "legend": {
@@ -201,27 +202,22 @@
     {
       "id": 4,
       "type": "timeseries",
-      "title": "In-flight latency (claim → ack) p50 / p95",
-      "description": "Surfaces stranded entries earlier than XAUTOCLAIM (5min threshold).",
+      "title": "Allocator fragmentation: VmData - RSS",
+      "description": "Gap between what the program owns (data+stack+heap) and what's resident. A widening gap suggests the allocator is reserving address space it never returns to the OS; a narrowing gap with rising RSS suggests genuine retained allocation.",
       "datasource": {
         "type": "prometheus",
         "uid": "crawlrs-vm"
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.50, sum by (le) (rate(crawlrs_frontier_in_flight_seconds_bucket[5m])))",
-          "legendFormat": "p50",
+          "expr": "crawlrs_process_data_bytes - crawlrs_process_rss_bytes",
+          "legendFormat": "{{instance}} data-rss",
           "refId": "A"
-        },
-        {
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(crawlrs_frontier_in_flight_seconds_bucket[5m])))",
-          "legendFormat": "p95",
-          "refId": "B"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "s",
+          "unit": "bytes",
           "color": {
             "mode": "palette-classic"
           },
@@ -237,7 +233,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 8
+        "y": 7
       },
       "options": {
         "legend": {
@@ -257,51 +253,23 @@
     },
     {
       "id": 5,
-      "type": "heatmap",
-      "title": "Submit batch size distribution",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "crawlrs-vm"
-      },
-      "targets": [
-        {
-          "expr": "sum by (le) (rate(crawlrs_frontier_submit_batch_size_bucket[5m]))",
-          "format": "heatmap",
-          "legendFormat": "{{le}}",
-          "refId": "A"
-        }
-      ],
-      "options": {
-        "calculate": false,
-        "yAxis": {
-          "unit": "short"
-        }
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 15
-      }
-    },
-    {
-      "id": 6,
       "type": "timeseries",
-      "title": "Store rotation rate by format",
+      "title": "Tokio alive tasks",
+      "description": "Total tasks the tokio runtime is tracking. Should plateau at workers + a few maintenance / supervisor tasks. Linear climb is the canonical signal of a leaked spawn.",
       "datasource": {
         "type": "prometheus",
         "uid": "crawlrs-vm"
       },
       "targets": [
         {
-          "expr": "sum by (format) (rate(crawlrs_store_rotation_total[5m]))",
-          "legendFormat": "{{format}}",
+          "expr": "crawlrs_tokio_alive_tasks",
+          "legendFormat": "{{instance}}",
           "refId": "A"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "ops",
+          "unit": "short",
           "color": {
             "mode": "palette-classic"
           },
@@ -314,10 +282,62 @@
         }
       },
       "gridPos": {
-        "h": 8,
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 14
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "calcs": [
+            "mean",
+            "lastNotNull",
+            "max"
+          ],
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "CPU usage (cores)",
+      "description": "rate(container_cpu_usage_seconds_total[1m]). At the 2-core limit this maxes at 2.0; sustained at-limit CPU is a saturation signal worth correlating with pipeline latency.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "crawlrs-vm"
+      },
+      "targets": [
+        {
+          "expr": "rate(container_cpu_usage_seconds_total{namespace=\"crawlrs\", container=\"crawlrs\"}[1m])",
+          "legendFormat": "{{pod}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 2,
+            "gradientMode": "opacity",
+            "fillOpacity": 15,
+            "showPoints": "never"
+          }
+        }
+      },
+      "gridPos": {
+        "h": 7,
         "w": 12,
         "x": 12,
-        "y": 15
+        "y": 14
       },
       "options": {
         "legend": {
@@ -338,41 +358,43 @@
     {
       "id": 7,
       "type": "timeseries",
-      "title": "Store buffer bytes (by format)",
-      "description": "Sum of in-memory buffer bytes per format across shards. Shard removed from the visual to bound cardinality; filter via the Shard variable.",
+      "title": "Process threads",
+      "description": "Thread count from /proc/self/status. tokio_workers is the configured pool size; this is the OS-level total. A growing gap usually means a blocking-pool task spawned and held a thread.",
       "datasource": {
         "type": "prometheus",
         "uid": "crawlrs-vm"
       },
       "targets": [
         {
-          "expr": "sum by (format) (max by (format, shard) (crawlrs_store_buffer_bytes{shard=~\"$shard\"}))",
-          "legendFormat": "{{format}}",
+          "expr": "crawlrs_process_threads",
+          "legendFormat": "{{instance}} threads",
           "refId": "A"
+        },
+        {
+          "expr": "crawlrs_tokio_workers",
+          "legendFormat": "{{instance}} tokio_workers",
+          "refId": "B"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "bytes",
+          "unit": "short",
           "color": {
             "mode": "palette-classic"
           },
           "custom": {
             "lineWidth": 2,
             "gradientMode": "opacity",
-            "fillOpacity": 50,
-            "showPoints": "never",
-            "stacking": {
-              "mode": "normal"
-            }
+            "fillOpacity": 15,
+            "showPoints": "never"
           }
         }
       },
       "gridPos": {
         "h": 7,
-        "w": 12,
+        "w": 8,
         "x": 0,
-        "y": 23
+        "y": 21
       },
       "options": {
         "legend": {
@@ -393,21 +415,22 @@
     {
       "id": 8,
       "type": "timeseries",
-      "title": "Store write latency p95 by format",
+      "title": "Open file descriptors",
+      "description": "/proc/self/fd entries: sockets, files, pipes, anon-inode fds. Sustained climb past steady state means a connection or file isn't being closed.",
       "datasource": {
         "type": "prometheus",
         "uid": "crawlrs-vm"
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.95, sum by (format, le) (rate(crawlrs_store_write_seconds_bucket[5m])))",
-          "legendFormat": "{{format}}",
+          "expr": "crawlrs_process_fds",
+          "legendFormat": "{{instance}}",
           "refId": "A"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "s",
+          "unit": "short",
           "color": {
             "mode": "palette-classic"
           },
@@ -421,9 +444,9 @@
       },
       "gridPos": {
         "h": 7,
-        "w": 12,
-        "x": 12,
-        "y": 23
+        "w": 8,
+        "x": 8,
+        "y": 21
       },
       "options": {
         "legend": {
@@ -443,132 +466,67 @@
     },
     {
       "id": 9,
-      "type": "timeseries",
-      "title": "Pool saturation",
-      "description": "Currently-outstanding bb8 / sqlx connections. Sustained near pool max = saturation.",
+      "type": "stat",
+      "title": "OOM events (cumulative)",
+      "description": "container_oom_events_total: kernel-recorded OOM kills against the cgroup. Non-zero means a pod was killed for memory; correlate with the working-set trace above.",
       "datasource": {
         "type": "prometheus",
         "uid": "crawlrs-vm"
       },
       "targets": [
         {
-          "expr": "max(crawlrs_frontier_pool_pending)",
-          "legendFormat": "frontier (redis)",
+          "expr": "sum(container_oom_events_total{namespace=\"crawlrs\", container=\"crawlrs\"})",
           "refId": "A"
-        },
-        {
-          "expr": "max(crawlrs_politeness_pool_pending)",
-          "legendFormat": "politeness (redis)",
-          "refId": "B"
-        },
-        {
-          "expr": "max(crawlrs_metadata_pool_pending)",
-          "legendFormat": "metadata (postgres)",
-          "refId": "C"
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "short",
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "lineWidth": 2,
-            "gradientMode": "opacity",
-            "fillOpacity": 15,
-            "showPoints": "never"
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
           }
         }
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none"
       },
       "gridPos": {
         "h": 7,
-        "w": 24,
-        "x": 0,
-        "y": 30
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "calcs": [
-            "mean",
-            "lastNotNull",
-            "max"
-          ],
-          "placement": "bottom"
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
+        "w": 8,
+        "x": 16,
+        "y": 21
       }
     },
     {
-      "id": 120,
+      "id": 10,
       "type": "timeseries",
-      "title": "Pending claims (top 5 shards)",
-      "description": "topk(5) outlier view of `crawlrs_frontier_pending_claims`. Pairs with the total panel: total tells you whether claims are draining, this tells you whether the load is balanced.",
+      "title": "Virtual address space (VmSize, VmPeak)",
+      "description": "VmSize is the current virtual-memory footprint; VmPeak is the high-water mark since process start. A flat VmPeak with rising RSS means the allocator isn't requesting more address space, just touching pages it already owns. A climbing VmPeak that never settles is the address-space-leak signature.",
       "datasource": {
         "type": "prometheus",
         "uid": "crawlrs-vm"
       },
       "targets": [
         {
-          "expr": "topk(5, max by (shard) (crawlrs_frontier_pending_claims{shard=~\"$shard\"}))",
-          "legendFormat": "shard {{shard}}",
+          "expr": "crawlrs_process_vsize_bytes",
+          "legendFormat": "{{instance}} vsize",
           "refId": "A"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "lineWidth": 2,
-            "gradientMode": "opacity",
-            "fillOpacity": 15,
-            "showPoints": "never"
-          }
-        }
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "calcs": [
-            "mean",
-            "lastNotNull",
-            "max"
-          ],
-          "placement": "bottom"
         },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 24,
-        "x": 0,
-        "y": 37
-      }
-    },
-    {
-      "id": 121,
-      "type": "timeseries",
-      "title": "Store buffer bytes (top 5 shards)",
-      "description": "topk(5) of `crawlrs_store_buffer_bytes` summed over format. Surfaces shards whose buffer keeps growing without rotating.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "crawlrs-vm"
-      },
-      "targets": [
         {
-          "expr": "topk(5, sum by (shard) (crawlrs_store_buffer_bytes{shard=~\"$shard\"}))",
-          "legendFormat": "shard {{shard}}",
-          "refId": "A"
+          "expr": "crawlrs_process_peak_bytes",
+          "legendFormat": "{{instance}} peak",
+          "refId": "B"
         }
       ],
       "fieldConfig": {
@@ -585,6 +543,63 @@
           }
         }
       },
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 28
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "calcs": [
+            "mean",
+            "lastNotNull",
+            "max"
+          ],
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Disk IO (bytes/sec)",
+      "description": "rate(container_fs_writes_bytes_total) and rate(container_fs_reads_bytes_total). Spikes on write track Parquet/WARC rotation; sustained read activity is unusual for a write-only crawler workload.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "crawlrs-vm"
+      },
+      "targets": [
+        {
+          "expr": "sum by (pod) (rate(container_fs_writes_bytes_total{namespace=\"crawlrs\", container=\"crawlrs\"}[1m]))",
+          "legendFormat": "{{pod}} write",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (pod) (rate(container_fs_reads_bytes_total{namespace=\"crawlrs\", container=\"crawlrs\"}[1m]))",
+          "legendFormat": "{{pod}} read",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 2,
+            "gradientMode": "opacity",
+            "fillOpacity": 15,
+            "showPoints": "never"
+          }
+        }
+      },
       "options": {
         "legend": {
           "displayMode": "table",
@@ -601,10 +616,67 @@
         }
       },
       "gridPos": {
-        "h": 8,
-        "w": 24,
+        "h": 7,
+        "w": 12,
         "x": 0,
-        "y": 45
+        "y": 35
+      }
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Network Traffic (bytes/sec)",
+      "description": "rate(container_network_receive_bytes_total) is what the crawler pulls from the open internet; rate(container_network_transmit_bytes_total) is mostly DNS + outbound headers. A growing receive line that doesn't translate into more crawled URLs suggests either large body sizes or response amplification.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "crawlrs-vm"
+      },
+      "targets": [
+        {
+          "expr": "sum by (pod) (rate(container_network_receive_bytes_total{namespace=\"crawlrs\"}[1m]))",
+          "legendFormat": "{{pod}} rx",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (pod) (rate(container_network_transmit_bytes_total{namespace=\"crawlrs\"}[1m]))",
+          "legendFormat": "{{pod}} tx",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 2,
+            "gradientMode": "opacity",
+            "fillOpacity": 15,
+            "showPoints": "never"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "calcs": [
+            "mean",
+            "lastNotNull",
+            "max"
+          ],
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 35
       }
     }
   ]

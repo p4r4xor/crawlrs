@@ -23,6 +23,19 @@ pub const WORKER_RESTARTS_TOTAL: &str = "crawlrs_worker_restarts_total";
 pub const OUTBOX_PUBLISHED_TOTAL: &str = "crawlrs_outbox_published_total";
 pub const DIRECT_DISPATCH_LOST_TOTAL: &str = "crawlrs_direct_dispatch_lost_total";
 
+// Process-health gauges; emitted by the maintenance heartbeat
+// alongside the structured log line so the same fields are both
+// searchable in logs and graphable in Grafana.
+pub const PROCESS_RSS_BYTES: &str = "crawlrs_process_rss_bytes";
+pub const PROCESS_HWM_BYTES: &str = "crawlrs_process_hwm_bytes";
+pub const PROCESS_VSIZE_BYTES: &str = "crawlrs_process_vsize_bytes";
+pub const PROCESS_PEAK_BYTES: &str = "crawlrs_process_peak_bytes";
+pub const PROCESS_DATA_BYTES: &str = "crawlrs_process_data_bytes";
+pub const PROCESS_THREADS: &str = "crawlrs_process_threads";
+pub const PROCESS_FDS: &str = "crawlrs_process_fds";
+pub const TOKIO_ALIVE_TASKS: &str = "crawlrs_tokio_alive_tasks";
+pub const TOKIO_WORKERS: &str = "crawlrs_tokio_workers";
+
 pub const SKIP_ALREADY_SUCCEEDED: &str = "already_succeeded";
 pub const SKIP_ALREADY_DLQ: &str = "already_dlq";
 pub const SKIP_POLITENESS_DISALLOWED: &str = "politeness_disallowed";
@@ -90,18 +103,57 @@ pub fn register() {
          mode alert on a non-trivial rate; sustained loss is the \
          signal to flip back to DurableOutbox."
     );
+    describe_gauge!(
+        PROCESS_RSS_BYTES,
+        Unit::Bytes,
+        "Resident set size: physical RAM in use right now."
+    );
+    describe_gauge!(
+        PROCESS_HWM_BYTES,
+        Unit::Bytes,
+        "RSS high-water mark since process start. Useful for spotting \
+         transient spikes that don't show in instantaneous rss."
+    );
+    describe_gauge!(
+        PROCESS_VSIZE_BYTES,
+        Unit::Bytes,
+        "Virtual address space (mapped, not necessarily resident)."
+    );
+    describe_gauge!(
+        PROCESS_PEAK_BYTES,
+        Unit::Bytes,
+        "VmPeak: virtual-address-space high-water mark since process \
+         start. Together with vsize this shows whether the allocator \
+         has ever reached above the current footprint."
+    );
+    describe_gauge!(
+        PROCESS_DATA_BYTES,
+        Unit::Bytes,
+        "VmData: data + stack + heap. Gap with RSS is the canonical \
+         allocator-fragmentation signal."
+    );
+    describe_gauge!(
+        PROCESS_THREADS,
+        Unit::Count,
+        "Process thread count from /proc/self/status."
+    );
+    describe_gauge!(
+        PROCESS_FDS,
+        Unit::Count,
+        "Open file descriptor count from /proc/self/fd. Includes \
+         sockets, files, pipes, anon-inode fds."
+    );
+    describe_gauge!(
+        TOKIO_ALIVE_TASKS,
+        Unit::Count,
+        "Tokio runtime: total alive tasks across all workers. Climbs \
+         past the steady state when a tokio task leaks."
+    );
+    describe_gauge!(
+        TOKIO_WORKERS,
+        Unit::Count,
+        "Tokio runtime: configured worker thread count. Sanity check \
+         against config."
+    );
 }
 
-/// Bucket a `FailureKind` enum variant into a stable string label
-/// value. Keeps the `kind` label cardinality bounded to the variant
-/// set, per the cardinality discipline of the metric-name contract.
-pub fn failure_kind_label(kind: crawlrs_core::FailureKind) -> &'static str {
-    use crawlrs_core::FailureKind::*;
-    match kind {
-        Timeout => "timeout",
-        ConnectReset => "connect_reset",
-        TooManyRequests => "too_many_requests",
-        ServiceUnavailable => "service_unavailable",
-        Other => "other",
-    }
-}

@@ -136,7 +136,7 @@ async fn build_postgres_pool(config: &CrawlrsConfig) -> Result<sqlx::PgPool> {
 fn build_fetcher(config: &CrawlrsConfig) -> Result<Arc<WreqFetcher>> {
     let fetcher_config = WreqFetcherConfig {
         max_body_bytes: config.fetch.max_body_bytes,
-        user_agent: Some(config.fetch.user_agent.clone()),
+        user_agent: config.fetch.user_agent.clone(),
         default_timeout: config.fetch.default_timeout,
         proxy: Arc::new(NoProxyResolver),
         ..WreqFetcherConfig::default()
@@ -146,15 +146,20 @@ fn build_fetcher(config: &CrawlrsConfig) -> Result<Arc<WreqFetcher>> {
 }
 
 fn build_politeness_config(config: &CrawlrsConfig) -> CorePolitenessConfig {
+    // One UA: `[fetch].user_agent` identifies us both on the wire and
+    // for robots.txt rule matching. The combination "obey_robots_txt
+    // = true with no fetch UA" is rejected at config-load time, so by
+    // the time we get here either fetch.user_agent is `Some` or robots
+    // are being skipped entirely (matcher value never observed).
     let user_agent = config
-        .politeness
+        .fetch
         .user_agent
         .clone()
-        .unwrap_or_else(|| config.fetch.user_agent.clone());
+        .unwrap_or_else(|| CorePolitenessConfig::default().user_agent);
     CorePolitenessConfig {
-        min_delay: config.politeness.min_delay,
-        honor_robots_txt: config.politeness.honor_robots_txt,
-        robots_cache_ttl: config.politeness.robots_cache_ttl,
+        host_delay: config.politeness.host_delay,
+        obey_robots_txt: config.politeness.obey_robots_txt,
+        robots_ttl: config.politeness.robots_ttl,
         user_agent,
         backoff: crawlrs_politeness::BackoffPolicy {
             initial_backoff: config.politeness.backoff.initial_backoff,
@@ -171,8 +176,8 @@ fn build_politeness_config(config: &CrawlrsConfig) -> CorePolitenessConfig {
                 (
                     host.clone(),
                     crawlrs_politeness::PolitenessOverride {
-                        min_delay: override_.min_delay,
-                        honor_robots_txt: override_.honor_robots_txt,
+                        host_delay: override_.host_delay,
+                        obey_robots_txt: override_.obey_robots_txt,
                     },
                 )
             })

@@ -19,9 +19,9 @@
 //! user_agent = "crawlrs/0.0.1 (+https://github.com/p4r4xor/crawlrs)"
 //!
 //! [politeness]
-//! min_delay = "1s"
-//! honor_robots_txt = true
-//! robots_cache_ttl = "24h"
+//! host_delay = "1s"
+//! obey_robots_txt = true
+//! robots_ttl = "24h"
 //!
 //! [politeness.backoff]
 //! initial_backoff = "30s"
@@ -102,7 +102,13 @@ pub struct PostgresConfig {
 #[serde(default)]
 pub struct FetchConfig {
     pub max_body_bytes: u64,
-    pub user_agent: String,
+    /// Override the User-Agent on outgoing fetches. `None` (the
+    /// default) lets the wreq emulation profile drive the UA, which
+    /// pairs the wire-format string with the matching TLS / HTTP/2
+    /// fingerprint. Set this only when impersonating a specific
+    /// crawler identity (e.g. for politeness signalling on a
+    /// site-specific allowlist).
+    pub user_agent: Option<String>,
     #[serde(with = "humantime_serde")]
     pub default_timeout: Duration,
 }
@@ -111,7 +117,7 @@ impl Default for FetchConfig {
     fn default() -> Self {
         Self {
             max_body_bytes: 10 * 1024 * 1024,
-            user_agent: "crawlrs/0.0.1 (+https://github.com/p4r4xor/crawlrs)".into(),
+            user_agent: None,
             default_timeout: Duration::from_secs(30),
         }
     }
@@ -121,11 +127,10 @@ impl Default for FetchConfig {
 #[serde(default)]
 pub struct PolitenessConfig {
     #[serde(with = "humantime_serde")]
-    pub min_delay: Duration,
-    pub honor_robots_txt: bool,
+    pub host_delay: Duration,
+    pub obey_robots_txt: bool,
     #[serde(with = "humantime_serde")]
-    pub robots_cache_ttl: Duration,
-    pub user_agent: Option<String>,
+    pub robots_ttl: Duration,
     pub backoff: BackoffPolicy,
     #[serde(default)]
     pub manual_excludes: HashSet<String>,
@@ -136,10 +141,9 @@ pub struct PolitenessConfig {
 impl Default for PolitenessConfig {
     fn default() -> Self {
         Self {
-            min_delay: Duration::from_secs(1),
-            honor_robots_txt: true,
-            robots_cache_ttl: Duration::from_secs(24 * 60 * 60),
-            user_agent: None,
+            host_delay: Duration::from_secs(1),
+            obey_robots_txt: true,
+            robots_ttl: Duration::from_secs(24 * 60 * 60),
             backoff: BackoffPolicy::default(),
             manual_excludes: HashSet::new(),
             per_domain: HashMap::new(),
@@ -173,8 +177,8 @@ impl Default for BackoffPolicy {
 #[serde(default)]
 pub struct PerDomainOverride {
     #[serde(with = "humantime_serde::option")]
-    pub min_delay: Option<Duration>,
-    pub honor_robots_txt: Option<bool>,
+    pub host_delay: Option<Duration>,
+    pub obey_robots_txt: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -294,14 +298,35 @@ const fn default_postgres_pool_size() -> u32 {
 }
 
 impl CrawlrsConfig {
-    /// Parse a TOML config from disk, then apply env-var overlay.
+    /// Parse a TOML config from disk, apply env-var overlay, validate.
     pub fn load(path: &std::path::Path) -> Result<Self> {
         let contents = std::fs::read_to_string(path)
             .with_context(|| format!("reading config file {}", path.display()))?;
         let mut config: Self = toml::from_str(&contents)
             .with_context(|| format!("parsing TOML config {}", path.display()))?;
         config.apply_env_overlay();
+        config.validate()?;
         Ok(config)
+    }
+
+    /// Reject incoherent configurations before any I/O happens. Currently:
+    ///   * `obey_robots_txt = true` requires `[fetch].user_agent` to be
+    ///     set. Random emulation rotates the wire User-Agent per request,
+    ///     which can't coherently match a robots.txt rule group; honoring
+    ///     robots without a stable identity advertises a contract we
+    ///     can't actually keep.
+    pub fn validate(&self) -> Result<()> {
+        if self.politeness.obey_robots_txt && self.fetch.user_agent.is_none() {
+            anyhow::bail!(
+                "[politeness].obey_robots_txt = true requires [fetch].user_agent \
+                 to be set. Random emulation produces a different wire User-Agent \
+                 per request, so there is no stable identity for robots.txt to \
+                 match against. Either pin [fetch].user_agent to a stable string \
+                 (recommended for any crawl that wants to be a good citizen), or \
+                 set [politeness].obey_robots_txt = false (stealth mode)."
+            );
+        }
+        Ok(())
     }
 
     /// Apply env-var overrides for high-impact knobs. Documented here

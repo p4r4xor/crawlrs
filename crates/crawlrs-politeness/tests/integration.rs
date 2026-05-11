@@ -103,10 +103,10 @@ fn url(s: &str) -> CanonicalUrl {
     CanonicalUrl::parse(s).unwrap()
 }
 
-fn config_with(min_delay: Duration, robots: bool) -> PolitenessConfig {
+fn config_with(host_delay: Duration, robots: bool) -> PolitenessConfig {
     PolitenessConfig {
-        min_delay,
-        honor_robots_txt: robots,
+        host_delay,
+        obey_robots_txt: robots,
         user_agent: "TestBot/1.0".into(),
         ..Default::default()
     }
@@ -209,8 +209,8 @@ async fn per_domain_override_uses_custom_delay() {
     config.per_domain.insert(
         "slow.test".into(),
         PolitenessOverride {
-            min_delay: Some(Duration::from_millis(5_000)),
-            honor_robots_txt: None,
+            host_delay: Some(Duration::from_millis(5_000)),
+            obey_robots_txt: None,
         },
     );
 
@@ -310,7 +310,7 @@ async fn record_fetch_resets_failure_state() {
     p.record_fetch(&u).await.unwrap();
 
     // After record_fetch resets state, the only delay should come from the
-    // 100 ms host-min-delay, not the 1s backoff.
+    // 100 ms host_delay, not the 1s backoff.
     tokio::time::sleep(Duration::from_millis(150)).await;
     assert_eq!(p.check(&u).await.unwrap(), PoliteDecision::Allow);
 }
@@ -454,13 +454,13 @@ async fn robots_per_domain_override_disables_check() {
     config.per_domain.insert(
         "staging.test".into(),
         PolitenessOverride {
-            min_delay: None,
-            honor_robots_txt: Some(false),
+            host_delay: None,
+            obey_robots_txt: Some(false),
         },
     );
 
     let p = build(&fx.pool, fake.clone(), config).await;
-    // Override flips honor_robots_txt off for this host; check passes.
+    // Override flips obey_robots_txt off for this host; check passes.
     let decision = p
         .check(&url("https://staging.test/anything"))
         .await

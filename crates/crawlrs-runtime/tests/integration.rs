@@ -131,7 +131,7 @@ async fn build_crawler(
 fn fast_config() -> CrawlerConfig {
     CrawlerConfig {
         workers: 2,
-        user_agent: "TestBot/1.0".into(),
+        user_agent: Some("TestBot/1.0".into()),
         max_depth: Some(2),
         maintenance_interval: Duration::from_secs(60),
         empty_queue_poll: Duration::from_millis(50),
@@ -148,8 +148,8 @@ fn fast_config() -> CrawlerConfig {
 
 fn fast_politeness() -> PolitenessConfig {
     PolitenessConfig {
-        min_delay: Duration::from_millis(50),
-        honor_robots_txt: false,
+        host_delay: Duration::from_millis(50),
+        obey_robots_txt: false,
         user_agent: "TestBot/1.0".into(),
         backoff: crawlrs_politeness::BackoffPolicy {
             initial_backoff: Duration::from_millis(50),
@@ -452,8 +452,8 @@ async fn retry_after_header_extends_politeness_wake_time() {
     // max_backoff must be larger than the server hint so the cap
     // doesn't clip the 2s value.
     let politeness_cfg = PolitenessConfig {
-        min_delay: Duration::from_millis(50),
-        honor_robots_txt: false,
+        host_delay: Duration::from_millis(50),
+        obey_robots_txt: false,
         user_agent: "TestBot/1.0".into(),
         backoff: crawlrs_politeness::BackoffPolicy {
             initial_backoff: Duration::from_millis(50),
@@ -641,7 +641,7 @@ async fn run_end_to_end_crawl_one_seed_two_pages(dispatch: LinkDispatch) {
     let crawler_clone = crawler.clone();
     let run_handle = tokio::spawn(async move { crawler_clone.run().await });
 
-    // Give it time to drain; with min_delay=50ms and 3 distinct
+    // Give it time to drain; with host_delay=50ms and 3 distinct
     // hosts, ~1s is plenty.
     tokio::time::sleep(Duration::from_millis(800)).await;
     crawler.shutdown();

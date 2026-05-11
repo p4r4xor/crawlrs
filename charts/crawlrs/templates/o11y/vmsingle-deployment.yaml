@@ -22,6 +22,14 @@ spec:
         # Cache-bust the pod when the scrape config changes.
         checksum/scrape-config: {{ include (print $.Template.BasePath "/o11y/vmsingle-scrape-configmap.yaml") . | sha256sum }}
     spec:
+      {{- if .Values.o11y.vmsingle.cadvisor.enabled }}
+      # cAdvisor scraping needs the SA token mounted so vmsingle can
+      # auth to kubelet via the apiserver proxy. Default mount paths
+      # are `/var/run/secrets/kubernetes.io/serviceaccount/{ca.crt,
+      # token}`, which the scrape config references directly.
+      serviceAccountName: {{ include "crawlrs.vmsingleName" . }}
+      automountServiceAccountToken: true
+      {{- end }}
       securityContext:
         {{- toYaml .Values.o11y.vmsingle.podSecurityContext | nindent 8 }}
       containers:

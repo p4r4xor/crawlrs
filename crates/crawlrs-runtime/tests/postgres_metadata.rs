@@ -111,8 +111,8 @@ async fn end_to_end_against_postgres_metadata_store() {
     );
 
     let politeness_cfg = PolitenessConfig {
-        min_delay: Duration::from_millis(50),
-        honor_robots_txt: false,
+        host_delay: Duration::from_millis(50),
+        obey_robots_txt: false,
         user_agent: "PgWireTest/1.0".into(),
         backoff: BackoffPolicy {
             initial_backoff: Duration::from_millis(50),
@@ -146,7 +146,7 @@ async fn end_to_end_against_postgres_metadata_store() {
 
     let config = CrawlerConfig {
         workers: 2,
-        user_agent: "PgWireTest/1.0".into(),
+        user_agent: Some("PgWireTest/1.0".into()),
         max_depth: Some(1),
         maintenance_interval: Duration::from_secs(60),
         empty_queue_poll: Duration::from_millis(50),

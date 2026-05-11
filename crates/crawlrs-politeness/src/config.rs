@@ -14,23 +14,29 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PolitenessConfig {
-    /// Default delay between consecutive fetches to the same host.
-    /// Per-domain overrides supersede this.
+    /// Floor on the delay between consecutive fetches to the same host.
+    /// The effective wait can be longer when the server's Crawl-Delay
+    /// directive or a Retry-After header pushes it out, but never
+    /// shorter. Per-domain overrides supersede this.
     #[serde(with = "humantime_serde")]
-    pub min_delay: Duration,
+    pub host_delay: Duration,
 
     /// Whether to consult robots.txt before fetching. Per-domain
     /// overrides supersede this (e.g. for our own staging hosts).
-    pub honor_robots_txt: bool,
+    pub obey_robots_txt: bool,
 
     /// How long to keep a fetched robots.txt cached.
     /// 24 h is the long-standing convention.
     #[serde(with = "humantime_serde")]
-    pub robots_cache_ttl: Duration,
+    pub robots_ttl: Duration,
 
-    /// User-agent string used when fetching robots.txt. Should match
-    /// the UA used by the main fetcher; some sites serve a different
-    /// robots.txt to different bots.
+    /// Product token used for robots.txt rule matching (RFC 9309).
+    /// This is *local* matching against `User-Agent:` directives in a
+    /// fetched robots.txt; the value never goes on the wire. Most
+    /// operators set this to the same string as the wire UA so
+    /// the on-wire identity and the robots-respecting identity agree.
+    /// The default is a polite identifier with a contact URL so site
+    /// owners can find us if they need to.
     pub user_agent: String,
 
     /// Backoff parameters used when [`record_failure`] reports a
@@ -54,9 +60,9 @@ pub struct PolitenessConfig {
 impl Default for PolitenessConfig {
     fn default() -> Self {
         Self {
-            min_delay: Duration::from_secs(1),
-            honor_robots_txt: true,
-            robots_cache_ttl: Duration::from_secs(24 * 60 * 60),
+            host_delay: Duration::from_secs(1),
+            obey_robots_txt: true,
+            robots_ttl: Duration::from_secs(24 * 60 * 60),
             user_agent: "crawlrs/0.0.1 (+https://github.com/p4r4xor/crawlrs)".into(),
             backoff: BackoffPolicy::default(),
             manual_excludes: HashSet::new(),
@@ -75,8 +81,8 @@ impl Default for PolitenessConfig {
 #[serde(default)]
 pub struct PolitenessOverride {
     #[serde(default, with = "humantime_serde::option")]
-    pub min_delay: Option<Duration>,
-    pub honor_robots_txt: Option<bool>,
+    pub host_delay: Option<Duration>,
+    pub obey_robots_txt: Option<bool>,
 }
 
 /// Exponential backoff parameters for failure recovery.

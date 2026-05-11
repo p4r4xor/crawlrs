@@ -134,8 +134,8 @@ local-down: ## helm uninstall (keeps the cluster + PVCs)
 	$(HELM) uninstall $(LOCAL_RELEASE) --namespace $(LOCAL_NAMESPACE) || true
 
 .PHONY: local-logs
-local-logs: ## Tail crawlrs StatefulSet logs
-	$(KUBECTL) logs -n $(LOCAL_NAMESPACE) -f sts/$(LOCAL_RELEASE)-crawlrs --all-containers=true
+local-logs: ## Tail crawler pod logs (crawlrs-demo-0, ordinal 0)
+	$(KUBECTL) logs -n $(LOCAL_NAMESPACE) -f $(LOCAL_RELEASE)-0 --all-containers=true
 
 .PHONY: local-pf
 local-pf: ## Port-forward Grafana (3000) and crawlrs metrics (9090)
@@ -144,8 +144,8 @@ local-pf: ## Port-forward Grafana (3000) and crawlrs metrics (9090)
 	@echo "  http://localhost:9090   crawlrs /metrics, /healthz, /readyz"
 	@echo ""
 	@echo "Ctrl-C to stop both."
-	@( $(KUBECTL) port-forward -n $(LOCAL_NAMESPACE) svc/$(LOCAL_RELEASE)-crawlrs-grafana 3000:3000 & \
-	   $(KUBECTL) port-forward -n $(LOCAL_NAMESPACE) sts/$(LOCAL_RELEASE)-crawlrs 9090:9090 & \
+	@( $(KUBECTL) port-forward -n $(LOCAL_NAMESPACE) svc/$(LOCAL_RELEASE)-grafana 3000:3000 & \
+	   $(KUBECTL) port-forward -n $(LOCAL_NAMESPACE) sts/$(LOCAL_RELEASE) 9090:9090 & \
 	   wait )
 
 .PHONY: local-status

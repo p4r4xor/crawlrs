@@ -53,34 +53,81 @@ shutdown: mark `/readyz` unhealthy -> 5s drain -> frontier shutdown ->
 worker drain -> store flush -> exit. Per-pod ordinal extraction from
 the Kubernetes Downward API for stable shard ownership.
 
-## Quickstart
+## Prerequisites
 
-### Sandbox (one command)
+Pick the path you want first; install only what that path needs.
+
+### For the sandbox path (full K8s-shape stack on your laptop)
+
+| Tool | Version | Purpose | Install |
+|---|---|---|---|
+| **Docker** | Engine 24+ | Container runtime; kind nodes are Docker containers | [docs.docker.com/engine/install](https://docs.docker.com/engine/install/) |
+| **kubectl** | v1.30+ | Talks to the cluster | [kubernetes.io/docs/tasks/tools/](https://kubernetes.io/docs/tasks/tools/) |
+| **helm** | v3.16+ | Renders + installs the chart | [helm.sh/docs/intro/install](https://helm.sh/docs/intro/install/) |
+| **kind** | v0.27+ | Local single-node Kubernetes | `go install sigs.k8s.io/kind@v0.27.0` or [release binaries](https://kind.sigs.k8s.io/docs/user/quick-start/#installation) |
+
+Verify everything's on PATH:
 
 ```bash
-make chart-deps
-helm install crawlrs-demo ./charts/crawlrs-demo \
-  --create-namespace -n crawlrs
-
-kubectl wait --for=condition=ready pod \
-  -l app.kubernetes.io/instance=crawlrs-demo \
-  -n crawlrs --timeout=180s
-
-# Grafana
-kubectl port-forward -n crawlrs \
-  svc/crawlrs-demo-crawlrs-grafana 3000:3000
-# http://localhost:3000  (admin / admin)
+make local-deps-check
+# expected: ok: docker, kind, helm, kubectl all present
 ```
+
+### For the bare-metal cargo path (no Kubernetes)
+
+| Tool | Purpose | Install |
+|---|---|---|
+| **Rust toolchain** | rustup auto-installs the 1.94.1 pin from `rust-toolchain.toml` | [rustup.rs](https://rustup.rs/) |
+| **Redis** | Frontier + politeness backend | `docker run --rm -d -p 6379:6379 redis:7-alpine` (or system install) |
+| **Postgres** | Metadata ledger | `docker run --rm -d -p 5432:5432 -e POSTGRES_PASSWORD=crawlrs -e POSTGRES_DB=crawlrs postgres:17-alpine` |
+
+System libs the Rust build needs (Debian/Ubuntu names; equivalents on
+macOS via Homebrew, Fedora via dnf):
+
+```bash
+sudo apt-get install -y pkg-config libssl-dev cmake clang build-essential
+```
+
+## Quickstart
+
+### Sandbox: full K8s stack on your laptop, one command
+
+```bash
+make local-up
+```
+
+That target idempotently:
+
+1. Creates a `kind` cluster (`crawlrs-local`)
+2. Builds the `crawlrs:local` container image (multi-stage `cargo-chef`; first build ~10 min, subsequent rebuilds ~30 s)
+3. Loads the image into the kind cluster (no external registry needed)
+4. Resolves the demo chart's deps + `helm install` with sandbox values
+5. Waits for all 5 pods (`crawlrs`, `redis`, `postgres`, `vmsingle`, `grafana`) to reach Ready
+
+Once it returns, useful follow-up commands:
+
+```bash
+make local-status     # pods + helm release state
+make local-logs       # tail crawler logs (Ctrl-C to stop)
+make local-pf         # port-forward Grafana :3000 and crawler /metrics :9090
+make local-down       # helm uninstall (keeps cluster + PVCs)
+make local-cluster-down   # destroy the kind cluster (full reset)
+```
+
+Browse the Grafana dashboards (`crawler-health`, `fetch-pipeline`,
+`frontier-storage`) at <http://localhost:3000> after `make local-pf`
+(`admin` / `admin`).
 
 The sandbox bundles Redis + Postgres + the observability stack via
 raw manifests with official upstream images. Blob storage is
 pod-local FS (`store.backend.kind = local`); production deploys
 flip to `kind = s3` against real S3 / R2 / GCS. Single replicas
-everywhere, fixed credentials, no persistence; for evaluation, dev
-loops, and CI smoke tests only.
+everywhere, fixed credentials, sandbox-sized PVCs; for evaluation,
+dev loops, and CI smoke tests only.
 
-See [`charts/crawlrs-demo/README.md`](charts/crawlrs-demo/README.md)
-for what's deployed and the migration path to production.
+See [`local/README.md`](local/README.md) for the laptop-deployment
+walkthrough and [`charts/crawlrs-demo/README.md`](charts/crawlrs-demo/README.md)
+for what the chart deploys + the migration path to production.
 
 ### Production
 
@@ -101,19 +148,42 @@ helm install my-crawlrs ./charts/crawlrs \
 See [`charts/crawlrs/README.md`](charts/crawlrs/README.md) for the
 full values reference, sharding math, and security context defaults.
 
-### Local (no Kubernetes)
+### Local: no Kubernetes, just `cargo run`
 
 ```bash
-# Bring up Redis + Postgres via docker run (or your own
-# orchestration), then:
+# 1. Start Redis + Postgres locally (docker is the easiest way; skip
+#    if you already have these running)
+docker run --rm -d --name crawlrs-redis -p 6379:6379 redis:7-alpine
+docker run --rm -d --name crawlrs-postgres -p 5432:5432 \
+  -e POSTGRES_USER=crawlrs -e POSTGRES_PASSWORD=crawlrs \
+  -e POSTGRES_DB=crawlrs postgres:17-alpine
+
+# 2. Copy the sample config and edit endpoints / credentials
 cp crates/crawlrs-bin/examples/crawl.toml ./crawl.toml
-$EDITOR crawl.toml                    # point at your local services
+$EDITOR crawl.toml
+
+# 3. (Optional) pre-flight: parse + validate the config
+make validate
+# Or directly: cargo run -p crawlrs-bin -- validate --config ./crawl.toml
+
+# 4. Drop a few seed URLs and start the crawler
 echo "https://example.com" > seeds.txt
-make run                              # cargo run -p crawlrs-bin ...
+make run
+# Or directly: cargo run -p crawlrs-bin -- crawl --config ./crawl.toml --seeds ./seeds.txt
 ```
 
-`crawlrs validate --config ./crawl.toml` parses the file and prints a
-one-line summary; useful as a pre-flight check.
+The binary serves `/metrics`, `/healthz`, `/readyz`, `/livez` on
+`0.0.0.0:9090` (configurable in `crawl.toml`).
+
+```bash
+curl -s localhost:9090/metrics | grep crawlrs_urls_fetched_total
+```
+
+Tear down:
+
+```bash
+docker stop crawlrs-redis crawlrs-postgres
+```
 
 ## Architecture
 
@@ -188,7 +258,7 @@ not into a separate control plane.
 | `crawlrs-bin` | The `crawlrs` CLI binary. |
 | `crawlrs-fakes` | Test doubles (in-memory impls of the traits). |
 
-## Building
+## Building & testing
 
 Workspace toolchain pinned in `rust-toolchain.toml` (Rust 1.94.1).
 Test suite uses `cargo nextest` with slow-test thresholds configured
@@ -196,9 +266,34 @@ in `.config/nextest.toml`.
 
 ```bash
 make build         # cargo build --workspace
-make test          # cargo test --workspace
+make test          # cargo test --workspace (fast tests + testcontainer integration)
+make nextest       # cargo nextest run --workspace (faster CI runner; same suite)
 make lint          # fmt-check + clippy with -D warnings
+make fmt           # cargo fmt --all
+make clippy        # cargo clippy --workspace --all-targets -- -D warnings
 make help          # full target list
+```
+
+Helm chart targets:
+
+```bash
+make chart-lint        # helm lint both charts
+make chart-template    # render both charts to /tmp; useful for diffing
+make chart-deps        # helm dep build (resolves the file:// crawlrs subchart)
+```
+
+Local container deployment targets (require kind + kubectl + helm; see
+prerequisites above):
+
+```bash
+make image                # docker build -t crawlrs:local .
+make local-cluster-up     # kind create cluster (idempotent)
+make local-cluster-down   # kind delete cluster
+make local-up             # full pipeline: cluster + image + load + helm install
+make local-down           # helm uninstall (keeps cluster + PVCs)
+make local-logs           # kubectl logs -f sts/crawlrs-demo
+make local-pf             # port-forward Grafana :3000 + metrics :9090
+make local-status         # pods + helm release status
 ```
 
 Pre-commit hooks (`.pre-commit-config.yaml`) enforce fmt, clippy, an

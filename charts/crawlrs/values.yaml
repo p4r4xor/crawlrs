@@ -44,13 +44,18 @@ postgres:
 
 fetch:
   maxBodyBytes: 10485760
-  userAgent: "crawlrs/0.0.1 (+https://github.com/p4r4xor/crawlrs)"
+  # Override the wire User-Agent. Empty (the default) lets wreq's
+  # randomized emulation profile drive the UA so the wire string and
+  # the TLS / HTTP/2 fingerprint match. Set this only when you want
+  # to advertise a specific crawler identity (e.g. for a site-by-site
+  # politeness allowlist that gates on UA).
+  userAgent: ""
   defaultTimeout: "30s"
 
 politeness:
-  minDelay: "1s"
-  honorRobotsTxt: true
-  robotsCacheTtl: "24h"
+  hostDelay: "1s"
+  obeyRobotsTxt: true
+  robotsTtl: "24h"
   backoff:
     initialBackoff: "30s"
     maxBackoff: "10m"
@@ -233,6 +238,17 @@ o11y:
         memory: 1Gi
     service:
       port: 8429
+    # cAdvisor scraping: per-container CPU / memory / network / fs
+    # metrics from kubelet, proxied through the apiserver. Adds a
+    # ServiceAccount + ClusterRole + ClusterRoleBinding granting
+    # `nodes`, `nodes/proxy`, `nodes/metrics` access.
+    cadvisor:
+      enabled: true
+      # If non-empty, only keep cAdvisor samples whose `namespace`
+      # label matches this regex. Default is just the crawlrs
+      # namespace so vmsingle storage isn't polluted by kube-system /
+      # other-tenant pods. Set to "" to keep all namespaces.
+      namespaceFilter: "crawlrs"
     podSecurityContext:
       runAsNonRoot: true
       runAsUser: 1000

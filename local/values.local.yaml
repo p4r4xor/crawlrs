@@ -52,9 +52,9 @@ crawlrs:
     defaultTimeout: "30s"
 
   politeness:
-    minDelay: "1s"
-    honorRobotsTxt: true
-    robotsCacheTtl: "24h"
+    hostDelay: "1s"
+    obeyRobotsTxt: true
+    robotsTtl: "24h"
     backoff:
       initialBackoff: "30s"
       maxBackoff: "10m"

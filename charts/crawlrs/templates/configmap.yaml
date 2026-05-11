@@ -45,13 +45,15 @@ data:
 
     [fetch]
     max_body_bytes  = {{ .Values.fetch.maxBodyBytes | int64 }}
-    user_agent      = {{ .Values.fetch.userAgent | quote }}
+    {{- with .Values.fetch.userAgent }}
+    user_agent      = {{ . | quote }}
+    {{- end }}
     default_timeout = {{ .Values.fetch.defaultTimeout | quote }}
 
     [politeness]
-    min_delay        = {{ .Values.politeness.minDelay | quote }}
-    honor_robots_txt = {{ .Values.politeness.honorRobotsTxt }}
-    robots_cache_ttl = {{ .Values.politeness.robotsCacheTtl | quote }}
+    host_delay       = {{ .Values.politeness.hostDelay | quote }}
+    obey_robots_txt  = {{ .Values.politeness.obeyRobotsTxt }}
+    robots_ttl       = {{ .Values.politeness.robotsTtl | quote }}
 
     [politeness.backoff]
     initial_backoff             = {{ .Values.politeness.backoff.initialBackoff | quote }}

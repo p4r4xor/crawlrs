@@ -17,17 +17,17 @@ cluster on your machine:
 
 ```
 crawlrs-demo namespace
-+----------------------------------------------------+
-|  crawlrs-demo-crawlrs-0      (StatefulSet)         |
-|       redis://crawlrs-demo-redis:6379              |
-|       postgres://crawlrs-demo-postgres:5432        |
-|       file:///var/lib/crawlrs/data  (emptyDir)     |
-|                                                    |
++-----------------------------------------------------------------+
+|  crawlrs-demo-0            (StatefulSet, the crawler)           |
+|       redis://crawlrs-demo-redis:6379                           |
+|       postgres://crawlrs-demo-postgres:5432                     |
+|       file:///var/lib/crawlrs/data  (emptyDir)                  |
+|                                                                 |
 |  crawlrs-demo-redis        (StatefulSet, redis:7-alpine)        |
 |  crawlrs-demo-postgres     (StatefulSet, postgres:17-alpine)    |
-|  crawlrs-demo-crawlrs-vmsingle   (metrics storage)              |
-|  crawlrs-demo-crawlrs-grafana    (3 dashboards)                 |
-+----------------------------------------------------+
+|  crawlrs-demo-vmsingle     (Deployment, metrics storage)        |
+|  crawlrs-demo-grafana      (Deployment, 3 dashboards)           |
++-----------------------------------------------------------------+
 ```
 
 Backing services use **official upstream images** directly via raw
@@ -160,7 +160,7 @@ When you change Rust code:
 ```bash
 make image                         # rebuild the image (fast: deps cached)
 kind load docker-image crawlrs:local --name crawlrs-local
-kubectl rollout restart -n crawlrs sts/crawlrs-demo-crawlrs
+kubectl rollout restart -n crawlrs sts/crawlrs-demo
 ```
 
 When you change `local/values.local.yaml` or `local/seeds.txt`:

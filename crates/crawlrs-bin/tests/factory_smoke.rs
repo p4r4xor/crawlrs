@@ -58,14 +58,13 @@ async fn factory_builds_against_real_backends() {
         },
         fetch: FetchConfig {
             max_body_bytes: 10 * 1024 * 1024,
-            user_agent: "crawlrs-test/0.0.1".to_string(),
+            user_agent: Some("crawlrs-test/0.0.1".to_string()),
             default_timeout: Duration::from_secs(30),
         },
         politeness: PolitenessConfig {
-            min_delay: Duration::from_secs(1),
-            honor_robots_txt: true,
-            robots_cache_ttl: Duration::from_secs(24 * 60 * 60),
-            user_agent: None,
+            host_delay: Duration::from_secs(1),
+            obey_robots_txt: true,
+            robots_ttl: Duration::from_secs(24 * 60 * 60),
             backoff: BackoffPolicy::default(),
             manual_excludes: HashSet::new(),
             per_domain: HashMap::new(),

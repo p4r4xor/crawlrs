@@ -43,23 +43,23 @@ kubectl wait --for=condition=ready pod \
 ## Bundled deployment topology
 
 ```
-+------------------------------------------------+
-|  Namespace: crawlrs                            |
-|                                                |
-|  crawlrs-demo-0  (StatefulSet, the crawler)    |
-|         |                                      |
-|         +---  redis://crawlrs-demo-redis:6379 ---+
-|         +---  postgres://crawlrs-demo-postgres ---+
-|         +---  file:///var/lib/crawlrs/data       |
-|                                                |
-|  crawlrs-demo-redis     (StatefulSet)          |
-|  crawlrs-demo-postgres  (StatefulSet)          |
-|                                                |
-|  crawlrs-demo-crawlrs-vmsingle  (Deployment)   |
-|         scrapes /metrics from crawlrs-demo-0   |
-|  crawlrs-demo-crawlrs-grafana   (Deployment)   |
++----------------------------------------------------+
+|  Namespace: crawlrs                                |
+|                                                    |
+|  crawlrs-demo-0  (StatefulSet, the crawler)        |
+|         |                                          |
+|         +---  redis://crawlrs-demo-redis:6379 ---+ |
+|         +---  postgres://crawlrs-demo-postgres ---+|
+|         +---  file:///var/lib/crawlrs/data         |
+|                                                    |
+|  crawlrs-demo-redis     (StatefulSet)              |
+|  crawlrs-demo-postgres  (StatefulSet)              |
+|                                                    |
+|  crawlrs-demo-vmsingle  (Deployment)               |
+|         scrapes /metrics from crawlrs-demo-0       |
+|  crawlrs-demo-grafana   (Deployment)               |
 |         queries vmsingle, 3 provisioned dashboards |
-+------------------------------------------------+
++----------------------------------------------------+
 ```
 
 ## Why the release name matters
