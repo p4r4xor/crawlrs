@@ -68,7 +68,7 @@ tempfile               = "3"
 crawlrs-core            = { path = "crates/crawlrs-core",            version = "0.0.1" }
 crawlrs-fetch           = { path = "crates/crawlrs-fetch",           version = "0.0.1" }
 crawlrs-parse           = { path = "crates/crawlrs-parse",           version = "0.0.1" }
-crawlrs-frontier-redis  = { path = "crates/crawlrs-frontier-redis",  version = "0.0.1" }
+crawlrs-frontier  = { path = "crates/crawlrs-frontier",  version = "0.0.1" }
 crawlrs-politeness      = { path = "crates/crawlrs-politeness",      version = "0.0.1" }
 crawlrs-runtime         = { path = "crates/crawlrs-runtime",         version = "0.0.1" }
 crawlrs-metadata        = { path = "crates/crawlrs-metadata",        version = "0.0.1" }

@@ -14,7 +14,7 @@ path = "src/main.rs"
 [dependencies]
 crawlrs-core.workspace           = true
 crawlrs-fetch.workspace          = true
-crawlrs-frontier-redis.workspace = true
+crawlrs-frontier.workspace = true
 crawlrs-metadata.workspace       = true
 crawlrs-parse.workspace          = true
 crawlrs-politeness.workspace     = true

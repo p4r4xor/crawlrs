@@ -212,7 +212,7 @@ impl Default for RuntimeConfig {
 /// Defaults match the per-shard sizing rules from the design ADRs;
 /// `bloom_capacity` is the most likely value to tune for production
 /// runs (size to expected unique URLs for the run, with ~20%
-/// headroom). See `BloomConfig` in `crawlrs-frontier-redis` for the
+/// headroom). See `BloomConfig` in `crawlrs-frontier` for the
 /// memory / FPR tradeoff.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]

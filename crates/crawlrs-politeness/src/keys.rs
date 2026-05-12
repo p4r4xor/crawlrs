@@ -1,6 +1,6 @@
 //! Redis key naming, scoped by `run_id` and shard.
 //!
-//! Mirrors `crawlrs-frontier-redis::keys` by convention (same
+//! Mirrors `crawlrs-frontier::keys` by convention (same
 //! `crawlrs:{run_id}:s{shard}:` prefix) so an operator can introspect
 //! a run with one `redis-cli SCAN` pattern, but is duplicated rather
 //! than shared to avoid coupling politeness to the frontier impl.

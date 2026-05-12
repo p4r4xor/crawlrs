@@ -15,7 +15,7 @@
 //! frontier publishes `submit`, `claim`, `advance_wake`, and `ack` -
 //! one verb per intent, no overlap.
 //!
-//! Concrete impl: `crawlrs-frontier-redis::RedisFrontier`.
+//! Concrete impl: `crawlrs-frontier::RedisFrontier`.
 
 use std::time::Instant;
 

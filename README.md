@@ -256,7 +256,7 @@ ZSET and the reclaim pass, not into a separate control plane.
 |---|---|
 | `crawlrs-core` | Domain types + traits + errors. Zero I/O. |
 | `crawlrs-fetch` | `Fetcher` impl backed by `wreq`. |
-| `crawlrs-frontier-redis` | `Frontier` impl: per-host queues + atomic-Lua claim + lease ZSET + RedisBloom dedup. |
+| `crawlrs-frontier` | `Frontier` impl: per-host queues + atomic-Lua claim + lease ZSET + RedisBloom dedup. |
 | `crawlrs-parse` | `Parser` impl backed by `lol_html`. |
 | `crawlrs-politeness` | `Politeness` impl: per-host scheduling, robots cache, backoff. |
 | `crawlrs-metadata` | `MetadataStore` impl: Postgres + sqlx. |

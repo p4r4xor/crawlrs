@@ -86,7 +86,7 @@ name = "crawlrs-fetch"
 allow = ["GPL-3.0-only"]
 
 [[licenses.exceptions]]
-name = "crawlrs-frontier-redis"
+name = "crawlrs-frontier"
 allow = ["GPL-3.0-only"]
 
 [[licenses.exceptions]]
