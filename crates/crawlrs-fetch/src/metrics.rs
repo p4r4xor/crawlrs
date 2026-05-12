@@ -38,6 +38,6 @@ pub fn register() {
         "Response body size in bytes on successful fetch. Labelled by \
          `kind` (page / robots) and `content_type` (html / non_html / \
          unknown). content_type is derived from the Content-Type \
-         header; unknown means missing or unparseable."
+         header; unknown means missing or unparsable."
     );
 }

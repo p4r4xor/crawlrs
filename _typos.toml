@@ -12,6 +12,10 @@ extend-ignore-identifiers-re = [
 [default.extend-words]
 # Project-specific terms that look like misspellings to typos.
 crawlrs = "crawlrs"
+# "fpr" is the standard abbreviation for "false positive rate" in
+# the Bloom-filter literature; it appears in config keys
+# (`bloom_fpr`, `bloomFpr`), struct fields, and doc comments.
+fpr = "fpr"
 
 [files]
 extend-exclude = [

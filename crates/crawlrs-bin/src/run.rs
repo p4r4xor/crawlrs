@@ -136,7 +136,7 @@ async fn load_seeds(path: &Path, frontier: &dyn Frontier) -> Result<()> {
 /// 29-metric contract. Idempotent; safe to call multiple times.
 fn install_metrics_descriptions() {
     crawlrs_runtime::metrics::register();
-    crawlrs_frontier_redis::metrics::register();
+    crawlrs_frontier::metrics::register();
     crawlrs_politeness::metrics::register();
     crawlrs_fetch::metrics::register();
     crawlrs_parse::metrics::register();

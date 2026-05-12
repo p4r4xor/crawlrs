@@ -19,7 +19,7 @@ use crawlrs_core::{
     UrlStatus,
 };
 use crawlrs_fakes::{FakeFetcher, InMemoryStore};
-use crawlrs_frontier_redis::{BloomConfig, RedisFrontier};
+use crawlrs_frontier::{BloomConfig, RedisFrontier};
 use crawlrs_metadata::PostgresMetadataStore;
 use crawlrs_parse::LolHtmlParser;
 use crawlrs_politeness::{BackoffPolicy, PolitenessConfig, RedisPoliteness};

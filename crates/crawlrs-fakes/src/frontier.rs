@@ -290,9 +290,7 @@ impl Frontier for InMemoryFrontier {
                 continue;
             };
 
-            if let Some((url_id, entry, host)) =
-                pop_one_ready(shard_state, now_ms, lease_timeout)
-            {
+            if let Some((url_id, entry, host)) = pop_one_ready(shard_state, now_ms, lease_timeout) {
                 let attempt_id = encode_attempt(shard, &url_id);
                 let _ = host; // captured into InflightSlot already
                 return Ok(ClaimOutcome::Claimed {
@@ -328,9 +326,7 @@ impl Frontier for InMemoryFrontier {
         Ok(state
             .shards
             .values()
-            .map(|s| {
-                s.host_queue.values().map(|q| q.len()).sum::<usize>() + s.overflow.len()
-            })
+            .map(|s| s.host_queue.values().map(|q| q.len()).sum::<usize>() + s.overflow.len())
             .sum())
     }
 
@@ -382,7 +378,11 @@ impl Frontier for InMemoryFrontier {
             for host in &promoted {
                 shard_state.wake.remove(host);
                 // Only promote hosts that have URLs queued.
-                if shard_state.host_queue.get(host).is_some_and(|q| !q.is_empty()) {
+                if shard_state
+                    .host_queue
+                    .get(host)
+                    .is_some_and(|q| !q.is_empty())
+                {
                     shard_state.ready.push_back(host.clone());
                     affected += 1;
                 }
@@ -534,8 +534,7 @@ mod tests {
     async fn advance_wake_blocks_re_claim_until_promoted() {
         let policy: Arc<dyn ShardingPolicy> = Arc::new(SingleShardPolicy);
         let clock = Arc::new(ManualClock::new(1_000_000));
-        let f =
-            InMemoryFrontier::new(policy, vec![0]).with_clock(clock.clone());
+        let f = InMemoryFrontier::new(policy, vec![0]).with_clock(clock.clone());
 
         // Submit two URLs for the same host; promote them.
         f.submit(entry("https://a.test/1")).await.unwrap();

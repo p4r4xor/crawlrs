@@ -1,6 +1,6 @@
 //! Tests for `KeyPrefix`: run-id + shard scoping of Redis keys.
 
-use crawlrs_frontier_redis::KeyPrefix;
+use crawlrs_frontier::KeyPrefix;
 
 #[test]
 fn per_run_keys_are_run_scoped_and_shard_scoped() {
@@ -25,5 +25,8 @@ fn different_runs_dont_collide_on_per_run_keys() {
     let a = KeyPrefix::new("run-a");
     let b = KeyPrefix::new("run-b");
     assert_ne!(a.wake(0), b.wake(0));
-    assert_ne!(a.host_queue(0, "example.com"), b.host_queue(0, "example.com"));
+    assert_ne!(
+        a.host_queue(0, "example.com"),
+        b.host_queue(0, "example.com")
+    );
 }

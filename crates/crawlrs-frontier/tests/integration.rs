@@ -18,7 +18,7 @@ use crawlrs_core::{
     CanonicalUrl, ClaimOutcome, Frontier, HostHashShardPolicy, ShardingPolicy, SingleShardPolicy,
     SubmitOutcome, UrlEntry, UrlId, WorkerIdentity,
 };
-use crawlrs_frontier_redis::{BloomConfig, RedisFrontier};
+use crawlrs_frontier::{BloomConfig, RedisFrontier};
 use testcontainers::core::WaitFor;
 use testcontainers::runners::AsyncRunner;
 use testcontainers::{ContainerAsync, GenericImage};
@@ -229,7 +229,10 @@ async fn claim_returns_empty_hint_when_only_wake_has_entries() {
 
     let outcome = frontier.claim(&IDENTITY).await.unwrap();
     assert!(
-        matches!(outcome, ClaimOutcome::EmptyHint { .. } | ClaimOutcome::Empty),
+        matches!(
+            outcome,
+            ClaimOutcome::EmptyHint { .. } | ClaimOutcome::Empty
+        ),
         "expected EmptyHint (host still in wake) or Empty (host_queue drained); got {outcome:?}",
     );
 }
@@ -328,7 +331,10 @@ async fn ack_removes_url_from_state() {
 
     // No more URLs queued for this host.
     let outcome = frontier.claim(&IDENTITY).await.unwrap();
-    assert!(matches!(outcome, ClaimOutcome::Empty | ClaimOutcome::EmptyHint { .. }));
+    assert!(matches!(
+        outcome,
+        ClaimOutcome::Empty | ClaimOutcome::EmptyHint { .. }
+    ));
     assert_eq!(frontier.len().await.unwrap(), 0);
 }
 
@@ -352,7 +358,10 @@ async fn host_hash_policy_routes_urls_to_owned_shard() {
     .await
     .unwrap();
 
-    let outcome = frontier.submit(entry("https://example.com/p1")).await.unwrap();
+    let outcome = frontier
+        .submit(entry("https://example.com/p1"))
+        .await
+        .unwrap();
     assert!(matches!(outcome, SubmitOutcome::Queued));
 
     frontier.tick().await.unwrap();

@@ -175,4 +175,3 @@ pub fn register() {
          against config."
     );
 }
-

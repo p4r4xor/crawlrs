@@ -16,8 +16,8 @@
 //!
 //! Requires Redis Stack (or stock Redis with the RedisBloom module
 //! loaded). The constructor surfaces a clear error if the module is
-//! missing so deployments fail fast instead of mis-deduping at
-//! runtime.
+//! missing so deployments fail fast instead of silently dropping
+//! every submit as a duplicate at runtime.
 
 use bb8::Pool;
 use bb8_redis::RedisConnectionManager;
@@ -49,7 +49,11 @@ impl Default for BloomConfig {
 /// Ensure the bloom filter exists at `key`. Idempotent across
 /// processes: a peer racing the `BF.RESERVE` loses with "ERR item
 /// exists", which we treat as success.
-pub async fn reserve(pool: &Pool<RedisConnectionManager>, key: &str, config: BloomConfig) -> Result<(), String> {
+pub async fn reserve(
+    pool: &Pool<RedisConnectionManager>,
+    key: &str,
+    config: BloomConfig,
+) -> Result<(), String> {
     let mut conn = pool
         .get()
         .await
@@ -87,7 +91,11 @@ pub async fn reserve(pool: &Pool<RedisConnectionManager>, key: &str, config: Blo
 /// directly and inspects the return value); useful for assertions
 /// in integration tests.
 #[cfg(test)]
-pub async fn exists(pool: &Pool<RedisConnectionManager>, key: &str, url_id_hex: &str) -> Result<bool, String> {
+pub async fn exists(
+    pool: &Pool<RedisConnectionManager>,
+    key: &str,
+    url_id_hex: &str,
+) -> Result<bool, String> {
     let mut conn = pool
         .get()
         .await

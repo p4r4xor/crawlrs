@@ -53,7 +53,7 @@ pub fn status_class(status: u16) -> &'static str {
 }
 
 /// Bucket a Content-Type header value into a 3-element categorical
-/// set (`html` / `non_html` / `unknown`). Missing or unparseable
+/// set (`html` / `non_html` / `unknown`). Missing or unparsable
 /// headers map to `unknown` so absence is distinguishable from an
 /// explicit non-html type.
 pub fn content_type(content_type_header: Option<&str>) -> &'static str {

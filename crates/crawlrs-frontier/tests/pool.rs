@@ -3,8 +3,8 @@
 
 use bb8::Pool;
 use bb8_redis::RedisConnectionManager;
-use crawlrs_frontier_redis::pool::POOL_HEADROOM;
-use crawlrs_frontier_redis::{PoolSizeError, validate_pool_size};
+use crawlrs_frontier::pool::POOL_HEADROOM;
+use crawlrs_frontier::{PoolSizeError, validate_pool_size};
 
 /// Small fake of bb8's builder pattern just enough to construct a
 /// pool with a known max_size; we never call `.connect()` on it, so

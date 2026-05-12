@@ -29,7 +29,6 @@ clap.workspace                         = true
 humantime-serde.workspace              = true
 metrics-exporter-prometheus.workspace  = true
 object_store.workspace                 = true
-redis.workspace                        = true
 serde.workspace                        = true
 sqlx.workspace                         = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "fs"] }

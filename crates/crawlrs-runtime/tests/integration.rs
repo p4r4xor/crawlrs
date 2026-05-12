@@ -19,7 +19,7 @@ use crawlrs_core::{
     SiteAdapterRegistry, UrlEntry, UrlStatus,
 };
 use crawlrs_fakes::{FakeFetcher, InMemoryMetadataStore, InMemoryStore};
-use crawlrs_frontier_redis::{BloomConfig, RedisFrontier};
+use crawlrs_frontier::{BloomConfig, RedisFrontier};
 use crawlrs_parse::LolHtmlParser;
 use crawlrs_politeness::{PolitenessConfig, RedisPoliteness};
 use crawlrs_runtime::{Crawler, CrawlerConfig};

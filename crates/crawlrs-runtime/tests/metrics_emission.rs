@@ -36,41 +36,41 @@ fn metric_name_contract_holds() {
 
     // ---- frontier layer ----
     metrics::counter!(
-        crawlrs_frontier_redis::metrics::FRONTIER_CLAIM_TOTAL,
+        crawlrs_frontier::metrics::FRONTIER_CLAIM_TOTAL,
         "shard" => "0",
-        "outcome" => crawlrs_frontier_redis::metrics::OUTCOME_CLAIMED,
+        "outcome" => crawlrs_frontier::metrics::OUTCOME_CLAIMED,
     )
     .increment(1);
     metrics::gauge!(
-        crawlrs_frontier_redis::metrics::FRONTIER_READY_LENGTH,
+        crawlrs_frontier::metrics::FRONTIER_READY_LENGTH,
         "shard" => "0",
     )
     .set(0.0);
     metrics::gauge!(
-        crawlrs_frontier_redis::metrics::FRONTIER_INFLIGHT_LENGTH,
+        crawlrs_frontier::metrics::FRONTIER_INFLIGHT_LENGTH,
         "shard" => "0",
     )
     .set(0.0);
     metrics::histogram!(
-        crawlrs_frontier_redis::metrics::FRONTIER_CALL_SECONDS,
-        "op" => crawlrs_frontier_redis::metrics::OP_CLAIM,
+        crawlrs_frontier::metrics::FRONTIER_CALL_SECONDS,
+        "op" => crawlrs_frontier::metrics::OP_CLAIM,
     )
     .record(0.001);
-    metrics::histogram!(crawlrs_frontier_redis::metrics::FRONTIER_SUBMIT_BATCH_SIZE).record(100.0);
-    metrics::gauge!(crawlrs_frontier_redis::metrics::FRONTIER_POOL_PENDING).set(0.0);
+    metrics::histogram!(crawlrs_frontier::metrics::FRONTIER_SUBMIT_BATCH_SIZE).record(100.0);
+    metrics::gauge!(crawlrs_frontier::metrics::FRONTIER_POOL_PENDING).set(0.0);
     metrics::counter!(
-        crawlrs_frontier_redis::metrics::FRONTIER_BLOOM_TOTAL,
-        "verdict" => crawlrs_frontier_redis::metrics::BLOOM_NEW,
+        crawlrs_frontier::metrics::FRONTIER_BLOOM_TOTAL,
+        "verdict" => crawlrs_frontier::metrics::BLOOM_NEW,
     )
     .increment(1);
     metrics::counter!(
-        crawlrs_frontier_redis::metrics::FRONTIER_LEASE_RECLAIM_TOTAL,
-        "reason" => crawlrs_frontier_redis::metrics::RECLAIM_REASON_EXPIRED,
+        crawlrs_frontier::metrics::FRONTIER_LEASE_RECLAIM_TOTAL,
+        "reason" => crawlrs_frontier::metrics::RECLAIM_REASON_EXPIRED,
     )
     .increment(0);
-    metrics::counter!(crawlrs_frontier_redis::metrics::FRONTIER_PROMOTED_TOTAL).increment(0);
+    metrics::counter!(crawlrs_frontier::metrics::FRONTIER_PROMOTED_TOTAL).increment(0);
     metrics::counter!(
-        crawlrs_frontier_redis::metrics::FRONTIER_OVERFLOW_TOTAL,
+        crawlrs_frontier::metrics::FRONTIER_OVERFLOW_TOTAL,
         "host" => "example.com",
     )
     .increment(0);
@@ -162,16 +162,16 @@ fn metric_name_contract_holds() {
         crawlrs_runtime::metrics::URLS_SKIPPED_TOTAL,
         crawlrs_runtime::metrics::WORKERS_ACTIVE,
         crawlrs_runtime::metrics::PIPELINE_SECONDS,
-        crawlrs_frontier_redis::metrics::FRONTIER_CLAIM_TOTAL,
-        crawlrs_frontier_redis::metrics::FRONTIER_CALL_SECONDS,
-        crawlrs_frontier_redis::metrics::FRONTIER_SUBMIT_BATCH_SIZE,
-        crawlrs_frontier_redis::metrics::FRONTIER_POOL_PENDING,
-        crawlrs_frontier_redis::metrics::FRONTIER_OVERFLOW_TOTAL,
-        crawlrs_frontier_redis::metrics::FRONTIER_BLOOM_TOTAL,
-        crawlrs_frontier_redis::metrics::FRONTIER_LEASE_RECLAIM_TOTAL,
-        crawlrs_frontier_redis::metrics::FRONTIER_PROMOTED_TOTAL,
-        crawlrs_frontier_redis::metrics::FRONTIER_READY_LENGTH,
-        crawlrs_frontier_redis::metrics::FRONTIER_INFLIGHT_LENGTH,
+        crawlrs_frontier::metrics::FRONTIER_CLAIM_TOTAL,
+        crawlrs_frontier::metrics::FRONTIER_CALL_SECONDS,
+        crawlrs_frontier::metrics::FRONTIER_SUBMIT_BATCH_SIZE,
+        crawlrs_frontier::metrics::FRONTIER_POOL_PENDING,
+        crawlrs_frontier::metrics::FRONTIER_OVERFLOW_TOTAL,
+        crawlrs_frontier::metrics::FRONTIER_BLOOM_TOTAL,
+        crawlrs_frontier::metrics::FRONTIER_LEASE_RECLAIM_TOTAL,
+        crawlrs_frontier::metrics::FRONTIER_PROMOTED_TOTAL,
+        crawlrs_frontier::metrics::FRONTIER_READY_LENGTH,
+        crawlrs_frontier::metrics::FRONTIER_INFLIGHT_LENGTH,
         crawlrs_politeness::metrics::ROBOTS_CACHE_HITS_TOTAL,
         crawlrs_politeness::metrics::ROBOTS_CACHE_MISSES_TOTAL,
         crawlrs_politeness::metrics::POLITENESS_BACKOFF_SECONDS,

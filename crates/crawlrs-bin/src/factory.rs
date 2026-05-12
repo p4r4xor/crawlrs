@@ -11,7 +11,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use bb8_redis::RedisConnectionManager;
 use crawlrs_core::{HostHashShardPolicy, ShardKey, ShardingPolicy};
 use crawlrs_fetch::{NoProxyResolver, WreqFetcher, WreqFetcherConfig};
-use crawlrs_frontier_redis::RedisFrontier;
+use crawlrs_frontier::RedisFrontier;
 use crawlrs_metadata::PostgresMetadataStore;
 use crawlrs_parse::LolHtmlParser;
 use crawlrs_politeness::{PolitenessConfig as CorePolitenessConfig, RedisPoliteness};
@@ -54,7 +54,7 @@ pub async fn build(config: &CrawlrsConfig) -> Result<Built> {
             sharding_policy.clone(),
             owned_shards.clone(),
             &config.run_id,
-            crawlrs_frontier_redis::BloomConfig {
+            crawlrs_frontier::BloomConfig {
                 capacity: config.frontier.bloom_capacity,
                 fpr: config.frontier.bloom_fpr,
             },

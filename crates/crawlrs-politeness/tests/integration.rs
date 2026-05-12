@@ -284,7 +284,11 @@ async fn record_failure_returns_next_wake_with_backoff() {
     let p = build(&fx.pool, fake.clone(), config).await;
 
     let plan = p
-        .record_failure(&url("https://flaky.test/"), FailureKind::TooManyRequests, None)
+        .record_failure(
+            &url("https://flaky.test/"),
+            FailureKind::TooManyRequests,
+            None,
+        )
         .await
         .unwrap();
     let delay = delay_from_now(plan.until);

@@ -97,8 +97,7 @@ impl<'a> HostQueueOps<'a> {
         max_host_backlog: u64,
         now_ms: i64,
     ) -> Result<SubmitOutcome, HostQueueError> {
-        let payload =
-            codec::encode(entry).map_err(|e| HostQueueError::Codec(e.to_string()))?;
+        let payload = codec::encode(entry).map_err(|e| HostQueueError::Codec(e.to_string()))?;
 
         let mut conn = self
             .pool

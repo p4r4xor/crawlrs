@@ -403,7 +403,7 @@ impl Outbox for PostgresMetadataStore {
     #[tracing::instrument(skip(self, ship), fields(max))]
     async fn publish(&self, max: usize, ship: ShipFn) -> Result<usize> {
         // One transaction holds the SELECT-acquired row locks until
-        // commit. Concurrent callers' SELECTs use SKIP LOCKED to step
+        // commit. Concurrent callers' SELECT queries use SKIP LOCKED to step
         // over our locked rows, so they receive disjoint batches.
         let mut tx = self
             .pool

@@ -11,12 +11,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use async_trait::async_trait;
+use bb8::Pool;
+use bb8_redis::RedisConnectionManager;
 use crawlrs_core::{
     CanonicalUrl, Error, FailureKind, Fetcher, NextWake, PoliteDecision, Politeness, Result,
     ShardKey, ShardingPolicy,
 };
-use bb8::Pool;
-use bb8_redis::RedisConnectionManager;
 use redis::AsyncCommands;
 use thiserror::Error as ThisError;
 use tracing::{debug, info};

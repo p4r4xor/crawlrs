@@ -18,7 +18,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crawlrs_frontier_redis::RedisFrontier;
+use crawlrs_frontier::RedisFrontier;
 use crawlrs_metadata::PostgresMetadataStore;
 use crawlrs_politeness::RedisPoliteness;
 use tokio::sync::watch;

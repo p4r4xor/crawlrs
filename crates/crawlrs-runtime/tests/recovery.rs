@@ -28,8 +28,8 @@ use crawlrs_core::{
     AttemptId, CanonicalUrl, ClaimOutcome, Frontier, MetadataStore, Outbox, ShardingPolicy,
     SingleShardPolicy, SuccessRecord, UrlEntry, WorkerIdentity,
 };
-use crawlrs_fakes::{InMemoryFrontier, InMemoryMetadataStore};
 use crawlrs_fakes::ManualClock;
+use crawlrs_fakes::{InMemoryFrontier, InMemoryMetadataStore};
 use crawlrs_runtime::outbox_publisher;
 use tokio::sync::watch;
 
