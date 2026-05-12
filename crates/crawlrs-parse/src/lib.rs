@@ -5,6 +5,7 @@
 //! [`ParsedDocument`](crawlrs_core::ParsedDocument) with title, visible
 //! text, and canonicalized outbound links.
 
+pub mod extensions;
 pub mod metrics;
 pub mod parser;
 

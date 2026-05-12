@@ -559,14 +559,16 @@ fn compute_outbound(
         .collect()
 }
 
-// Inline because: locality guards. The first test ties an array of
-// field names to `WorkerDeps` so adding a field forces an update at
-// the construction site. The remaining tests pin the depth-limit
-// math in `compute_outbound` next to the function it guards;
-// promoting either to `tests/` would force `pub` on an internal
-// helper or array.
 #[cfg(test)]
 mod tests {
+    // Inline because: locality guards + visibility-forced. The first
+    // test ties an array of field names to `WorkerDeps` so adding a
+    // field forces an update at the construction site; that reminder
+    // only works if the test sits next to the struct. The remaining
+    // tests pin the depth-limit math in `compute_outbound`, a private
+    // free function, next to the function it guards. Promoting either
+    // to `tests/` would force `pub` on an internal helper or array.
+
     use super::*;
     use crawlrs_core::{CanonicalUrl, ParsedDocument, UrlEntry};
 

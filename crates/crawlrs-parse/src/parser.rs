@@ -17,7 +17,10 @@
 //!
 //! After streaming, hrefs are resolved against the effective base
 //! (`<base href>` if present, otherwise `response.url`) via
-//! [`CanonicalUrl::parse_relative`], filtered to http(s) only, and deduped.
+//! [`CanonicalUrl::parse_relative`], filtered to http(s) only,
+//! filtered through [`extensions::denies`] to drop
+//! known non-HTML targets (images, video, archives, office docs,
+//! scripts), and deduped.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
@@ -26,6 +29,8 @@ use std::rc::Rc;
 use async_trait::async_trait;
 use crawlrs_core::{CanonicalUrl, Error, FetchResponse, ParsedDocument, Parser, Result};
 use lol_html::{EndTagHandler, HtmlRewriter, Settings, element, text};
+
+use crate::extensions;
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct LolHtmlParser;
@@ -48,7 +53,12 @@ impl Parser for LolHtmlParser {
             None => response.url.clone(),
         };
 
-        let outbound_links = resolve_links(&extracted.raw_links, &effective_base);
+        let (outbound_links, extension_denied) =
+            resolve_links(&extracted.raw_links, &effective_base);
+        if extension_denied > 0 {
+            metrics::counter!(crate::metrics::PARSE_LINKS_EXTENSION_DENIED_TOTAL)
+                .increment(extension_denied as u64);
+        }
 
         let title = extracted
             .title
@@ -177,9 +187,16 @@ fn extract_html(body: &[u8]) -> Result<Extracted> {
     })
 }
 
-fn resolve_links(raw: &[String], base: &CanonicalUrl) -> Vec<CanonicalUrl> {
+/// Resolve raw hrefs to canonical absolute URLs and filter.
+///
+/// Returns `(kept_urls, extension_denied_count)`. The denied-count is
+/// surfaced separately so the caller can emit it as a counter; we
+/// don't allocate a parallel `Vec` for dropped URLs because the
+/// per-fetch metric only needs the cardinality, not the values.
+fn resolve_links(raw: &[String], base: &CanonicalUrl) -> (Vec<CanonicalUrl>, usize) {
     let mut seen = HashSet::new();
     let mut out = Vec::new();
+    let mut extension_denied = 0usize;
     for href in raw {
         let trimmed = href.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') {
@@ -191,11 +208,15 @@ fn resolve_links(raw: &[String], base: &CanonicalUrl) -> Vec<CanonicalUrl> {
         if !resolved.is_http() {
             continue;
         }
+        if extensions::denies(&resolved) {
+            extension_denied += 1;
+            continue;
+        }
         if seen.insert(resolved.clone()) {
             out.push(resolved);
         }
     }
-    out
+    (out, extension_denied)
 }
 
 /// Collapse runs of whitespace into a single space and trim.

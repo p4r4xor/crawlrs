@@ -578,6 +578,12 @@ fn datetime_to_system_time(dt: DateTime<Utc>) -> SystemTime {
 // here.
 #[cfg(test)]
 mod tests {
+    // Inline because: visibility-forced. These tests exercise the
+    // private helpers `parse_status`, `failure_kind_str`, and
+    // `datetime_to_system_time`; `tests/*.rs` (compiled as a separate
+    // crate) cannot reach them. Public-API integration tests live in
+    // `tests/postgres_metadata.rs`.
+
     use super::*;
     use chrono::TimeZone;
 

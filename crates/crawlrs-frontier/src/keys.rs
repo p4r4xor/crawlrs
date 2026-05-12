@@ -112,6 +112,16 @@ impl KeyPrefix {
 
 #[cfg(test)]
 mod tests {
+    // Inline because: locality guards. These tests pin two
+    // architectural invariants tied to the `KeyPrefix` impl: cross-run
+    // dedup (the `seen` key must NOT scope by `run_id`, so a URL seen
+    // in run A is recognised as duplicate in run B) and Redis-cluster
+    // colocation (every per-run-per-shard key must share the
+    // `{<run>_s<N>}` hash tag so multi-key Lua stays on one slot).
+    // Anyone adding a new per-shard key needs that reminder living
+    // next to the keys themselves; promoting to `tests/` would
+    // separate the contract from the surface it constrains.
+
     use super::*;
 
     #[test]

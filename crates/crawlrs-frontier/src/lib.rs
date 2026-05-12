@@ -32,7 +32,7 @@
 //! missing.
 
 pub mod bloom;
-pub mod codec;
+pub(crate) mod codec;
 pub mod frontier;
 pub mod host_queue;
 pub mod keys;

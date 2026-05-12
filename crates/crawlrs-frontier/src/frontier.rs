@@ -585,8 +585,15 @@ fn ms_to_instant(target_wall_ms: u64) -> Instant {
 
 #[cfg(test)]
 mod tests {
+    // Inline because: visibility-forced. The test exercises the
+    // private free functions `encode_attempt` / `decode_attempt`,
+    // which are the wire format for the opaque `AttemptId` the
+    // runtime carries through the pipeline. `tests/*.rs` (a separate
+    // crate) cannot reach them; we keep them private to avoid
+    // committing to the encoding in the public API.
+
     use super::*;
-    use crawlrs_core::{CanonicalUrl, SingleShardPolicy};
+    use crawlrs_core::CanonicalUrl;
 
     #[test]
     fn attempt_id_round_trips() {
@@ -597,19 +604,5 @@ mod tests {
         assert_eq!(shard, 0);
         assert_eq!(decoded_id, url_id);
         assert_eq!(host, "example.com");
-    }
-
-    #[test]
-    fn shard_of_rejects_non_http_url_without_host() {
-        // SingleShardPolicy always picks shard 0; this exercises the
-        // host-extraction error path.
-        let policy: Arc<dyn ShardingPolicy> = Arc::new(SingleShardPolicy);
-        // We can't build a RedisFrontier without a Redis pool, so
-        // assert on the helper directly.
-        let url = CanonicalUrl::parse("https://a.test/").unwrap();
-        let entry = UrlEntry::seed(url.clone());
-        let host = entry.url.host().unwrap();
-        assert_eq!(host, "a.test");
-        let _ = policy.shard_key(&entry.url);
     }
 }

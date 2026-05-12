@@ -10,22 +10,23 @@
 
 use crawlrs_core::{Error, Result, UrlEntry};
 
-pub fn encode(entry: &UrlEntry) -> Result<Vec<u8>> {
+pub(crate) fn encode(entry: &UrlEntry) -> Result<Vec<u8>> {
     postcard::to_allocvec(entry).map_err(|e| Error::Frontier(format!("postcard encode: {e}")))
 }
 
-pub fn decode(bytes: &[u8]) -> Result<UrlEntry> {
+pub(crate) fn decode(bytes: &[u8]) -> Result<UrlEntry> {
     postcard::from_bytes(bytes).map_err(|e| Error::Frontier(format!("postcard decode: {e}")))
 }
 
-// Inline because: `encode` and `decode` are intentionally `pub(crate)`
-// - they're the postcard wire format for `UrlEntry`, an
-// implementation detail of how this crate stores items in Redis
-// Streams. Promoting them to `pub` to satisfy a `tests/` integration
-// crate would commit the public API to postcard forever; we'd rather
-// keep the option to swap encodings in a future ADR.
 #[cfg(test)]
 mod tests {
+    // Inline because: visibility-forced. `encode` and `decode` are
+    // `pub(crate)` — the postcard wire format for `UrlEntry` is an
+    // implementation detail of how this crate stores payloads in
+    // Redis. Promoting them to `pub` to satisfy a `tests/` integration
+    // crate would commit the public API to postcard forever; we want
+    // the option to swap encodings in a future ADR.
+
     use super::*;
     use crawlrs_core::CanonicalUrl;
 

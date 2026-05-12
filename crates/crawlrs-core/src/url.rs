@@ -33,8 +33,6 @@
 //! - Runs of slashes in the path are collapsed (`/a//b` -> `/a/b`),
 //!   preserving any embedded scheme (a path like `/proxy/https://other.test/`
 //!   keeps its `://` intact).
-//! - Trailing slash on non-root paths is dropped (`/page/` -> `/page`,
-//!   but `/` stays).
 //! - Tracking query parameters are stripped (`utm_*`, `gclid`,
 //!   `fbclid`, `ref`, `ref_src`); they identify the *referrer*, not
 //!   the resource.
@@ -175,16 +173,6 @@ fn canonicalize(mut url: ::url::Url) -> ::url::Url {
         url.set_path(&decoded);
     }
 
-    // Strip trailing slash on non-root paths. Root `/` stays so
-    // `http://e.test/` doesn't degenerate to `http://e.test`.
-    {
-        let path = url.path();
-        if path.len() > 1 && path.ends_with('/') {
-            let trimmed = path.trim_end_matches('/').to_owned();
-            url.set_path(&trimmed);
-        }
-    }
-
     if url.query().is_some() {
         let mut kept_pairs: Vec<(String, String)> = url
             .query_pairs()
@@ -297,176 +285,13 @@ fn is_rfc3986_unreserved(byte: u8) -> bool {
 
 #[cfg(test)]
 mod tests {
+    // Inline because: visibility-forced. These tests exercise
+    // `collapse_path_slashes`, a private free function that
+    // `tests/*.rs` (compiled as a separate crate) cannot reach.
+    // The public-API canonicalization tests live in
+    // `tests/canonical_url.rs`.
+
     use super::*;
-
-    fn canon(s: &str) -> String {
-        CanonicalUrl::parse(s).unwrap().as_str().to_owned()
-    }
-
-    // -------------------------------------------------------------
-    // Rules we own
-    // -------------------------------------------------------------
-
-    #[test]
-    fn drops_fragment() {
-        assert_eq!(canon("http://e.test/x#frag"), "http://e.test/x");
-    }
-
-    #[test]
-    fn sorts_query_pairs() {
-        assert_eq!(canon("http://e.test/?b=2&a=1"), "http://e.test/?a=1&b=2");
-    }
-
-    #[test]
-    fn strips_utm_and_other_tracking_params() {
-        assert_eq!(
-            canon("http://e.test/?utm_source=x&q=hi&gclid=abc&fbclid=y&ref=foo"),
-            "http://e.test/?q=hi",
-        );
-    }
-
-    #[test]
-    fn empties_query_string_when_all_params_were_tracking() {
-        // Should not leave a dangling `?`.
-        assert_eq!(canon("http://e.test/x?utm_a=1&utm_b=2"), "http://e.test/x");
-    }
-
-    #[test]
-    fn strips_trailing_slash_on_non_root_path() {
-        assert_eq!(canon("http://e.test/page/"), "http://e.test/page");
-    }
-
-    #[test]
-    fn preserves_root_slash() {
-        assert_eq!(canon("http://e.test/"), "http://e.test/");
-    }
-
-    #[test]
-    fn strips_trailing_dot_on_hostname() {
-        assert_eq!(canon("http://e.test./page"), "http://e.test/page");
-    }
-
-    #[test]
-    fn trailing_dot_strip_preserves_port() {
-        assert_eq!(canon("http://e.test.:8080/x"), "http://e.test:8080/x");
-    }
-
-    #[test]
-    fn collapses_duplicate_slashes_in_path() {
-        assert_eq!(canon("http://e.test/a//b///c"), "http://e.test/a/b/c");
-    }
-
-    #[test]
-    fn collapses_leading_double_slash_in_path() {
-        assert_eq!(canon("http://e.test//x"), "http://e.test/x");
-    }
-
-    #[test]
-    fn preserves_embedded_scheme_double_slash_in_path() {
-        // Proxy-style URLs that carry another URL in the path keep
-        // their `://`. Without this carveout we'd corrupt the embedded
-        // URL into a single slash.
-        assert_eq!(
-            canon("http://e.test/proxy/https://other.test/x"),
-            "http://e.test/proxy/https://other.test/x",
-        );
-    }
-
-    #[test]
-    fn strips_userinfo_username_and_password() {
-        assert_eq!(canon("http://user:pass@e.test/page"), "http://e.test/page");
-    }
-
-    #[test]
-    fn strips_userinfo_username_only() {
-        assert_eq!(canon("http://user@e.test/page"), "http://e.test/page");
-    }
-
-    // -------------------------------------------------------------
-    // Behaviors the `url` crate handles for us; locked here as
-    // regression tests so an upstream change surfaces immediately.
-    // -------------------------------------------------------------
-
-    #[test]
-    fn url_crate_lowercases_scheme() {
-        assert_eq!(canon("HTTPS://e.test/x"), "https://e.test/x");
-    }
-
-    #[test]
-    fn url_crate_lowercases_ascii_host() {
-        assert_eq!(canon("http://E.Test/x"), "http://e.test/x");
-    }
-
-    #[test]
-    fn url_crate_normalizes_empty_path_to_root_slash() {
-        assert_eq!(canon("http://e.test"), "http://e.test/");
-    }
-
-    #[test]
-    fn url_crate_strips_default_port_http() {
-        assert_eq!(canon("http://e.test:80/x"), "http://e.test/x");
-    }
-
-    #[test]
-    fn url_crate_strips_default_port_https() {
-        assert_eq!(canon("https://e.test:443/x"), "https://e.test/x");
-    }
-
-    #[test]
-    fn url_crate_keeps_non_default_port() {
-        assert_eq!(canon("http://e.test:8080/x"), "http://e.test:8080/x");
-    }
-
-    #[test]
-    fn url_crate_treats_backslash_as_forward_slash_in_path() {
-        // WHATWG URL spec. With our `//` collapse running after, the
-        // resulting double slash gets collapsed too.
-        assert_eq!(canon("http://e.test/a\\b"), "http://e.test/a/b");
-    }
-
-    #[test]
-    fn decodes_unreserved_percent_encoded_octets_in_path() {
-        // RFC 3986 section 6.2.2.2 mandates this for normalization;
-        // the upstream `url` crate doesn't do it, so we do. `%41` is
-        // `A` (unreserved per RFC 3986 section 2.3).
-        assert_eq!(canon("http://e.test/%41"), "http://e.test/A");
-    }
-
-    #[test]
-    fn decodes_unreserved_lowercase_hex_too() {
-        // Hex digits are case-insensitive in `%XX`.
-        assert_eq!(canon("http://e.test/%66%6f%6f"), "http://e.test/foo");
-    }
-
-    #[test]
-    fn preserves_reserved_percent_encoded_octets_in_path() {
-        // `%2F` is `/`, a reserved character. Decoding it would
-        // change path-segment semantics, so the encoded form stays.
-        assert_eq!(canon("http://e.test/a%2Fb"), "http://e.test/a%2Fb");
-    }
-
-    #[test]
-    fn passes_through_invalid_percent_escapes_in_path() {
-        // `%ZZ` is not valid hex; leave alone. (The `url` crate
-        // percent-encodes the `%` itself, so we observe `%25ZZ` here.)
-        let canonical = canon("http://e.test/%ZZ");
-        assert!(
-            canonical.contains("ZZ"),
-            "invalid escape should be preserved verbatim somewhere; got {canonical}",
-        );
-    }
-
-    // -------------------------------------------------------------
-    // Compose
-    // -------------------------------------------------------------
-
-    #[test]
-    fn all_rules_compose() {
-        assert_eq!(
-            canon("HTTPS://USER:PASS@E.test.:443//Path///Sub/?utm_source=x&b=2&a=1#frag"),
-            "https://e.test/Path/Sub?a=1&b=2",
-        );
-    }
 
     #[test]
     fn collapse_path_slashes_handles_simple_runs() {

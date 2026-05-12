@@ -215,15 +215,17 @@ enum RestartDecision {
     GiveUp,
 }
 
-// Inline because: visibility-forced. The tests exercise the private
-// `RestartState::decide_restart` state machine directly, which is the
-// pure-function core extracted out of `supervise_worker` so it can be
-// driven without spawning real tasks or sleeping real time. Promoting
-// `RestartState` to `pub` would leak an implementation detail of the
-// supervisor; keeping the tests inline keeps them coupled to the
-// state machine they're guarding.
 #[cfg(test)]
 mod tests {
+    // Inline because: visibility-forced. The tests exercise the
+    // private `RestartState::decide_restart` state machine directly,
+    // which is the pure-function core extracted out of
+    // `supervise_worker` so it can be driven without spawning real
+    // tasks or sleeping real time. Promoting `RestartState` to `pub`
+    // would leak an implementation detail of the supervisor;
+    // keeping the tests inline keeps them coupled to the state
+    // machine they're guarding.
+
     use super::*;
 
     fn policy(max: u32, base_ms: u64, max_ms: u64, reset_secs: u64) -> RestartPolicy {
