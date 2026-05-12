@@ -19,6 +19,7 @@ pub const URLS_FAILED_TOTAL: &str = "crawlrs_urls_failed_total";
 pub const URLS_SKIPPED_TOTAL: &str = "crawlrs_urls_skipped_total";
 pub const WORKERS_ACTIVE: &str = "crawlrs_workers_active";
 pub const PIPELINE_SECONDS: &str = "crawlrs_pipeline_seconds";
+pub const PIPELINE_PHASE_SECONDS: &str = "crawlrs_pipeline_phase_seconds";
 pub const WORKER_RESTARTS_TOTAL: &str = "crawlrs_worker_restarts_total";
 pub const OUTBOX_PUBLISHED_TOTAL: &str = "crawlrs_outbox_published_total";
 pub const DIRECT_DISPATCH_LOST_TOTAL: &str = "crawlrs_direct_dispatch_lost_total";
@@ -38,6 +39,17 @@ pub const TOKIO_WORKERS: &str = "crawlrs_tokio_workers";
 
 pub const SKIP_POLITENESS_DISALLOWED: &str = "politeness_disallowed";
 pub const SKIP_DEPTH_LIMIT: &str = "depth_limit";
+
+/// Phase labels for `PIPELINE_PHASE_SECONDS`. Six fixed values
+/// covering the per-URL pipeline in `worker.rs::UrlPipeline`. Sum
+/// across phases approximates `PIPELINE_SECONDS` (small gap covered
+/// by accounting between phases).
+pub const PHASE_POLITENESS: &str = "politeness";
+pub const PHASE_ATTEMPTING: &str = "attempting";
+pub const PHASE_FETCH: &str = "fetch";
+pub const PHASE_EXTRACT: &str = "extract";
+pub const PHASE_STORE: &str = "store";
+pub const PHASE_COMMIT: &str = "commit";
 
 /// Label values for `OUTBOX_PUBLISHED_TOTAL`. The two variants have
 /// different units: `success` counts rows shipped to the Frontier,
@@ -73,6 +85,15 @@ pub fn register() {
         PIPELINE_SECONDS,
         Unit::Seconds,
         "End-to-end per-URL pipeline duration: claim through ack."
+    );
+    describe_histogram!(
+        PIPELINE_PHASE_SECONDS,
+        Unit::Seconds,
+        "Per-phase wall-clock duration within one URL pipeline. \
+         Labelled by `phase`: politeness, attempting, fetch, extract, \
+         store, commit. Stack the rate-of-sum / rate-of-count for a \
+         'where does pipeline time go' breakdown; heatmap each phase \
+         for tail-latency drift."
     );
     describe_counter!(
         WORKER_RESTARTS_TOTAL,

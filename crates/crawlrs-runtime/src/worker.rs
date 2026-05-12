@@ -33,6 +33,40 @@ use tracing::{debug, warn};
 use crate::crawler::CrawlerConfig;
 use crate::failure::{classify_status, classify_transport_error, extract_retry_after};
 
+/// Records a phase's wall-clock duration via Drop. Use as
+/// `let _t = PhaseTimer::start(metrics::PHASE_FETCH);`; the histogram
+/// emission happens when `_t` goes out of scope, which means every
+/// exit path (success, early return, panic) is accounted for without
+/// hand-wiring `record(...)` at each return site.
+///
+/// Pattern: Resource Acquisition Is Initialization (RAII) over the
+/// timing measurement. `metrics::histogram!` is sync-safe and a no-op
+/// when no recorder is installed, so `Drop` cannot panic.
+struct PhaseTimer {
+    started: TokioInstant,
+    phase: &'static str,
+}
+
+impl PhaseTimer {
+    fn start(phase: &'static str) -> Self {
+        Self {
+            started: TokioInstant::now(),
+            phase,
+        }
+    }
+}
+
+impl Drop for PhaseTimer {
+    fn drop(&mut self) {
+        let elapsed = self.started.elapsed().as_secs_f64();
+        metrics::histogram!(
+            crate::metrics::PIPELINE_PHASE_SECONDS,
+            "phase" => self.phase,
+        )
+        .record(elapsed);
+    }
+}
+
 /// Bag of dependencies shared across all worker tasks. `Arc<dyn _>`
 /// for each so workers can clone cheaply.
 pub struct WorkerDeps {
@@ -218,6 +252,7 @@ impl UrlPipeline {
     /// (robots / blocklist / circuit-open), not a URL-level failure
     /// worth recording in the ledger.
     async fn politeness_allows(&self) -> bool {
+        let _phase = PhaseTimer::start(crate::metrics::PHASE_POLITENESS);
         match self.deps.politeness.check(self.url()).await {
             Ok(PoliteDecision::Allow) => true,
             Ok(PoliteDecision::Disallow) => {
@@ -245,6 +280,7 @@ impl UrlPipeline {
     /// and the lease-expiry reclaim hands the URL to a peer who'll
     /// redo this transition.
     async fn mark_attempting(&self) {
+        let _phase = PhaseTimer::start(crate::metrics::PHASE_ATTEMPTING);
         let result = self
             .deps
             .metadata
@@ -260,6 +296,7 @@ impl UrlPipeline {
     /// path already finalized the URL (handled retry budget + ack /
     /// lease-expiry).
     async fn fetch(&self) -> Option<FetchResponse> {
+        let _phase = PhaseTimer::start(crate::metrics::PHASE_FETCH);
         let mut req = FetchRequest::new(self.url().clone());
         if let Some(user_agent) = &self.deps.config.user_agent {
             req.headers
@@ -333,6 +370,7 @@ impl UrlPipeline {
     /// permanently failed (re-trying won't help; bad parse is a
     /// content-side problem) and ack.
     async fn extract(&self, resp: &FetchResponse) -> Option<ParsedDocument> {
+        let _phase = PhaseTimer::start(crate::metrics::PHASE_EXTRACT);
         if let Some(adapter) = self.deps.adapters.find_for(&resp.url) {
             match adapter.extract(resp).await {
                 Ok(Some(doc)) => return Some(doc),
@@ -382,14 +420,21 @@ impl UrlPipeline {
             depth: self.entry.depth,
             content_hash: body_hash,
         };
-        let blob_path = match self.deps.store.write(&record).await {
+        let store_result = {
+            let _phase = PhaseTimer::start(crate::metrics::PHASE_STORE);
+            self.deps.store.write(&record).await
+        };
+        let blob_path = match store_result {
             Ok(p) => p,
             Err(e) => {
                 warn!(url = %self.url(), error = %e, "store write failed; acking anyway to avoid hot loop");
+                let _phase = PhaseTimer::start(crate::metrics::PHASE_COMMIT);
                 let _ = self.deps.frontier.ack(self.attempt()).await;
                 return;
             }
         };
+
+        let _phase = PhaseTimer::start(crate::metrics::PHASE_COMMIT);
 
         // Outbound dispatch strategy. DurableOutbox commits outbound
         // URLs atomically with metadata so the publisher can replay
