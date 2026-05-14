@@ -233,10 +233,6 @@ impl Default for RuntimeConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct FrontierConfig {
-    /// Per-host queue length cap. Submits past this cap divert to
-    /// the per-shard overflow list. 10,000 caps memory at
-    /// ~1.5 MB/host worst case.
-    pub max_host_backlog: u64,
     /// Lease expiry for an in-flight URL. A worker holding a URL for
     /// longer is presumed dead; the reclaim pass re-pushes the URL.
     /// 60 s comfortably exceeds typical fetch durations.
@@ -263,7 +259,6 @@ pub struct FrontierConfig {
 impl Default for FrontierConfig {
     fn default() -> Self {
         Self {
-            max_host_backlog: 10_000,
             lease_timeout: Duration::from_secs(60),
             promoter_tick: Duration::from_millis(50),
             bloom_capacity: 1_000_000,

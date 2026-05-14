@@ -1,0 +1,660 @@
+{
+  "uid": "crawlrs-health-v2",
+  "title": "Crawler Health Overview (v2)",
+  "tags": ["crawlrs"],
+  "editable": true,
+  "schemaVersion": 39,
+  "version": 2,
+  "timezone": "browser",
+  "refresh": "10s",
+  "time": {"from": "now-30m", "to": "now"},
+  "annotations": {"list": []},
+  "templating": {"list": []},
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Crawl Rate",
+      "description": "Pages successfully fetched per second. Blue is the 5-minute smoothed average (steady-state read); green is the raw 1-minute rate (catches microbursts + dips). When green diverges sharply from blue, something just changed. Values on the Y axis are pages/sec. Source: rate(crawlrs_urls_fetched_total).",
+      "datasource": {"type": "prometheus", "uid": "crawlrs-vm"},
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 0},
+      "targets": [
+        {"refId": "A", "expr": "sum(rate(crawlrs_urls_fetched_total[5m]))", "legendFormat": "smoothed (5m)", "datasource": {"type": "prometheus", "uid": "crawlrs-vm"}},
+        {"refId": "B", "expr": "sum(rate(crawlrs_urls_fetched_total[1m]))", "legendFormat": "raw (1m)", "datasource": {"type": "prometheus", "uid": "crawlrs-vm"}}
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "pages/sec", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "hideFrom": {"legend": false, "tooltip": false, "viz": false}, "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": false, "stacking": {"group": "A", "mode": "none"}, "thresholdsStyle": {"mode": "off"}},
+          "mappings": [], "min": 0,
+          "thresholds": {"mode": "absolute", "steps": [{"color": "transparent", "value": null}]},
+          "unit": "short"
+        },
+        "overrides": [
+          {"matcher": {"id": "byFrameRefID", "options": "A"}, "properties": [{"id": "color", "value": {"fixedColor": "blue", "mode": "fixed"}}, {"id": "displayName", "value": "smoothed (5m)"}, {"id": "custom.lineWidth", "value": 2}]},
+          {"matcher": {"id": "byFrameRefID", "options": "B"}, "properties": [{"id": "color", "value": {"fixedColor": "green", "mode": "fixed"}}, {"id": "displayName", "value": "raw (1m)"}]}
+        ]
+      },
+      "options": {"legend": {"calcs": ["mean", "max", "last"], "displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}}
+    },
+    {
+      "id": 2,
+      "type": "gauge",
+      "title": "Fetch Success Rate",
+      "description": "Share of attempts that completed cleanly over the last 5 minutes. Threshold markers: red <80%, yellow 80-95%, green >=95%. A sustained drop signals upstream blocks, broken hosts, or a regression in retry logic. Source: rate(crawlrs_urls_fetched_total) / (rate(urls_fetched) + rate(urls_failed)).",
+      "datasource": {"type": "prometheus", "uid": "crawlrs-vm"},
+      "gridPos": {"h": 5, "w": 6, "x": 0, "y": 10},
+      "targets": [{"refId": "A", "expr": "sum(rate(crawlrs_urls_fetched_total[5m])) / clamp_min(sum(rate(crawlrs_urls_fetched_total[5m])) + sum(rate(crawlrs_urls_failed_total[5m])), 1e-9)", "datasource": {"type": "prometheus", "uid": "crawlrs-vm"}}],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "decimals": 1,
+          "mappings": [], "min": 0, "max": 1,
+          "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "yellow", "value": 0.8}, {"color": "green", "value": 0.95}]},
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "options": {"showThresholdLabels": false, "showThresholdMarkers": true, "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}}
+    },
+    {
+      "id": 3,
+      "type": "gauge",
+      "title": "Total URLs Fetched",
+      "description": "Cumulative successful fetches since process start. Resets on pod restart. Granular: shows 2 decimal places (e.g. 10.83 M). Source: sum(crawlrs_urls_fetched_total).",
+      "datasource": {"type": "prometheus", "uid": "crawlrs-vm"},
+      "gridPos": {"h": 5, "w": 6, "x": 6, "y": 10},
+      "targets": [{"refId": "A", "expr": "sum(crawlrs_urls_fetched_total)", "datasource": {"type": "prometheus", "uid": "crawlrs-vm"}}],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"fixedColor": "green", "mode": "fixed"},
+          "decimals": 2,
+          "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {"showThresholdLabels": false, "showThresholdMarkers": false, "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}}
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Active Workers",
+      "description": "Workers currently in the running pool. Expected to track runtime.workers from config. A drop means the supervisor is rebuilding a crashed worker. Source: crawlrs_workers_active.",
+      "datasource": {"type": "prometheus", "uid": "crawlrs-vm"},
+      "gridPos": {"h": 5, "w": 6, "x": 12, "y": 10},
+      "targets": [{"refId": "A", "expr": "sum(crawlrs_workers_active)", "datasource": {"type": "prometheus", "uid": "crawlrs-vm"}}],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"fixedColor": "green", "mode": "fixed"}, "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "transparent", "value": null}]},
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto", "wideLayout": true}
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "DLQ Size",
+      "description": "URLs marked permanently failed (retry budget exhausted). Background: green <=10, yellow 10-100, red >100. Source: crawlrs_dlq_size.",
+      "datasource": {"type": "prometheus", "uid": "crawlrs-vm"},
+      "gridPos": {"h": 5, "w": 6, "x": 18, "y": 10},
+      "targets": [{"refId": "A", "expr": "max(crawlrs_dlq_size)", "datasource": {"type": "prometheus", "uid": "crawlrs-vm"}}],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"}, "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 10}, {"color": "red", "value": 100}]},
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {"colorMode": "background", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto", "wideLayout": true}
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Where does pipeline time go? (mean seconds per URL, by phase)",
+      "description": "How an average URL's wall-clock time decomposes across the six pipeline phases, stacked. politeness = robots/blocklist/circuit check. attempting = frontier lease + metadata claim. fetch = HTTP. extract = parse + adapter. store = Parquet/WARC write. commit = Postgres mark_succeeded + frontier ack. The tallest band is the phase eating most of the budget; thin it to speed up the whole pipeline. Source: rate(crawlrs_pipeline_phase_seconds_sum) / rate(crawlrs_pipeline_phase_seconds_count).",
+      "datasource": {"type": "prometheus", "uid": "crawlrs-vm"},
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 15},
+      "targets": [{"refId": "A", "expr": "sum by (phase) (rate(crawlrs_pipeline_phase_seconds_sum[5m])) / clamp_min(sum by (phase) (rate(crawlrs_pipeline_phase_seconds_count[5m])), 1e-9)", "legendFormat": "{{phase}}", "datasource": {"type": "prometheus", "uid": "crawlrs-vm"}}],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "seconds per URL (mean)", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 70, "gradientMode": "none", "hideFrom": {"legend": false, "tooltip": false, "viz": false}, "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": false, "stacking": {"group": "A", "mode": "normal"}, "thresholdsStyle": {"mode": "off"}},
+          "mappings": [], "min": 0,
+          "thresholds": {"mode": "absolute", "steps": [{"color": "transparent", "value": null}]},
+          "unit": "s"
+        },
+        "overrides": [
+          {"matcher": {"id": "byRegexp", "options": "^politeness$"}, "properties": [{"id": "color", "value": {"fixedColor": "blue", "mode": "fixed"}}, {"id": "displayName", "value": "politeness (gate)"}]},
+          {"matcher": {"id": "byRegexp", "options": "^(attempting|mark)$"}, "properties": [{"id": "color", "value": {"fixedColor": "super-light-blue", "mode": "fixed"}}, {"id": "displayName", "value": "mark (record start)"}]},
+          {"matcher": {"id": "byRegexp", "options": "^fetch$"}, "properties": [{"id": "color", "value": {"fixedColor": "green", "mode": "fixed"}}, {"id": "displayName", "value": "fetch (HTTP)"}]},
+          {"matcher": {"id": "byRegexp", "options": "^(extract|parse)$"}, "properties": [{"id": "color", "value": {"fixedColor": "yellow", "mode": "fixed"}}, {"id": "displayName", "value": "parse (HTML)"}]},
+          {"matcher": {"id": "byRegexp", "options": "^store$"}, "properties": [{"id": "color", "value": {"fixedColor": "orange", "mode": "fixed"}}, {"id": "displayName", "value": "store (write blob)"}]},
+          {"matcher": {"id": "byRegexp", "options": "^commit$"}, "properties": [{"id": "color", "value": {"fixedColor": "red", "mode": "fixed"}}, {"id": "displayName", "value": "commit (finalize + outbound)"}]}
+        ]
+      },
+      "options": {"legend": {"calcs": ["mean", "max", "last"], "displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}}
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Politeness disallows (rate, by reason)",
+      "description": "URLs the politeness gate rejected over the last 5 minutes, broken down by why. `allow` is filtered out so the small disallow series stay visible. robots = blocked by robots.txt rule. blocked = host is in the blocklist. circuit = the host's circuit breaker is open. quota = per-host depth/url cap hit. Y axis is decisions/sec. Source: crawlrs_politeness_check_total.",
+      "datasource": {"type": "prometheus", "uid": "crawlrs-vm"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 25},
+      "targets": [{"refId": "A", "expr": "sum by (decision) (rate(crawlrs_politeness_check_total{decision!=\"allow\"}[5m]))", "legendFormat": "{{decision}}", "datasource": {"type": "prometheus", "uid": "crawlrs-vm"}}],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "decisions/sec", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 30, "gradientMode": "none", "hideFrom": {"legend": false, "tooltip": false, "viz": false}, "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": false, "stacking": {"group": "A", "mode": "normal"}, "thresholdsStyle": {"mode": "off"}},
+          "mappings": [], "min": 0,
+          "thresholds": {"mode": "absolute", "steps": [{"color": "transparent", "value": null}]},
+          "unit": "short"
+        },
+        "overrides": [
+          {"matcher": {"id": "byRegexp", "options": ".*disallow_robots.*"}, "properties": [{"id": "color", "value": {"fixedColor": "yellow", "mode": "fixed"}}, {"id": "displayName", "value": "robots"}]},
+          {"matcher": {"id": "byRegexp", "options": ".*disallow_blocked.*"}, "properties": [{"id": "color", "value": {"fixedColor": "orange", "mode": "fixed"}}, {"id": "displayName", "value": "blocked"}]},
+          {"matcher": {"id": "byRegexp", "options": ".*disallow_circuit.*"}, "properties": [{"id": "color", "value": {"fixedColor": "red", "mode": "fixed"}}, {"id": "displayName", "value": "circuit"}]},
+          {"matcher": {"id": "byRegexp", "options": ".*disallow_quota.*"}, "properties": [{"id": "color", "value": {"fixedColor": "purple", "mode": "fixed"}}, {"id": "displayName", "value": "quota"}]}
+        ]
+      },
+      "options": {"legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}}
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "URLs skipped (rate, by reason)",
+      "description": "URLs the runtime decided not to fetch. politeness_disallowed = caught by the gate (see panel left). depth_limit = discovered links past max_depth. Y axis is URLs/sec. Source: crawlrs_urls_skipped_total.",
+      "datasource": {"type": "prometheus", "uid": "crawlrs-vm"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 25},
+      "targets": [{"refId": "A", "expr": "sum by (reason) (rate(crawlrs_urls_skipped_total[5m]))", "legendFormat": "{{reason}}", "datasource": {"type": "prometheus", "uid": "crawlrs-vm"}}],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "URLs/sec", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 30, "gradientMode": "none", "hideFrom": {"legend": false, "tooltip": false, "viz": false}, "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": false, "stacking": {"group": "A", "mode": "normal"}, "thresholdsStyle": {"mode": "off"}},
+          "mappings": [], "min": 0,
+          "thresholds": {"mode": "absolute", "steps": [{"color": "transparent", "value": null}]},
+          "unit": "short"
+        },
+        "overrides": [
+          {"matcher": {"id": "byRegexp", "options": ".*politeness_disallowed.*"}, "properties": [{"id": "color", "value": {"fixedColor": "orange", "mode": "fixed"}}, {"id": "displayName", "value": "politeness"}]},
+          {"matcher": {"id": "byRegexp", "options": ".*depth_limit.*"}, "properties": [{"id": "color", "value": {"fixedColor": "blue", "mode": "fixed"}}, {"id": "displayName", "value": "depth limit"}]}
+        ]
+      },
+      "options": {"legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}}
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Pipeline phase P95 (tail latency by phase)",
+      "description": "P95 wall-clock duration per pipeline phase. Companion to the mean-budget panel above: this one surfaces tail behaviour. A phase that's cheap on average (low mean) but expensive at p95 has a small fraction of stuck calls; that's a different problem than a uniformly slow phase. Source: histogram_quantile(0.95, crawlrs_pipeline_phase_seconds).",
+      "datasource": {"type": "prometheus", "uid": "crawlrs-vm"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 33},
+      "targets": [{"refId": "A", "expr": "histogram_quantile(0.95, sum by (phase, le) (rate(crawlrs_pipeline_phase_seconds_bucket[5m])))", "legendFormat": "{{phase}}", "datasource": {"type": "prometheus", "uid": "crawlrs-vm"}}],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "p95 seconds", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "hideFrom": {"legend": false, "tooltip": false, "viz": false}, "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": false, "stacking": {"group": "A", "mode": "none"}, "thresholdsStyle": {"mode": "off"}},
+          "mappings": [], "min": 0,
+          "thresholds": {"mode": "absolute", "steps": [{"color": "transparent", "value": null}]},
+          "unit": "s"
+        },
+        "overrides": [
+          {"matcher": {"id": "byRegexp", "options": "^politeness$"}, "properties": [{"id": "color", "value": {"fixedColor": "blue", "mode": "fixed"}}, {"id": "displayName", "value": "politeness (gate)"}]},
+          {"matcher": {"id": "byRegexp", "options": "^(attempting|mark)$"}, "properties": [{"id": "color", "value": {"fixedColor": "super-light-blue", "mode": "fixed"}}, {"id": "displayName", "value": "mark (record start)"}]},
+          {"matcher": {"id": "byRegexp", "options": "^fetch$"}, "properties": [{"id": "color", "value": {"fixedColor": "green", "mode": "fixed"}}, {"id": "custom.lineWidth", "value": 2}, {"id": "displayName", "value": "fetch (HTTP)"}]},
+          {"matcher": {"id": "byRegexp", "options": "^(extract|parse)$"}, "properties": [{"id": "color", "value": {"fixedColor": "yellow", "mode": "fixed"}}, {"id": "displayName", "value": "parse (HTML)"}]},
+          {"matcher": {"id": "byRegexp", "options": "^store$"}, "properties": [{"id": "color", "value": {"fixedColor": "orange", "mode": "fixed"}}, {"id": "displayName", "value": "store (write blob)"}]},
+          {"matcher": {"id": "byRegexp", "options": "^commit$"}, "properties": [{"id": "color", "value": {"fixedColor": "red", "mode": "fixed"}}, {"id": "displayName", "value": "commit (finalize + outbound)"}]}
+        ]
+      },
+      "options": {"legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}}
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Pipeline end-to-end latency (P50 / P95 / P99)",
+      "description": "Whole-pipeline duration per URL: claim through commit. Diverging P99 from P95 means one slow URL is monopolising a worker. Source: histogram_quantile(*, crawlrs_pipeline_seconds).",
+      "datasource": {"type": "prometheus", "uid": "crawlrs-vm"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 33},
+      "targets": [
+        {"refId": "A", "expr": "histogram_quantile(0.50, sum by (le) (rate(crawlrs_pipeline_seconds_bucket[5m])))", "legendFormat": "p50", "datasource": {"type": "prometheus", "uid": "crawlrs-vm"}},
+        {"refId": "B", "expr": "histogram_quantile(0.95, sum by (le) (rate(crawlrs_pipeline_seconds_bucket[5m])))", "legendFormat": "p95", "datasource": {"type": "prometheus", "uid": "crawlrs-vm"}},
+        {"refId": "C", "expr": "histogram_quantile(0.99, sum by (le) (rate(crawlrs_pipeline_seconds_bucket[5m])))", "legendFormat": "p99", "datasource": {"type": "prometheus", "uid": "crawlrs-vm"}}
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "seconds", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "hideFrom": {"legend": false, "tooltip": false, "viz": false}, "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": false, "stacking": {"group": "A", "mode": "none"}, "thresholdsStyle": {"mode": "off"}},
+          "mappings": [], "min": 0,
+          "thresholds": {"mode": "absolute", "steps": [{"color": "transparent", "value": null}]},
+          "unit": "s"
+        },
+        "overrides": [
+          {"matcher": {"id": "byFrameRefID", "options": "A"}, "properties": [{"id": "color", "value": {"fixedColor": "green", "mode": "fixed"}}, {"id": "displayName", "value": "p50"}]},
+          {"matcher": {"id": "byFrameRefID", "options": "B"}, "properties": [{"id": "color", "value": {"fixedColor": "yellow", "mode": "fixed"}}, {"id": "displayName", "value": "p95"}, {"id": "custom.lineWidth", "value": 2}]},
+          {"matcher": {"id": "byFrameRefID", "options": "C"}, "properties": [{"id": "color", "value": {"fixedColor": "red", "mode": "fixed"}}, {"id": "displayName", "value": "p99"}]}
+        ]
+      },
+      "options": {"legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}}
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Fetch responses by status class",
+      "description": "HTTP status-class breakdown of fetch responses per second. 2xx = green (happy), 3xx = blue (redirects), 4xx = orange (client errors / host blocks us), 5xx = red (server errors). Stacked so the total and composition are visible together. Y axis is responses/sec. Source: crawlrs_fetch_response_total.",
+      "datasource": {"type": "prometheus", "uid": "crawlrs-vm"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 41},
+      "targets": [{"refId": "A", "expr": "sum by (status_class) (rate(crawlrs_fetch_response_total[5m]))", "legendFormat": "{{status_class}}", "datasource": {"type": "prometheus", "uid": "crawlrs-vm"}}],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "responses/sec", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 30, "gradientMode": "none", "hideFrom": {"legend": false, "tooltip": false, "viz": false}, "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": false, "stacking": {"group": "A", "mode": "normal"}, "thresholdsStyle": {"mode": "off"}},
+          "mappings": [], "min": 0,
+          "thresholds": {"mode": "absolute", "steps": [{"color": "transparent", "value": null}]},
+          "unit": "short"
+        },
+        "overrides": [
+          {"matcher": {"id": "byRegexp", "options": ".*2xx.*"}, "properties": [{"id": "color", "value": {"fixedColor": "green", "mode": "fixed"}}]},
+          {"matcher": {"id": "byRegexp", "options": ".*3xx.*"}, "properties": [{"id": "color", "value": {"fixedColor": "blue", "mode": "fixed"}}]},
+          {"matcher": {"id": "byRegexp", "options": ".*4xx.*"}, "properties": [{"id": "color", "value": {"fixedColor": "orange", "mode": "fixed"}}]},
+          {"matcher": {"id": "byRegexp", "options": ".*5xx.*"}, "properties": [{"id": "color", "value": {"fixedColor": "red", "mode": "fixed"}}]},
+          {"matcher": {"id": "byRegexp", "options": ".*other.*"}, "properties": [{"id": "color", "value": {"fixedColor": "super-light-yellow", "mode": "fixed"}}]}
+        ]
+      },
+      "options": {"legend": {"calcs": ["sum", "mean"], "displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}}
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Failures by FailureKind",
+      "description": "Categorical breakdown of failures recorded at the worker. too_many_requests = 429. service_unavailable = 503. connect_reset = TCP reset. timeout = exceeded request_timeout. other = transport/TLS/DNS. Y axis is failures/sec. Source: crawlrs_urls_failed_total.",
+      "datasource": {"type": "prometheus", "uid": "crawlrs-vm"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 41},
+      "targets": [{"refId": "A", "expr": "sum by (kind) (rate(crawlrs_urls_failed_total[5m]))", "legendFormat": "{{kind}}", "datasource": {"type": "prometheus", "uid": "crawlrs-vm"}}],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "failures/sec", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 30, "gradientMode": "none", "hideFrom": {"legend": false, "tooltip": false, "viz": false}, "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": false, "stacking": {"group": "A", "mode": "normal"}, "thresholdsStyle": {"mode": "off"}},
+          "mappings": [], "min": 0,
+          "thresholds": {"mode": "absolute", "steps": [{"color": "transparent", "value": null}]},
+          "unit": "short"
+        },
+        "overrides": [
+          {"matcher": {"id": "byRegexp", "options": ".*too_many_requests.*"}, "properties": [{"id": "color", "value": {"fixedColor": "orange", "mode": "fixed"}}, {"id": "displayName", "value": "429 too many requests"}]},
+          {"matcher": {"id": "byRegexp", "options": ".*service_unavailable.*"}, "properties": [{"id": "color", "value": {"fixedColor": "red", "mode": "fixed"}}, {"id": "displayName", "value": "503 service unavailable"}]},
+          {"matcher": {"id": "byRegexp", "options": ".*connect_reset.*"}, "properties": [{"id": "color", "value": {"fixedColor": "purple", "mode": "fixed"}}, {"id": "displayName", "value": "connect reset"}]},
+          {"matcher": {"id": "byRegexp", "options": ".*timeout.*"}, "properties": [{"id": "color", "value": {"fixedColor": "yellow", "mode": "fixed"}}]},
+          {"matcher": {"id": "byRegexp", "options": ".*other.*"}, "properties": [{"id": "color", "value": {"fixedColor": "super-light-yellow", "mode": "fixed"}}]}
+        ]
+      },
+      "options": {"legend": {"calcs": ["sum", "mean"], "displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}}
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "Fetch latency P50 / P95 / P99 by kind",
+      "description": "Per-request fetch duration, broken down by request kind (page vs robots.txt). Robots fetches should be near-zero and cached; if they rise, the robots cache is broken. Page P99 above ~5s is your timeout-tail problem. Source: histogram_quantile(*, crawlrs_fetch_seconds).",
+      "datasource": {"type": "prometheus", "uid": "crawlrs-vm"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 49},
+      "targets": [
+        {"refId": "A", "expr": "histogram_quantile(0.50, sum by (kind, le) (rate(crawlrs_fetch_seconds_bucket[5m])))", "legendFormat": "{{kind}} p50", "datasource": {"type": "prometheus", "uid": "crawlrs-vm"}},
+        {"refId": "B", "expr": "histogram_quantile(0.95, sum by (kind, le) (rate(crawlrs_fetch_seconds_bucket[5m])))", "legendFormat": "{{kind}} p95", "datasource": {"type": "prometheus", "uid": "crawlrs-vm"}},
+        {"refId": "C", "expr": "histogram_quantile(0.99, sum by (kind, le) (rate(crawlrs_fetch_seconds_bucket[5m])))", "legendFormat": "{{kind}} p99", "datasource": {"type": "prometheus", "uid": "crawlrs-vm"}}
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "seconds", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "hideFrom": {"legend": false, "tooltip": false, "viz": false}, "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": false, "stacking": {"group": "A", "mode": "none"}, "thresholdsStyle": {"mode": "off"}},
+          "mappings": [], "min": 0,
+          "thresholds": {"mode": "absolute", "steps": [{"color": "transparent", "value": null}]},
+          "unit": "s"
+        },
+        "overrides": [
+          {"matcher": {"id": "byRegexp", "options": "page p50.*"}, "properties": [{"id": "color", "value": {"fixedColor": "light-green", "mode": "fixed"}}]},
+          {"matcher": {"id": "byRegexp", "options": "page p95.*"}, "properties": [{"id": "color", "value": {"fixedColor": "yellow", "mode": "fixed"}}, {"id": "custom.lineWidth", "value": 2}]},
+          {"matcher": {"id": "byRegexp", "options": "page p99.*"}, "properties": [{"id": "color", "value": {"fixedColor": "red", "mode": "fixed"}}]},
+          {"matcher": {"id": "byRegexp", "options": "robots p50.*"}, "properties": [{"id": "color", "value": {"fixedColor": "super-light-blue", "mode": "fixed"}}]},
+          {"matcher": {"id": "byRegexp", "options": "robots p95.*"}, "properties": [{"id": "color", "value": {"fixedColor": "blue", "mode": "fixed"}}]},
+          {"matcher": {"id": "byRegexp", "options": "robots p99.*"}, "properties": [{"id": "color", "value": {"fixedColor": "purple", "mode": "fixed"}}]}
+        ]
+      },
+      "options": {"legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}}
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "Fetch stage timing P95 (request / body / total)",
+      "description": "P95 latency decomposed by stage of one fetch. request = time-to-first-byte (DNS + TCP + TLS + request). body = time spent streaming the response body. total = full request including body. When total >> request, the host streams slowly. When request alone is high, DNS or TLS is sick. Source: histogram_quantile(0.95, crawlrs_fetch_stage_seconds).",
+      "datasource": {"type": "prometheus", "uid": "crawlrs-vm"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 49},
+      "targets": [{"refId": "A", "expr": "histogram_quantile(0.95, sum by (kind, stage, le) (rate(crawlrs_fetch_stage_seconds_bucket[5m])))", "legendFormat": "{{kind}} {{stage}}", "datasource": {"type": "prometheus", "uid": "crawlrs-vm"}}],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "p95 seconds", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "hideFrom": {"legend": false, "tooltip": false, "viz": false}, "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": false, "stacking": {"group": "A", "mode": "none"}, "thresholdsStyle": {"mode": "off"}},
+          "mappings": [], "min": 0,
+          "thresholds": {"mode": "absolute", "steps": [{"color": "transparent", "value": null}]},
+          "unit": "s"
+        },
+        "overrides": [
+          {"matcher": {"id": "byRegexp", "options": "page request.*"}, "properties": [{"id": "color", "value": {"fixedColor": "blue", "mode": "fixed"}}]},
+          {"matcher": {"id": "byRegexp", "options": "page body.*"}, "properties": [{"id": "color", "value": {"fixedColor": "yellow", "mode": "fixed"}}]},
+          {"matcher": {"id": "byRegexp", "options": "page total.*"}, "properties": [{"id": "color", "value": {"fixedColor": "green", "mode": "fixed"}}, {"id": "custom.lineWidth", "value": 2}]},
+          {"matcher": {"id": "byRegexp", "options": "robots request.*"}, "properties": [{"id": "color", "value": {"fixedColor": "super-light-blue", "mode": "fixed"}}]},
+          {"matcher": {"id": "byRegexp", "options": "robots body.*"}, "properties": [{"id": "color", "value": {"fixedColor": "super-light-yellow", "mode": "fixed"}}]},
+          {"matcher": {"id": "byRegexp", "options": "robots total.*"}, "properties": [{"id": "color", "value": {"fixedColor": "purple", "mode": "fixed"}}]}
+        ]
+      },
+      "options": {"legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}}
+    },
+    {
+      "id": 15,
+      "type": "timeseries",
+      "title": "Body size distribution (P50 / P90 / P99)",
+      "description": "Distribution of fetched body sizes over the last 5 minutes. A jumping P99 means somebody started returning huge responses; that drives memory pressure and parse cost. Source: histogram_quantile(*, crawlrs_fetch_body_bytes).",
+      "datasource": {"type": "prometheus", "uid": "crawlrs-vm"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 57},
+      "targets": [
+        {"refId": "A", "expr": "histogram_quantile(0.50, sum by (le) (rate(crawlrs_fetch_body_bytes_bucket[5m])))", "legendFormat": "p50", "datasource": {"type": "prometheus", "uid": "crawlrs-vm"}},
+        {"refId": "B", "expr": "histogram_quantile(0.90, sum by (le) (rate(crawlrs_fetch_body_bytes_bucket[5m])))", "legendFormat": "p90", "datasource": {"type": "prometheus", "uid": "crawlrs-vm"}},
+        {"refId": "C", "expr": "histogram_quantile(0.99, sum by (le) (rate(crawlrs_fetch_body_bytes_bucket[5m])))", "legendFormat": "p99", "datasource": {"type": "prometheus", "uid": "crawlrs-vm"}}
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "bytes", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "hideFrom": {"legend": false, "tooltip": false, "viz": false}, "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": false, "stacking": {"group": "A", "mode": "none"}, "thresholdsStyle": {"mode": "off"}},
+          "mappings": [], "min": 0,
+          "thresholds": {"mode": "absolute", "steps": [{"color": "transparent", "value": null}]},
+          "unit": "decbytes"
+        },
+        "overrides": [
+          {"matcher": {"id": "byFrameRefID", "options": "A"}, "properties": [{"id": "color", "value": {"fixedColor": "green", "mode": "fixed"}}]},
+          {"matcher": {"id": "byFrameRefID", "options": "B"}, "properties": [{"id": "color", "value": {"fixedColor": "yellow", "mode": "fixed"}}, {"id": "custom.lineWidth", "value": 2}]},
+          {"matcher": {"id": "byFrameRefID", "options": "C"}, "properties": [{"id": "color", "value": {"fixedColor": "red", "mode": "fixed"}}]}
+        ]
+      },
+      "options": {"legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}}
+    },
+    {
+      "id": 16,
+      "type": "timeseries",
+      "title": "Average body size by content type",
+      "description": "Average bytes per fetch, split by Content-Type bucket: html, non_html, unknown. Stacked area so you read both total bytes per second and composition mix at the same time. A drift toward non_html / unknown means crawl-budget is leaking on non-text resources. Source: rate(crawlrs_fetch_body_bytes_sum) / rate(crawlrs_fetch_body_bytes_count).",
+      "datasource": {"type": "prometheus", "uid": "crawlrs-vm"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 57},
+      "targets": [{"refId": "A", "expr": "sum by (content_type) (rate(crawlrs_fetch_body_bytes_sum[5m])) / clamp_min(sum by (content_type) (rate(crawlrs_fetch_body_bytes_count[5m])), 1)", "legendFormat": "{{content_type}}", "datasource": {"type": "prometheus", "uid": "crawlrs-vm"}}],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "bytes/fetch", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 30, "gradientMode": "none", "hideFrom": {"legend": false, "tooltip": false, "viz": false}, "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": false, "stacking": {"group": "A", "mode": "normal"}, "thresholdsStyle": {"mode": "off"}},
+          "mappings": [], "min": 0,
+          "thresholds": {"mode": "absolute", "steps": [{"color": "transparent", "value": null}]},
+          "unit": "decbytes"
+        },
+        "overrides": [
+          {"matcher": {"id": "byRegexp", "options": ".*html$"}, "properties": [{"id": "color", "value": {"fixedColor": "green", "mode": "fixed"}}]},
+          {"matcher": {"id": "byRegexp", "options": ".*non_html.*"}, "properties": [{"id": "color", "value": {"fixedColor": "orange", "mode": "fixed"}}]},
+          {"matcher": {"id": "byRegexp", "options": ".*unknown.*"}, "properties": [{"id": "color", "value": {"fixedColor": "super-light-yellow", "mode": "fixed"}}]}
+        ]
+      },
+      "options": {"legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}}
+    },
+    {
+      "id": 17,
+      "type": "timeseries",
+      "title": "Frontier ready queue by shard (top 10)",
+      "description": "Per-shard backlog of URLs that have crossed the wake-time and are eligible for workers. A growing queue on one shard with the others idle means a hot host is monopolising that shard. Source: crawlrs_frontier_ready_length.",
+      "datasource": {"type": "prometheus", "uid": "crawlrs-vm"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 65},
+      "targets": [{"refId": "A", "expr": "topk(10, max by (shard) (crawlrs_frontier_ready_length))", "legendFormat": "shard {{shard}}", "datasource": {"type": "prometheus", "uid": "crawlrs-vm"}}],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "URLs ready", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "hideFrom": {"legend": false, "tooltip": false, "viz": false}, "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": false, "stacking": {"group": "A", "mode": "none"}, "thresholdsStyle": {"mode": "off"}},
+          "mappings": [], "min": 0,
+          "thresholds": {"mode": "absolute", "steps": [{"color": "transparent", "value": null}]},
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {"legend": {"calcs": ["mean", "max", "last"], "displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}}
+    },
+    {
+      "id": 18,
+      "type": "timeseries",
+      "title": "Frontier claim outcomes",
+      "description": "How `Frontier::claim` calls resolve. claimed = worker got a URL to fetch (the healthy outcome). empty = queue was empty (we have nothing to do; idle). empty_hint = queue empty but a wake-time is coming soon (politeness-bound). error = Redis call failed. A growing `empty` rate with `claimed` collapsing means seeds are exhausted or the frontier is starved. Y axis is claims/sec. Source: crawlrs_frontier_claim_total.",
+      "datasource": {"type": "prometheus", "uid": "crawlrs-vm"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 65},
+      "targets": [{"refId": "A", "expr": "sum by (outcome) (rate(crawlrs_frontier_claim_total[5m]))", "legendFormat": "{{outcome}}", "datasource": {"type": "prometheus", "uid": "crawlrs-vm"}}],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "claims/sec", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 30, "gradientMode": "none", "hideFrom": {"legend": false, "tooltip": false, "viz": false}, "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": false, "stacking": {"group": "A", "mode": "normal"}, "thresholdsStyle": {"mode": "off"}},
+          "mappings": [], "min": 0,
+          "thresholds": {"mode": "absolute", "steps": [{"color": "transparent", "value": null}]},
+          "unit": "short"
+        },
+        "overrides": [
+          {"matcher": {"id": "byRegexp", "options": ".*claimed.*"}, "properties": [{"id": "color", "value": {"fixedColor": "green", "mode": "fixed"}}]},
+          {"matcher": {"id": "byRegexp", "options": "{outcome=\"empty\"}|.*empty$"}, "properties": [{"id": "color", "value": {"fixedColor": "blue", "mode": "fixed"}}]},
+          {"matcher": {"id": "byRegexp", "options": ".*empty_hint.*"}, "properties": [{"id": "color", "value": {"fixedColor": "yellow", "mode": "fixed"}}]},
+          {"matcher": {"id": "byRegexp", "options": ".*error.*"}, "properties": [{"id": "color", "value": {"fixedColor": "red", "mode": "fixed"}}]}
+        ]
+      },
+      "options": {"legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}}
+    },
+    {
+      "id": 19,
+      "type": "timeseries",
+      "title": "URL dedup: new vs already-seen",
+      "description": "Every URL the parser discovers is offered to the per-shard bloom filter. `new` URLs go into the work queue. `duplicate` URLs were already seen (this run or any prior run) and are silently dropped. A healthy dense crawl has roughly 80-95% duplicates: most pages share outbound links. If `new` collapses to zero while you're still seeding, the bloom may have filled up (false-positive rate climbed past acceptable). Y axis is submits/sec. Source: crawlrs_frontier_bloom_total.",
+      "datasource": {"type": "prometheus", "uid": "crawlrs-vm"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 73},
+      "targets": [{"refId": "A", "expr": "sum by (verdict) (rate(crawlrs_frontier_bloom_total[5m]))", "legendFormat": "{{verdict}}", "datasource": {"type": "prometheus", "uid": "crawlrs-vm"}}],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "submits/sec", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 30, "gradientMode": "none", "hideFrom": {"legend": false, "tooltip": false, "viz": false}, "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": false, "stacking": {"group": "A", "mode": "normal"}, "thresholdsStyle": {"mode": "off"}},
+          "mappings": [], "min": 0,
+          "thresholds": {"mode": "absolute", "steps": [{"color": "transparent", "value": null}]},
+          "unit": "short"
+        },
+        "overrides": [
+          {"matcher": {"id": "byRegexp", "options": ".*new.*"}, "properties": [{"id": "color", "value": {"fixedColor": "green", "mode": "fixed"}}, {"id": "displayName", "value": "new (added to queue)"}]},
+          {"matcher": {"id": "byRegexp", "options": ".*duplicate.*"}, "properties": [{"id": "color", "value": {"fixedColor": "orange", "mode": "fixed"}}, {"id": "displayName", "value": "duplicate (already seen)"}]}
+        ]
+      },
+      "options": {"legend": {"calcs": ["sum", "mean"], "displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}}
+    },
+    {
+      "id": 20,
+      "type": "stat",
+      "title": "Robots cache hit rate",
+      "description": "Share of robots.txt requests served from the in-process LRU + Redis cache (no network fetch). When `obeyRobotsTxt: false`, robots.txt is never fetched - both hits and misses stay at zero, the ratio is undefined, and we display `robots off`. When enabled, you want >=90%: a low hit rate means the cache TTL is too short. Source: rate(robots_cache_hits) / (rate(hits) + rate(misses)).",
+      "datasource": {"type": "prometheus", "uid": "crawlrs-vm"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 73},
+      "targets": [{"refId": "A", "expr": "sum(rate(crawlrs_robots_cache_hits_total[5m])) / (sum(rate(crawlrs_robots_cache_hits_total[5m])) + sum(rate(crawlrs_robots_cache_misses_total[5m])))", "datasource": {"type": "prometheus", "uid": "crawlrs-vm"}}],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "decimals": 1,
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "null",
+                "result": {"text": "robots off", "color": "text", "index": 0}
+              }
+            },
+            {
+              "type": "special",
+              "options": {
+                "match": "nan",
+                "result": {"text": "robots off", "color": "text", "index": 1}
+              }
+            }
+          ],
+          "min": 0, "max": 1,
+          "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}, {"color": "yellow", "value": 0.5}, {"color": "green", "value": 0.9}]},
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "options": {"colorMode": "background", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto", "wideLayout": true}
+    },
+    {
+      "id": 21,
+      "type": "timeseries",
+      "title": "Store buffer bytes (top 10 shards)",
+      "description": "In-memory bytes each shard's writer is buffering before its next rotation. Buffers grow as the shard accumulates fetched bodies; they drop to ~zero each time the writer flushes (size cap / row cap / time cap). A shard that keeps climbing without flushing means rotation thresholds are too loose for its throughput - it'll OOM eventually. A shard that stays at zero hasn't written anything yet. Source: crawlrs_store_buffer_bytes.",
+      "datasource": {"type": "prometheus", "uid": "crawlrs-vm"},
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 81},
+      "targets": [{"refId": "A", "expr": "topk(10, sum by (shard) (crawlrs_store_buffer_bytes))", "legendFormat": "shard {{shard}}", "datasource": {"type": "prometheus", "uid": "crawlrs-vm"}}],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "bytes buffered", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "hideFrom": {"legend": false, "tooltip": false, "viz": false}, "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": false, "stacking": {"group": "A", "mode": "none"}, "thresholdsStyle": {"mode": "off"}},
+          "mappings": [], "min": 0,
+          "thresholds": {"mode": "absolute", "steps": [{"color": "transparent", "value": null}]},
+          "unit": "decbytes"
+        },
+        "overrides": []
+      },
+      "options": {"legend": {"calcs": ["mean", "max", "last"], "displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}}
+    },
+    {
+      "id": 22,
+      "type": "timeseries",
+      "title": "Connection pool pending checkouts (1-min average)",
+      "description": "Smoothed outstanding pool checkout requests, by adapter. The raw value is bursty (workers spike checkouts to 5-10 and drop to 0 in milliseconds), so we average over 1 minute for readability. If this line sits above 0 sustained, the pool is undersized for the worker count. Frontier (Redis), Politeness (Redis), Metadata (Postgres) each have their own pool. Source: avg_over_time(crawlrs_*_pool_pending[1m]).",
+      "datasource": {"type": "prometheus", "uid": "crawlrs-vm"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 91},
+      "targets": [
+        {"refId": "A", "expr": "avg_over_time(crawlrs_frontier_pool_pending[1m])", "legendFormat": "frontier (redis)", "datasource": {"type": "prometheus", "uid": "crawlrs-vm"}},
+        {"refId": "B", "expr": "avg_over_time(crawlrs_politeness_pool_pending[1m])", "legendFormat": "politeness (redis)", "datasource": {"type": "prometheus", "uid": "crawlrs-vm"}},
+        {"refId": "C", "expr": "avg_over_time(crawlrs_metadata_pool_pending[1m])", "legendFormat": "metadata (postgres)", "datasource": {"type": "prometheus", "uid": "crawlrs-vm"}}
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "pending checkouts", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "hideFrom": {"legend": false, "tooltip": false, "viz": false}, "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": false, "stacking": {"group": "A", "mode": "none"}, "thresholdsStyle": {"mode": "off"}},
+          "mappings": [], "min": 0,
+          "thresholds": {"mode": "absolute", "steps": [{"color": "transparent", "value": null}]},
+          "unit": "short"
+        },
+        "overrides": [
+          {"matcher": {"id": "byFrameRefID", "options": "A"}, "properties": [{"id": "color", "value": {"fixedColor": "blue", "mode": "fixed"}}]},
+          {"matcher": {"id": "byFrameRefID", "options": "B"}, "properties": [{"id": "color", "value": {"fixedColor": "purple", "mode": "fixed"}}]},
+          {"matcher": {"id": "byFrameRefID", "options": "C"}, "properties": [{"id": "color", "value": {"fixedColor": "orange", "mode": "fixed"}}]}
+        ]
+      },
+      "options": {"legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}}
+    },
+    {
+      "id": 23,
+      "type": "timeseries",
+      "title": "Store rotations (count per 5-minute window)",
+      "description": "File rotations per 5-minute window, by format. Parquet rotates when row-group cap is hit; WARC rotates on size/time cap. Rotations are inherently bursty events, not a continuous rate - bars in this chart are integer counts of how many files closed in each window. Pauses are normal between rotations. Source: increase(crawlrs_store_rotation_total[5m]).",
+      "datasource": {"type": "prometheus", "uid": "crawlrs-vm"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 91},
+      "targets": [{"refId": "A", "expr": "sum by (format) (increase(crawlrs_store_rotation_total[5m]))", "legendFormat": "{{format}}", "datasource": {"type": "prometheus", "uid": "crawlrs-vm"}}],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "rotations per 5m", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "bars", "fillOpacity": 60, "gradientMode": "none", "hideFrom": {"legend": false, "tooltip": false, "viz": false}, "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": false, "stacking": {"group": "A", "mode": "normal"}, "thresholdsStyle": {"mode": "off"}},
+          "mappings": [], "min": 0,
+          "thresholds": {"mode": "absolute", "steps": [{"color": "transparent", "value": null}]},
+          "unit": "short"
+        },
+        "overrides": [
+          {"matcher": {"id": "byRegexp", "options": ".*parquet.*"}, "properties": [{"id": "color", "value": {"fixedColor": "blue", "mode": "fixed"}}]},
+          {"matcher": {"id": "byRegexp", "options": ".*warc.*"}, "properties": [{"id": "color", "value": {"fixedColor": "purple", "mode": "fixed"}}]}
+        ]
+      },
+      "options": {"legend": {"calcs": ["sum", "mean"], "displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}}
+    },
+    {
+      "id": 24,
+      "type": "timeseries",
+      "title": "Parse latency (P50 / P95 / P99)",
+      "description": "Time spent in lol_html parse + any registered SiteAdapter::extract. Parse is single-threaded per worker and CPU-bound; large pages drive P99. Source: histogram_quantile(*, crawlrs_parse_seconds).",
+      "datasource": {"type": "prometheus", "uid": "crawlrs-vm"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 99},
+      "targets": [
+        {"refId": "A", "expr": "histogram_quantile(0.50, sum by (le) (rate(crawlrs_parse_seconds_bucket[5m])))", "legendFormat": "p50", "datasource": {"type": "prometheus", "uid": "crawlrs-vm"}},
+        {"refId": "B", "expr": "histogram_quantile(0.95, sum by (le) (rate(crawlrs_parse_seconds_bucket[5m])))", "legendFormat": "p95", "datasource": {"type": "prometheus", "uid": "crawlrs-vm"}},
+        {"refId": "C", "expr": "histogram_quantile(0.99, sum by (le) (rate(crawlrs_parse_seconds_bucket[5m])))", "legendFormat": "p99", "datasource": {"type": "prometheus", "uid": "crawlrs-vm"}}
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "seconds", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "hideFrom": {"legend": false, "tooltip": false, "viz": false}, "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": false, "stacking": {"group": "A", "mode": "none"}, "thresholdsStyle": {"mode": "off"}},
+          "mappings": [], "min": 0,
+          "thresholds": {"mode": "absolute", "steps": [{"color": "transparent", "value": null}]},
+          "unit": "s"
+        },
+        "overrides": [
+          {"matcher": {"id": "byFrameRefID", "options": "A"}, "properties": [{"id": "color", "value": {"fixedColor": "green", "mode": "fixed"}}, {"id": "displayName", "value": "p50"}]},
+          {"matcher": {"id": "byFrameRefID", "options": "B"}, "properties": [{"id": "color", "value": {"fixedColor": "yellow", "mode": "fixed"}}, {"id": "displayName", "value": "p95"}, {"id": "custom.lineWidth", "value": 2}]},
+          {"matcher": {"id": "byFrameRefID", "options": "C"}, "properties": [{"id": "color", "value": {"fixedColor": "red", "mode": "fixed"}}, {"id": "displayName", "value": "p99"}]}
+        ]
+      },
+      "options": {"legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}}
+    },
+    {
+      "id": 25,
+      "type": "timeseries",
+      "title": "Store write latency P95 by format",
+      "description": "P95 time per write call into each store backend (Parquet, WARC). Drives the `store` phase of the pipeline. Sustained P95 above ~20ms means disk IO is saturated or the store is doing too much work per call. Source: histogram_quantile(0.95, crawlrs_store_write_seconds).",
+      "datasource": {"type": "prometheus", "uid": "crawlrs-vm"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 99},
+      "targets": [{"refId": "A", "expr": "histogram_quantile(0.95, sum by (format, le) (rate(crawlrs_store_write_seconds_bucket[5m])))", "legendFormat": "{{format}} p95", "datasource": {"type": "prometheus", "uid": "crawlrs-vm"}}],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "p95 seconds", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "hideFrom": {"legend": false, "tooltip": false, "viz": false}, "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": false, "stacking": {"group": "A", "mode": "none"}, "thresholdsStyle": {"mode": "off"}},
+          "mappings": [], "min": 0,
+          "thresholds": {"mode": "absolute", "steps": [{"color": "transparent", "value": null}]},
+          "unit": "s"
+        },
+        "overrides": [
+          {"matcher": {"id": "byRegexp", "options": ".*parquet.*"}, "properties": [{"id": "color", "value": {"fixedColor": "blue", "mode": "fixed"}}, {"id": "custom.lineWidth", "value": 2}]},
+          {"matcher": {"id": "byRegexp", "options": ".*warc.*"}, "properties": [{"id": "color", "value": {"fixedColor": "purple", "mode": "fixed"}}, {"id": "custom.lineWidth", "value": 2}]}
+        ]
+      },
+      "options": {"legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}}
+    },
+    {
+      "id": 26,
+      "type": "timeseries",
+      "title": "Postgres query latency P95 by op",
+      "description": "P95 time per metadata-ledger operation. mark_attempting drives the `mark` pipeline phase. mark_succeeded drives `commit`. mark_failed and mark_permanently_failed only fire on failures. Sustained P95 above ~50ms usually means the Postgres pool is contended or a query is missing an index. Source: histogram_quantile(0.95, crawlrs_metadata_query_seconds).",
+      "datasource": {"type": "prometheus", "uid": "crawlrs-vm"},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 107},
+      "targets": [{"refId": "A", "expr": "histogram_quantile(0.95, sum by (op, le) (rate(crawlrs_metadata_query_seconds_bucket[5m])))", "legendFormat": "{{op}} p95", "datasource": {"type": "prometheus", "uid": "crawlrs-vm"}}],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "p95 seconds", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "hideFrom": {"legend": false, "tooltip": false, "viz": false}, "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": false, "stacking": {"group": "A", "mode": "none"}, "thresholdsStyle": {"mode": "off"}},
+          "mappings": [], "min": 0,
+          "thresholds": {"mode": "absolute", "steps": [{"color": "transparent", "value": null}]},
+          "unit": "s"
+        },
+        "overrides": [
+          {"matcher": {"id": "byRegexp", "options": ".*mark_attempting.*"}, "properties": [{"id": "color", "value": {"fixedColor": "blue", "mode": "fixed"}}]},
+          {"matcher": {"id": "byRegexp", "options": ".*mark_succeeded.*"}, "properties": [{"id": "color", "value": {"fixedColor": "green", "mode": "fixed"}}, {"id": "custom.lineWidth", "value": 2}]},
+          {"matcher": {"id": "byRegexp", "options": ".*mark_failed.*"}, "properties": [{"id": "color", "value": {"fixedColor": "orange", "mode": "fixed"}}]},
+          {"matcher": {"id": "byRegexp", "options": ".*mark_permanently_failed.*"}, "properties": [{"id": "color", "value": {"fixedColor": "red", "mode": "fixed"}}]}
+        ]
+      },
+      "options": {"legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}}
+    }
+  ]
+}

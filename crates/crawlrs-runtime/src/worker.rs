@@ -285,7 +285,7 @@ impl UrlPipeline {
     /// and the lease-expiry reclaim hands the URL to a peer who'll
     /// redo this transition.
     async fn mark_attempting(&self) {
-        let _phase = PhaseTimer::start(crate::metrics::PHASE_ATTEMPTING);
+        let _phase = PhaseTimer::start(crate::metrics::PHASE_MARK);
         let result = self
             .deps
             .metadata
@@ -377,7 +377,7 @@ impl UrlPipeline {
     /// permanently failed (re-trying won't help; bad parse is a
     /// content-side problem) and ack.
     async fn extract(&self, resp: &FetchResponse) -> Option<ParsedDocument> {
-        let _phase = PhaseTimer::start(crate::metrics::PHASE_EXTRACT);
+        let _phase = PhaseTimer::start(crate::metrics::PHASE_PARSE);
         if let Some(adapter) = self.deps.adapters.find_for(&resp.url) {
             match adapter.extract(resp).await {
                 Ok(Some(doc)) => {

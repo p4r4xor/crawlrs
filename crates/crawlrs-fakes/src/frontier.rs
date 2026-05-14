@@ -7,9 +7,8 @@
 //! **protocol model** of the Redis frontier behavior the runtime
 //! depends on. Tests written against `RedisFrontier` would also pass
 //! against `InMemoryFrontier`. The interesting failure modes (lease
-//! expiry + reclaim, host backlog overflow, bloom dedup at submit,
-//! ready-host promotion) are all expressible against this model with
-//! no Docker.
+//! expiry + reclaim, bloom dedup at submit, ready-host promotion)
+//! are all expressible against this model with no Docker.
 //!
 //! What this models, per ADR-0019:
 //!
@@ -29,9 +28,6 @@
 //! - **Bloom-style seen-set** (a `HashSet<UrlId>` here; real impl
 //!   uses RedisBloom). Submit drops a URL if its id is already in
 //!   the set.
-//! - **Overflow queue** when a host's backlog exceeds the configured
-//!   cap. Surfaced via the `SubmitOutcome::Overflowed` return so
-//!   tests can assert on it.
 //! - **URL HASH** keyed by url_id; payload is the `UrlEntry`. Claim
 //!   materialises this; ack deletes it.
 //!
@@ -57,11 +53,6 @@ use crawlrs_core::{
     SubmitOutcome, SystemClock, UrlEntry, UrlId, WorkerIdentity,
 };
 
-/// Default per-host backlog cap before submits route to the overflow
-/// queue. Matches the chart's `frontier.maxHostBacklog`. Caps memory
-/// at ~10k URLs/host * ~150 bytes/entry = ~1.5MB/host worst-case.
-const DEFAULT_MAX_HOST_BACKLOG: usize = 10_000;
-
 /// Default lease timeout. A worker that crashes mid-fetch holds its
 /// URL for this long before the reclaim path re-pushes it. 60s
 /// matches the chart's `frontier.leaseTimeout` and is comfortably
@@ -73,7 +64,6 @@ pub struct InMemoryFrontier {
     owned_shards: Vec<ShardKey>,
     state: Mutex<FrontierState>,
     clock: Arc<dyn Clock>,
-    max_host_backlog: usize,
     lease_timeout_ms: u64,
     /// Reference wall-clock instant. The Frontier trait carries wake-
     /// times as `Instant` but `Clock` only exposes millis since
@@ -87,7 +77,6 @@ impl std::fmt::Debug for InMemoryFrontier {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("InMemoryFrontier")
             .field("owned_shards", &self.owned_shards)
-            .field("max_host_backlog", &self.max_host_backlog)
             .field("lease_timeout_ms", &self.lease_timeout_ms)
             .finish_non_exhaustive()
     }
@@ -104,8 +93,6 @@ struct FrontierState {
 struct ShardState {
     /// Per-host FIFO of URL IDs.
     host_queue: HashMap<String, VecDeque<UrlId>>,
-    /// Spillover for hosts past their backlog cap.
-    overflow: VecDeque<UrlId>,
     /// Content-addressed URL records. Claim materialises from here;
     /// ack removes.
     urls: HashMap<UrlId, UrlEntry>,
@@ -142,7 +129,6 @@ impl InMemoryFrontier {
             anchor_clock_ms: clock.now_ms(),
             anchor_instant: Instant::now(),
             clock,
-            max_host_backlog: DEFAULT_MAX_HOST_BACKLOG,
             lease_timeout_ms: DEFAULT_LEASE_TIMEOUT.as_millis() as u64,
         }
     }
@@ -153,12 +139,6 @@ impl InMemoryFrontier {
         self.anchor_clock_ms = clock.now_ms();
         self.anchor_instant = Instant::now();
         self.clock = clock;
-        self
-    }
-
-    /// Override the per-host backlog cap.
-    pub fn with_max_host_backlog(mut self, cap: usize) -> Self {
-        self.max_host_backlog = cap;
         self
     }
 
@@ -245,10 +225,6 @@ impl Frontier for InMemoryFrontier {
         shard_state.urls.insert(url_id, entry);
 
         let host_queue = shard_state.host_queue.entry(host.clone()).or_default();
-        if host_queue.len() >= self.max_host_backlog {
-            shard_state.overflow.push_back(url_id);
-            return Ok(SubmitOutcome::Overflowed);
-        }
         host_queue.push_back(url_id);
 
         // New host? Wake at 0 (immediately ready). Promoter (tick) will
@@ -326,7 +302,7 @@ impl Frontier for InMemoryFrontier {
         Ok(state
             .shards
             .values()
-            .map(|s| s.host_queue.values().map(|q| q.len()).sum::<usize>() + s.overflow.len())
+            .map(|s| s.host_queue.values().map(|q| q.len()).sum::<usize>())
             .sum())
     }
 

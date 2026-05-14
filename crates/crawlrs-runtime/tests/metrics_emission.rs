@@ -69,11 +69,6 @@ fn metric_name_contract_holds() {
     )
     .increment(0);
     metrics::counter!(crawlrs_frontier::metrics::FRONTIER_PROMOTED_TOTAL).increment(0);
-    metrics::counter!(
-        crawlrs_frontier::metrics::FRONTIER_OVERFLOW_TOTAL,
-        "host" => "example.com",
-    )
-    .increment(0);
 
     // ---- politeness layer ----
     metrics::counter!(crawlrs_politeness::metrics::ROBOTS_CACHE_HITS_TOTAL).increment(1);
@@ -166,7 +161,6 @@ fn metric_name_contract_holds() {
         crawlrs_frontier::metrics::FRONTIER_CALL_SECONDS,
         crawlrs_frontier::metrics::FRONTIER_SUBMIT_BATCH_SIZE,
         crawlrs_frontier::metrics::FRONTIER_POOL_PENDING,
-        crawlrs_frontier::metrics::FRONTIER_OVERFLOW_TOTAL,
         crawlrs_frontier::metrics::FRONTIER_BLOOM_TOTAL,
         crawlrs_frontier::metrics::FRONTIER_LEASE_RECLAIM_TOTAL,
         crawlrs_frontier::metrics::FRONTIER_PROMOTED_TOTAL,
@@ -221,7 +215,6 @@ fn metric_name_contract_holds() {
         "crawlrs_frontier_call_seconds",
         "crawlrs_frontier_submit_batch_size",
         "crawlrs_frontier_pool_pending",
-        "crawlrs_frontier_overflow_total",
         "crawlrs_frontier_bloom_total",
         "crawlrs_frontier_lease_reclaim_total",
         "crawlrs_frontier_promoted_total",

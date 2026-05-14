@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use crawlrs_core::{CanonicalUrl, Frontier, UrlEntry};
-use metrics_exporter_prometheus::PrometheusBuilder;
+use metrics_exporter_prometheus::{Matcher, PrometheusBuilder};
 use tokio::sync::watch;
 use tracing::{info, warn};
 
@@ -18,6 +18,34 @@ use crate::http::{self, ProbeState};
 use crate::maintenance;
 use crate::shutdown;
 
+/// Latency buckets: 1ms..30s, geometric. Covers the realistic span of
+/// per-stage timings (fetch, parse, store write, Postgres query) and
+/// gives `histogram_quantile()` enough resolution to compute p50/p95/p99
+/// without empty cells in the tail.
+const SECONDS_BUCKETS: &[f64] = &[
+    0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0,
+];
+
+/// Body-size buckets: 1KiB..16MiB, geometric. Web pages cluster around
+/// 10-200KiB; the tail captures large blobs that drive memory + parse
+/// pressure. Upper bound is one factor above `max_body_bytes = 5MiB`.
+const BYTES_BUCKETS: &[f64] = &[
+    1024.0,
+    4096.0,
+    16_384.0,
+    65_536.0,
+    262_144.0,
+    1_048_576.0,
+    4_194_304.0,
+    16_777_216.0,
+];
+
+/// Count buckets for cardinality-style histograms (submit batch size,
+/// outbound links per page): 1..5000.
+const COUNT_BUCKETS: &[f64] = &[
+    1.0, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0, 1000.0, 5000.0,
+];
+
 pub async fn crawl(args: CrawlArgs) -> Result<()> {
     let config = CrawlrsConfig::load(&args.config)
         .with_context(|| format!("loading config {}", args.config.display()))?;
@@ -27,7 +55,33 @@ pub async fn crawl(args: CrawlArgs) -> Result<()> {
 
     // Install the Prometheus recorder *before* any subsystem emits.
     // Otherwise early emissions (during construction) are lost.
+    //
+    // Without explicit buckets, histograms only emit `_sum`/`_count`
+    // (Summary-shape), which makes `histogram_quantile()` return NaN in
+    // dashboards. We register three bucket families by name suffix /
+    // exact match so every histogram exposes a `_bucket` series:
+    //
+    //   * `_seconds` -> latency buckets covering 1ms..30s.
+    //   * `fetch_body_bytes` -> 1KiB..16MiB body sizes.
+    //   * `*_batch_size` / `*_links_discovered` -> 1..5000 cardinality.
     let prom_handle = PrometheusBuilder::new()
+        .set_buckets_for_metric(Matcher::Suffix("_seconds".into()), SECONDS_BUCKETS)
+        .context("set seconds buckets")?
+        .set_buckets_for_metric(
+            Matcher::Full("crawlrs_fetch_body_bytes".into()),
+            BYTES_BUCKETS,
+        )
+        .context("set body bytes buckets")?
+        .set_buckets_for_metric(
+            Matcher::Full("crawlrs_frontier_submit_batch_size".into()),
+            COUNT_BUCKETS,
+        )
+        .context("set submit batch buckets")?
+        .set_buckets_for_metric(
+            Matcher::Full("crawlrs_parse_links_discovered".into()),
+            COUNT_BUCKETS,
+        )
+        .context("set links discovered buckets")?
         .install_recorder()
         .context("installing PrometheusBuilder recorder")?;
     let prom_handle = Arc::new(prom_handle);

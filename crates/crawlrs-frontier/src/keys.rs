@@ -4,10 +4,9 @@
 //! Shape: `crawlrs:{<run>_s<shard>}:<purpose>[:<sub>]`. The literal
 //! braces are a Redis Cluster *hash tag*: Redis hashes only the text
 //! between them when picking a slot, so every per-shard key
-//! (`host_queue`, `wake`, `ready`, `inflight`, `overflow`, `urls`,
-//! `seen`) lands on the same node. This lets the Lua scripts touch
-//! multiple keys for one shard atomically even on a clustered
-//! deployment.
+//! (`host_queue`, `wake`, `ready`, `inflight`, `urls`, `seen`) lands
+//! on the same node. This lets the Lua scripts touch multiple keys
+//! for one shard atomically even on a clustered deployment.
 //!
 //! Two crawl runs can share one Redis instance without collision; an
 //! operator can scope `redis-cli SCAN` to one run via the `run_id`
@@ -77,12 +76,6 @@ impl KeyPrefix {
         format!("{}:inflight", self.shard_tag(shard))
     }
 
-    /// `crawlrs:{run_s<shard>}:overflow`. Spillover list for URLs
-    /// whose host's `host_queue` was at the configured backlog cap.
-    pub fn overflow(&self, shard: ShardKey) -> String {
-        format!("{}:overflow", self.shard_tag(shard))
-    }
-
     /// `crawlrs:{run_s<shard>}:urls`. Hash from `url_id_hex` to
     /// postcard-encoded `UrlEntry` payload. Materialised on claim,
     /// deleted on ack.
@@ -101,7 +94,7 @@ impl KeyPrefix {
     /// Tradeoff: this key uses a different Redis Cluster hash tag
     /// than the per-run keys, so the single-RTT `submit.lua` (which
     /// touches `seen` plus the per-run `urls` / `host_queue` /
-    /// `wake` / `overflow`) is single-node-only. On a future
+    /// `wake`) is single-node-only. On a future
     /// clustered deployment, submit would split into two
     /// round-trips: `BF.ADD seen` first, then the per-run atomic
     /// script if and only if the URL was new.
@@ -162,7 +155,6 @@ mod tests {
             prefix.wake(0),
             prefix.ready(0),
             prefix.inflight(0),
-            prefix.overflow(0),
             prefix.urls(0),
         ] {
             assert!(

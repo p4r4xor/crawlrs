@@ -112,7 +112,6 @@ link_dispatch    = "direct"
 # fetch); 0.1% is a sensible default for runs that re-crawl
 # periodically.
 [frontier]
-max_host_backlog          = 10000       # divert excess to overflow LIST
 lease_timeout             = "60s"       # crash-recovery floor
 promoter_tick             = "50ms"      # wake -> ready / lease reclaim cadence
 bloom_capacity            = 10_000_000  # ~18 MB at fpr=0.001

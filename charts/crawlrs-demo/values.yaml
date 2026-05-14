@@ -31,15 +31,16 @@ redis:
     size: 5Gi
   # Memory limit covers Redis working set: per-shard host queues +
   # wake/ready/inflight ZSETs + URL HASH + the RedisBloom filter
-  # (~1.8 MB per 1M URLs at fpr=0.001). 1Gi covers small-to-medium
-  # runs; raise for larger bloom capacity.
+  # (~1.8 MB per 1M URLs at fpr=0.001). 2Gi gives Redis room to hit
+  # its own `--maxmemory 1600mb` ceiling (in the statefulset
+  # template) and still leave headroom for RDB snapshot COW.
   resources:
     requests:
       cpu: 50m
       memory: 256Mi
     limits:
       cpu: 1000m
-      memory: 1Gi
+      memory: 2Gi
 
 # ---- Postgres (official upstream image) -----------------------------
 postgresql:

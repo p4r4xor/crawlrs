@@ -151,37 +151,6 @@ async fn submit_dedups_across_runs() {
     ));
 }
 
-#[tokio::test]
-async fn submit_overflows_when_host_backlog_full() {
-    let fx = fixture().await;
-    let policy: Arc<dyn ShardingPolicy> = Arc::new(SingleShardPolicy);
-    let frontier = RedisFrontier::new(
-        fx.pool.clone(),
-        policy,
-        vec![0],
-        run_id(),
-        BloomConfig::default(),
-    )
-    .await
-    .unwrap()
-    .with_max_host_backlog(2);
-
-    // Three distinct URLs for the same host. The third one cannot
-    // join the per-host queue and is rerouted to overflow.
-    assert!(matches!(
-        frontier.submit(entry("https://a.test/1")).await.unwrap(),
-        SubmitOutcome::Queued
-    ));
-    assert!(matches!(
-        frontier.submit(entry("https://a.test/2")).await.unwrap(),
-        SubmitOutcome::Queued
-    ));
-    assert!(matches!(
-        frontier.submit(entry("https://a.test/3")).await.unwrap(),
-        SubmitOutcome::Overflowed
-    ));
-}
-
 // ---------------------------------------------------------------------------
 // Claim / Promote / Empty
 // ---------------------------------------------------------------------------

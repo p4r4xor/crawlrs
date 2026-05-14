@@ -45,9 +45,9 @@ pub const SKIP_DEPTH_LIMIT: &str = "depth_limit";
 /// across phases approximates `PIPELINE_SECONDS` (small gap covered
 /// by accounting between phases).
 pub const PHASE_POLITENESS: &str = "politeness";
-pub const PHASE_ATTEMPTING: &str = "attempting";
+pub const PHASE_MARK: &str = "mark";
 pub const PHASE_FETCH: &str = "fetch";
-pub const PHASE_EXTRACT: &str = "extract";
+pub const PHASE_PARSE: &str = "parse";
 pub const PHASE_STORE: &str = "store";
 pub const PHASE_COMMIT: &str = "commit";
 

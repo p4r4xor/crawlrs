@@ -17,7 +17,6 @@
 //!   expiry ms.
 //! - `urls` (HASH<url_id, payload>) — content-addressed payload.
 //! - `seen` (RedisBloom) — submit-time dedup.
-//! - `overflow` (LIST<url_id>) — spillover for hot hosts.
 //!
 //! All per-shard keys share the same Redis Cluster hash tag so the
 //! Lua scripts touch one slot per shard. See [`KeyPrefix`].
@@ -46,11 +45,6 @@ use crate::promoter;
 /// is presumed dead; reclaim re-pushes the URL. 60s comfortably
 /// exceeds typical fetch durations.
 pub const DEFAULT_LEASE_TIMEOUT: Duration = Duration::from_secs(60);
-
-/// Default per-host backlog cap before submits route to the overflow
-/// queue. Caps memory: 10k URLs/host * ~150 bytes/entry = ~1.5MB/host
-/// worst case.
-pub const DEFAULT_MAX_HOST_BACKLOG: u64 = 10_000;
 
 /// Default per-tick batch limit for the promoter and reclaim passes.
 pub const DEFAULT_TICK_BATCH_LIMIT: u64 = 1_000;
@@ -98,7 +92,6 @@ pub struct RedisFrontier {
     owned_shards: Vec<ShardKey>,
     scripts: Scripts,
     lease_timeout: Duration,
-    max_host_backlog: u64,
     tick_batch_limit: u64,
     /// Round-robin cursor for `claim` across owned shards.
     claim_cursor: AtomicUsize,
@@ -110,7 +103,6 @@ impl std::fmt::Debug for RedisFrontier {
             .field("run_id", &self.keys.run_id())
             .field("owned_shards", &self.owned_shards)
             .field("lease_timeout", &self.lease_timeout)
-            .field("max_host_backlog", &self.max_host_backlog)
             .finish_non_exhaustive()
     }
 }
@@ -147,7 +139,6 @@ impl RedisFrontier {
             owned_shards,
             scripts: Scripts::new(),
             lease_timeout: DEFAULT_LEASE_TIMEOUT,
-            max_host_backlog: DEFAULT_MAX_HOST_BACKLOG,
             tick_batch_limit: DEFAULT_TICK_BATCH_LIMIT,
             claim_cursor: AtomicUsize::new(0),
         })
@@ -155,11 +146,6 @@ impl RedisFrontier {
 
     pub fn with_lease_timeout(mut self, lease: Duration) -> Self {
         self.lease_timeout = lease;
-        self
-    }
-
-    pub fn with_max_host_backlog(mut self, cap: u64) -> Self {
-        self.max_host_backlog = cap;
         self
     }
 
@@ -245,14 +231,7 @@ impl Frontier for RedisFrontier {
         let (shard, host, url_id) = self.shard_of(&entry).map_err(Error::from)?;
         let outcome = self
             .ops()
-            .submit(
-                shard,
-                url_id,
-                &entry,
-                &host,
-                self.max_host_backlog,
-                now_ms(),
-            )
+            .submit(shard, url_id, &entry, &host, now_ms())
             .await
             .map_err(RedisFrontierError::from)?;
         record_submit_outcome(outcome);
@@ -276,7 +255,7 @@ impl Frontier for RedisFrontier {
         for entry in entries {
             match self.submit(entry).await? {
                 SubmitOutcome::Queued => newly += 1,
-                SubmitOutcome::SkippedDuplicate | SubmitOutcome::Overflowed => {}
+                SubmitOutcome::SkippedDuplicate => {}
             }
         }
         metrics::histogram!(
@@ -409,14 +388,6 @@ impl Frontier for RedisFrontier {
                 }
                 cursor = next;
             }
-            // Overflow counts toward total queue depth.
-            let overflow_len: i64 = redis::cmd("LLEN")
-                .arg(self.keys.overflow(shard))
-                .query_async(&mut *conn)
-                .await
-                .map_err(RedisFrontierError::from)
-                .map_err(Error::from)?;
-            total = total.saturating_add(overflow_len as usize);
         }
         Ok(total)
     }
@@ -511,12 +482,6 @@ fn record_submit_outcome(outcome: SubmitOutcome) {
                 "verdict" => m::BLOOM_DUPLICATE,
             )
             .increment(1);
-        }
-        SubmitOutcome::Overflowed => {
-            // Per-host attribution is added at the call site that
-            // knows the host; here we just emit the no-label
-            // counter. (`submit` enriches via a second emission if
-            // future versions want both.)
         }
     }
 }

@@ -153,22 +153,3 @@ async fn expired_lease_reclaim_re_pushes_url() {
         other => panic!("expected Claimed after reclaim; got {other:?}"),
     }
 }
-
-#[tokio::test]
-async fn overflow_routes_excess_urls_to_overflow_queue() {
-    let policy: Arc<dyn ShardingPolicy> = Arc::new(SingleShardPolicy);
-    let f = InMemoryFrontier::new(policy, vec![0]).with_max_host_backlog(2);
-    // Three submissions to the same host; the third overflows.
-    assert!(matches!(
-        f.submit(entry("https://a.test/1")).await.unwrap(),
-        SubmitOutcome::Queued
-    ));
-    assert!(matches!(
-        f.submit(entry("https://a.test/2")).await.unwrap(),
-        SubmitOutcome::Queued
-    ));
-    assert!(matches!(
-        f.submit(entry("https://a.test/3")).await.unwrap(),
-        SubmitOutcome::Overflowed
-    ));
-}

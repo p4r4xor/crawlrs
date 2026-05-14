@@ -86,15 +86,14 @@ pub struct HostQueueOps<'a> {
 }
 
 impl<'a> HostQueueOps<'a> {
-    /// Submit one URL on `shard`. Returns the script's tri-state
-    /// outcome (Queued / SkippedDuplicate / Overflowed).
+    /// Submit one URL on `shard`. Returns the script's two-state
+    /// outcome (Queued / SkippedDuplicate).
     pub async fn submit(
         &self,
         shard: ShardKey,
         url_id: UrlId,
         entry: &UrlEntry,
         host: &str,
-        max_host_backlog: u64,
         now_ms: i64,
     ) -> Result<SubmitOutcome, HostQueueError> {
         let payload = codec::encode(entry).map_err(|e| HostQueueError::Codec(e.to_string()))?;
@@ -111,12 +110,10 @@ impl<'a> HostQueueOps<'a> {
             .key(self.keys.seen(shard))
             .key(self.keys.urls(shard))
             .key(self.keys.host_queue(shard, host))
-            .key(self.keys.overflow(shard))
             .key(self.keys.wake(shard))
             .arg(url_id.to_hex())
             .arg(host)
             .arg(payload)
-            .arg(max_host_backlog)
             .arg(now_ms)
             .invoke_async(&mut *conn)
             .await?;
@@ -124,7 +121,6 @@ impl<'a> HostQueueOps<'a> {
         Ok(match outcome {
             0 => SubmitOutcome::Queued,
             1 => SubmitOutcome::SkippedDuplicate,
-            2 => SubmitOutcome::Overflowed,
             other => {
                 return Err(HostQueueError::BadTag(format!(
                     "submit returned unexpected code {other}"

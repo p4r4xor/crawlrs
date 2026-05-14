@@ -69,8 +69,7 @@ pub async fn build(config: &CrawlrsConfig) -> Result<Built> {
         )
         .await
         .context("constructing RedisFrontier")?
-        .with_lease_timeout(config.frontier.lease_timeout)
-        .with_max_host_backlog(config.frontier.max_host_backlog),
+        .with_lease_timeout(config.frontier.lease_timeout),
     );
 
     let politeness = Arc::new(

@@ -15,8 +15,6 @@
 //! - `urls` (HASH<url_id, payload>): content-addressed
 //!   postcard-encoded `UrlEntry`.
 //! - `seen` (RedisBloom): submit-time dedup keyed on url_id.
-//! - `overflow` (LIST<url_id>): spillover for hosts past the
-//!   backlog cap.
 //!
 //! All per-shard keys share the same Redis Cluster hash tag (see
 //! [`KeyPrefix`]) so Lua scripts that touch multiple keys per shard
@@ -42,8 +40,7 @@ pub mod promoter;
 
 pub use bloom::BloomConfig;
 pub use frontier::{
-    DEFAULT_LEASE_TIMEOUT, DEFAULT_MAX_HOST_BACKLOG, DEFAULT_TICK_BATCH_LIMIT, RedisFrontier,
-    RedisFrontierError,
+    DEFAULT_LEASE_TIMEOUT, DEFAULT_TICK_BATCH_LIMIT, RedisFrontier, RedisFrontierError,
 };
 pub use keys::KeyPrefix;
 pub use pool::{PoolSizeError, validate_pool_size};

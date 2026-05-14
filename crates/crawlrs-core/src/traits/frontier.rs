@@ -59,11 +59,10 @@ pub enum ClaimOutcome {
 
 /// Outcome of one `Frontier::submit` call.
 ///
-/// Mirrors the three Lua-script return states so the runtime can
-/// distinguish "URL accepted into the queue" from "URL already-known
-/// (bloom hit)" from "host backlog exceeded the cap" without parsing
-/// integers. The bloom-hit case is the dominant outcome under
-/// steady-state crawling and the metric/log shapes split on it.
+/// Two states mirror the Lua-script return: "URL accepted into the
+/// queue" and "URL already-known (bloom hit)". The bloom-hit case is
+/// the dominant outcome under steady-state crawling and the metric /
+/// log shapes split on it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SubmitOutcome {
     /// Newly enqueued onto a per-host queue. Bloom now contains the
@@ -71,10 +70,6 @@ pub enum SubmitOutcome {
     Queued,
     /// Already-known per the bloom filter; silently dropped.
     SkippedDuplicate,
-    /// Host's backlog (per-host queue length) exceeded the configured
-    /// cap; the URL was rerouted to the overflow queue. Surfaced
-    /// distinctly so dashboards can flag hot-domain over-fetch.
-    Overflowed,
 }
 
 #[async_trait]
@@ -84,8 +79,9 @@ pub trait Frontier: Send + Sync {
     ///
     /// Returns the [`SubmitOutcome`] for this URL: `Queued` if newly
     /// enqueued, `SkippedDuplicate` if the bloom filter already
-    /// contained it, `Overflowed` if its host's per-host queue is at
-    /// the configured cap.
+    /// contained it. Per-host queues grow unbounded by design; the
+    /// politeness layer rate-limits per host so a long queue is just
+    /// the work waiting in line for its host's next wake-time slot.
     async fn submit(&self, entry: UrlEntry) -> Result<SubmitOutcome>;
 
     /// Add many URLs at once.
@@ -93,8 +89,8 @@ pub trait Frontier: Send + Sync {
     /// Returns the count of entries that were newly enqueued (i.e.
     /// `SubmitOutcome::Queued`). Implementations should prefer a
     /// single round-trip to the underlying store over N calls to
-    /// `submit`. Duplicate + overflow counts are surfaced via the
-    /// impl's metrics, not in this return.
+    /// `submit`. Duplicate counts are surfaced via the impl's
+    /// metrics, not in this return.
     async fn submit_batch(&self, entries: Vec<UrlEntry>) -> Result<usize>;
 
     /// Pop the next URL to fetch on behalf of `identity`, or return
@@ -113,8 +109,8 @@ pub trait Frontier: Send + Sync {
     async fn claim(&self, identity: &WorkerIdentity) -> Result<ClaimOutcome>;
 
     /// Approximate queue depth, for metrics and shutdown checks.
-    /// Sum over all owned shards' per-host queues plus the overflow
-    /// queue (impl-defined; details in the metrics surface).
+    /// Sum over all owned shards' per-host queues (impl-defined;
+    /// details in the metrics surface).
     async fn len(&self) -> Result<usize>;
 
     /// Update a host's wake time. Idempotent under XX|GT semantics:

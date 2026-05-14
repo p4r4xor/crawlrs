@@ -43,6 +43,16 @@ crawlrs:
   postgres:
     poolSize: 64
 
+  # Local sandbox won't see anywhere near the chart default of 10M
+  # unique URLs per shard. Shrink the bloom 10x to reclaim ~84 MiB of
+  # Redis memory (8 shards * ~10 MiB savings each).
+  frontier:
+    bloomCapacity: 1000000
+
+  # Demo chart redis sub-config: bump the pod memory limit and pair
+  # with --maxmemory inside Redis (set in the redis statefulset).
+  # The umbrella demo chart owns this; subchart overrides not used.
+
   fetch:
     maxBodyBytes: 5242880
     # Stealth mode: leave userAgent unset so wreq's randomized emulation

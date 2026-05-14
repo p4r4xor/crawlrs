@@ -12,12 +12,6 @@ pub const FRONTIER_CALL_SECONDS: &str = "crawlrs_frontier_call_seconds";
 pub const FRONTIER_SUBMIT_BATCH_SIZE: &str = "crawlrs_frontier_submit_batch_size";
 pub const FRONTIER_POOL_PENDING: &str = "crawlrs_frontier_pool_pending";
 
-/// Per-host counter of URLs sent to the overflow queue. Bounded
-/// cardinality at the *dashboard* level via topk panel queries;
-/// the underlying metric is per-host so we don't lose attribution
-/// on hot domains.
-pub const FRONTIER_OVERFLOW_TOTAL: &str = "crawlrs_frontier_overflow_total";
-
 /// Counter of submit-time bloom outcomes by `verdict={new,duplicate}`.
 /// Surfaces the dedup hit rate; sustained 100% `duplicate` means the
 /// seed feed is exhausted.
@@ -78,12 +72,6 @@ pub fn register() {
         FRONTIER_POOL_PENDING,
         Unit::Count,
         "Currently-outstanding bb8 Redis pool connections used by the frontier."
-    );
-    describe_counter!(
-        FRONTIER_OVERFLOW_TOTAL,
-        "Per-host count of URLs diverted to the overflow queue \
-         because the host's backlog was at the configured cap. \
-         Per-host label; topk-bound dashboards for cardinality."
     );
     describe_counter!(
         FRONTIER_BLOOM_TOTAL,
