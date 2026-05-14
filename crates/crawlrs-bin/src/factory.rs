@@ -206,7 +206,6 @@ fn build_politeness_config(config: &CrawlrsConfig) -> CorePolitenessConfig {
 fn build_runtime_config(config: &CrawlrsConfig) -> CrawlerConfig {
     CrawlerConfig {
         workers: config.runtime.workers,
-        user_agent: config.fetch.user_agent.clone(),
         max_retries: config.runtime.max_retries,
         pod_ordinal: pod_ordinal_from_env(),
         link_dispatch: config.runtime.link_dispatch,
@@ -238,7 +237,8 @@ async fn build_store(config: &CrawlrsConfig) -> Result<Arc<dyn crawlrs_core::Sto
 
     let backend: Arc<dyn ObjectStore> = match &config.store.backend {
         StoreBackend::Local { path } => {
-            std::fs::create_dir_all(path)
+            tokio::fs::create_dir_all(path)
+                .await
                 .with_context(|| format!("creating local store dir {}", path.display()))?;
             Arc::new(
                 LocalFileSystem::new_with_prefix(path)

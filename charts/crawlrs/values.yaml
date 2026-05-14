@@ -54,7 +54,11 @@ fetch:
 
 politeness:
   hostDelay: "1s"
-  obeyRobotsTxt: true
+  # Default off: pairs with the empty fetch.userAgent above so the
+  # chart validates out of the box in stealth mode (random emulation,
+  # no robots gate). Flip to true and pin fetch.userAgent to a stable
+  # identity when you want polite-bot behaviour.
+  obeyRobotsTxt: false
   robotsTtl: "24h"
   backoff:
     initialBackoff: "30s"

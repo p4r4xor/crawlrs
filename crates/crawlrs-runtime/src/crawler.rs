@@ -59,13 +59,6 @@ pub struct CrawlerConfig {
     /// at a time.
     pub workers: usize,
 
-    /// User-Agent header sent on every fetch. `None` (recommended)
-    /// lets wreq's emulation profile drive the UA so the wire string
-    /// stays coherent with the TLS / HTTP/2 fingerprint. Set this only
-    /// when impersonating a specific crawler identity; mismatched
-    /// browser-fingerprint vs. UA is a textbook bot-detection signal.
-    pub user_agent: Option<String>,
-
     /// How often the maintenance task emits the process-health
     /// heartbeat. 30s catches slow leaks without dominating log
     /// volume.
@@ -132,7 +125,6 @@ impl Default for CrawlerConfig {
     fn default() -> Self {
         Self {
             workers: 4,
-            user_agent: None,
             maintenance_interval: Duration::from_secs(30),
             promoter_tick: Duration::from_millis(50),
             empty_queue_poll: Duration::from_millis(500),
@@ -184,16 +176,7 @@ impl Crawler {
     /// drains *and* shutdown was requested; without shutdown,
     /// workers loop forever waiting for new URLs).
     pub async fn run(&self) -> Result<(), CrawlerError> {
-        info!(
-            workers = self.deps.config.workers,
-            user_agent = self
-                .deps
-                .config
-                .user_agent
-                .as_deref()
-                .unwrap_or("<emulation default>"),
-            "Crawler starting",
-        );
+        info!(workers = self.deps.config.workers, "Crawler starting",);
 
         let mut tasks = JoinSet::new();
 

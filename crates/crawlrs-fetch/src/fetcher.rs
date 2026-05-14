@@ -60,6 +60,10 @@ impl WreqFetcher {
 
 #[async_trait]
 impl Fetcher for WreqFetcher {
+    #[tracing::instrument(
+        skip(self, request),
+        fields(url = %request.url, timeout_ms = request.timeout.as_millis() as u64)
+    )]
     async fn fetch(&self, request: FetchRequest) -> Result<FetchResponse> {
         let kind_label = crate::classify::fetch_kind(&request.url);
         let proxy_selection = self.config.proxy.resolve(&request).await?;

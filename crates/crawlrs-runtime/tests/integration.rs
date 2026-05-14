@@ -142,7 +142,6 @@ async fn build_crawler(
 fn fast_config() -> CrawlerConfig {
     CrawlerConfig {
         workers: 2,
-        user_agent: Some("TestBot/1.0".into()),
         maintenance_interval: Duration::from_secs(60),
         promoter_tick: Duration::from_millis(20),
         empty_queue_poll: Duration::from_millis(50),

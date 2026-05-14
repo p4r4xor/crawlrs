@@ -21,8 +21,6 @@
 
 use bb8::Pool;
 use bb8_redis::RedisConnectionManager;
-#[cfg(test)]
-use redis::AsyncCommands;
 
 /// Configuration for the per-shard bloom filter.
 #[derive(Debug, Clone, Copy)]
@@ -83,35 +81,4 @@ pub async fn reserve(
             }
         }
     }
-}
-
-/// Test-only: check if a URL ID is present in the bloom filter.
-/// Always returns `false` if the filter has never been ADD'd to. Not
-/// used on the hot path (the `submit.lua` script calls `BF.ADD`
-/// directly and inspects the return value); useful for assertions
-/// in integration tests.
-#[cfg(test)]
-pub async fn exists(
-    pool: &Pool<RedisConnectionManager>,
-    key: &str,
-    url_id_hex: &str,
-) -> Result<bool, String> {
-    let mut conn = pool
-        .get()
-        .await
-        .map_err(|e| format!("bloom exists checkout: {e:?}"))?;
-    let present: bool = conn
-        .exists(key)
-        .await
-        .map_err(|e: redis::RedisError| format!("EXISTS check: {e}"))?;
-    if !present {
-        return Ok(false);
-    }
-    let hit: bool = redis::cmd("BF.EXISTS")
-        .arg(key)
-        .arg(url_id_hex)
-        .query_async(&mut *conn)
-        .await
-        .map_err(|e: redis::RedisError| format!("BF.EXISTS: {e}"))?;
-    Ok(hit)
 }

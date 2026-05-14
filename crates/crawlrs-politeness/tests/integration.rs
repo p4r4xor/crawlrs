@@ -1,79 +1,30 @@
 //! Integration tests for `RedisPoliteness`.
 //!
 //! Each test brings up its own Redis container via `testcontainers-rs`
-//! and uses a unique `run_id` so tests don't collide. A small in-test
-//! `FakeFetcher` impl is used wherever robots.txt fetching is
-//! exercised; its canned responses let us verify the politeness-side
+//! and uses a unique `run_id` so tests don't collide. The shared
+//! `crawlrs_fakes::FakeFetcher` provides canned responses wherever
+//! robots.txt fetching is exercised, so we verify the politeness-side
 //! behaviour without a real HTTP server.
 //!
-//! The politeness layer is policy-only (per ADR-0020). It owns
-//! `check` (Allow / Disallow), `record_fetch` and `record_failure`
-//! (return `NextWake` plans). Wake-time storage and the
-//! ready-host-list / lease ZSET live in the frontier crate; tests
-//! for that behaviour live there.
+//! The politeness layer is policy-only: it owns `check` (Allow /
+//! Disallow), `record_fetch` and `record_failure` (return `NextWake`
+//! plans). Wake-time storage and the ready-host-list / lease ZSET
+//! live in the frontier crate; tests for that behaviour live there.
 
-use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use async_trait::async_trait;
 use bb8::Pool;
 use bb8_redis::RedisConnectionManager;
-use bytes::Bytes;
-use chrono::Utc;
 use crawlrs_core::{
-    CanonicalUrl, Error, FailureKind, FetchRequest, FetchResponse, Fetcher, PoliteDecision,
-    Politeness, Result, ShardingPolicy, SingleShardPolicy,
+    CanonicalUrl, FailureKind, Fetcher, PoliteDecision, Politeness, ShardingPolicy,
+    SingleShardPolicy,
 };
+use crawlrs_fakes::FakeFetcher;
 use crawlrs_politeness::{BackoffPolicy, PolitenessConfig, PolitenessOverride, RedisPoliteness};
 use testcontainers_modules::redis::Redis;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
 use testcontainers_modules::testcontainers::{ContainerAsync, ImageExt};
-
-// ---------------------------------------------------------------------------
-// Fake Fetcher
-// ---------------------------------------------------------------------------
-
-#[derive(Default)]
-struct FakeFetcher {
-    responses: Mutex<HashMap<String, FetchResponse>>,
-    requests: Mutex<Vec<String>>,
-}
-
-impl FakeFetcher {
-    fn install(&self, url: &str, status: u16, body: &str) {
-        let canon = CanonicalUrl::parse(url).unwrap();
-        let resp = FetchResponse {
-            url: canon,
-            status,
-            headers: HashMap::new(),
-            body: Bytes::copy_from_slice(body.as_bytes()),
-            redirect_chain: Vec::new(),
-            fetched_at: Utc::now(),
-            duration: Duration::from_millis(0),
-        };
-        self.responses.lock().unwrap().insert(url.to_string(), resp);
-    }
-
-    fn request_count(&self) -> usize {
-        self.requests.lock().unwrap().len()
-    }
-}
-
-#[async_trait]
-impl Fetcher for FakeFetcher {
-    async fn fetch(&self, req: FetchRequest) -> Result<FetchResponse> {
-        let url = req.url.as_str().to_string();
-        self.requests.lock().unwrap().push(url.clone());
-        match self.responses.lock().unwrap().get(&url).cloned() {
-            Some(resp) => Ok(resp),
-            None => Err(Error::Fetch(format!(
-                "FakeFetcher: no canned response for {url}"
-            ))),
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -368,7 +319,7 @@ async fn record_failure_honors_retry_after_as_floor() {
 async fn robots_txt_blocks_disallowed_path_and_caches_body() {
     let fx = fixture().await;
     let fake = Arc::new(FakeFetcher::default());
-    fake.install(
+    fake.install_response(
         "https://blocky.test/robots.txt",
         200,
         "User-agent: *\nDisallow: /private",
@@ -395,10 +346,10 @@ async fn robots_txt_blocks_disallowed_path_and_caches_body() {
 
     // Cache check: a third request to the same host shouldn't re-fetch
     // robots.txt.
-    let count_before = fake.request_count();
+    let count_before = fake.calls().len();
     p.check(&url("https://blocky.test/another")).await.unwrap();
     assert_eq!(
-        fake.request_count(),
+        fake.calls().len(),
         count_before,
         "robots.txt should not be re-fetched"
     );
@@ -408,7 +359,7 @@ async fn robots_txt_blocks_disallowed_path_and_caches_body() {
 async fn robots_txt_404_treated_as_no_rules() {
     let fx = fixture().await;
     let fake = Arc::new(FakeFetcher::default());
-    fake.install("https://norobots.test/robots.txt", 404, "");
+    fake.install_response("https://norobots.test/robots.txt", 404, "");
 
     let p = build(
         &fx.pool,
@@ -427,7 +378,7 @@ async fn robots_txt_404_treated_as_no_rules() {
 async fn robots_per_domain_override_disables_check() {
     let fx = fixture().await;
     let fake = Arc::new(FakeFetcher::default());
-    fake.install(
+    fake.install_response(
         "https://staging.test/robots.txt",
         200,
         "User-agent: *\nDisallow: /",
@@ -451,14 +402,14 @@ async fn robots_per_domain_override_disables_check() {
         .unwrap();
     assert_ne!(decision, PoliteDecision::Disallow);
     // Robots.txt is never fetched because the gate is disabled.
-    assert_eq!(fake.request_count(), 0);
+    assert_eq!(fake.calls().len(), 0);
 }
 
 #[tokio::test]
 async fn in_process_robots_lru_populates_after_first_check() {
     let fx = fixture().await;
     let fake = Arc::new(FakeFetcher::default());
-    fake.install(
+    fake.install_response(
         "https://lru.test/robots.txt",
         200,
         "User-agent: *\nAllow: /",

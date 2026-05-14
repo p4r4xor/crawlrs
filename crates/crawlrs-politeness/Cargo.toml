@@ -27,6 +27,7 @@ tracing.workspace          = true
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 chrono.workspace                 = true
+crawlrs-fakes.workspace          = true
 testcontainers.workspace         = true
 testcontainers-modules.workspace = true
 cuid2.workspace                   = true

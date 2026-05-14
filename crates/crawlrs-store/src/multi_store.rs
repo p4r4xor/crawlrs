@@ -49,6 +49,14 @@ impl MultiStore {
 
 #[async_trait]
 impl Store for MultiStore {
+    #[tracing::instrument(
+        skip(self, record),
+        fields(
+            url = %record.doc.url,
+            depth = record.depth,
+            fanout = self.stores.len(),
+        )
+    )]
     async fn write(&self, record: &StoreRecord<'_>) -> Result<String> {
         let mut paths = Vec::with_capacity(self.stores.len());
         for store in &self.stores {

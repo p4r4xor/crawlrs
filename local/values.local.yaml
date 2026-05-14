@@ -45,12 +45,15 @@ crawlrs:
 
   fetch:
     maxBodyBytes: 5242880
-    userAgent: "crawlrs-local/0.0.1 (+https://github.com/p4r4xor/crawlrs)"
+    # Stealth mode: leave userAgent unset so wreq's randomized emulation
+    # profile drives the wire User-Agent. obeyRobotsTxt must be false
+    # for this to validate (a random per-request UA can't coherently
+    # match a robots.txt rule group).
     defaultTimeout: "30s"
 
   politeness:
     hostDelay: "1s"
-    obeyRobotsTxt: true
+    obeyRobotsTxt: false
     robotsTtl: "24h"
     backoff:
       initialBackoff: "30s"

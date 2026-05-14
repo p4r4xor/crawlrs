@@ -302,10 +302,7 @@ impl UrlPipeline {
     /// lease-expiry).
     async fn fetch(&self) -> Option<FetchResponse> {
         let _phase = PhaseTimer::start(crate::metrics::PHASE_FETCH);
-        let mut req = FetchRequest::new(self.url().clone());
-        if let Some(user_agent) = &self.deps.config.user_agent {
-            req.headers.insert("User-Agent".into(), user_agent.clone());
-        }
+        let req = FetchRequest::new(self.url().clone());
 
         let resp = match self.deps.fetcher.fetch(req).await {
             Ok(r) => r,

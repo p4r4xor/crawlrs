@@ -50,6 +50,24 @@ impl FakeFetcher {
         self.install_status_with_headers(url, status, HashMap::new());
     }
 
+    /// Install a response with arbitrary status and body, no headers.
+    /// Used by callers (e.g. robots.txt fixtures) that want a body but
+    /// don't want the `text/html` content-type that `install_html`
+    /// sets.
+    pub fn install_response(&self, url: &str, status: u16, body: &str) {
+        let canon = CanonicalUrl::parse(url).expect("FakeFetcher: install_response with valid URL");
+        let resp = FetchResponse {
+            url: canon,
+            status,
+            headers: HashMap::new(),
+            body: Bytes::copy_from_slice(body.as_bytes()),
+            redirect_chain: Vec::new(),
+            fetched_at: Utc::now(),
+            duration: Duration::from_millis(0),
+        };
+        self.responses.lock().unwrap().insert(url.to_string(), resp);
+    }
+
     /// Install a status response with headers. Used to exercise the
     /// `Retry-After` parsing path and similar header-driven behaviors.
     pub fn install_status_with_headers(
