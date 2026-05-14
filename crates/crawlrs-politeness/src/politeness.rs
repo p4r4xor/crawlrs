@@ -19,7 +19,7 @@ use crawlrs_core::{
 };
 use redis::AsyncCommands;
 use thiserror::Error as ThisError;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::config::PolitenessConfig;
 use crate::failure::compute_backoff;
@@ -192,6 +192,28 @@ impl RedisPoliteness {
         self.config.blocklist.contains(host)
     }
 
+    /// Effective URL-count cap for `host`. Per-host override wins over
+    /// the global default; both unset means no cap. Pure config lookup.
+    fn effective_max_urls(&self, host: &str) -> Option<u64> {
+        self.config
+            .per_domain
+            .get(host)
+            .and_then(|o| o.max_urls)
+            .or(self.config.max_urls)
+    }
+
+    /// True iff any host has a URL-count cap configured (global or
+    /// per-host). When false, every Redis op related to the per-host
+    /// counter is skipped, keeping the unset case zero-cost.
+    fn quotas_enabled(&self) -> bool {
+        self.config.max_urls.is_some()
+            || self
+                .config
+                .per_domain
+                .values()
+                .any(|o| o.max_urls.is_some())
+    }
+
     /// Convert a desired wait `Duration` from now into an `Instant`
     /// suitable for `NextWake.until`. Pure: no Redis call.
     fn next_wake_after(&self, host: &str, delay: Duration) -> NextWake {
@@ -246,6 +268,23 @@ impl Politeness for RedisPoliteness {
             return Ok(PoliteDecision::Disallow);
         }
 
+        // Per-host URL-count quota. One HGET when the feature is on,
+        // skipped entirely when no host has a max_urls cap configured.
+        // The connection is already checked out for the failure-count
+        // read above, so the marginal cost is one extra round-trip.
+        if let Some(cap) = self.effective_max_urls(host) {
+            let count_key = self.keys.fetch_count(shard, host);
+            let count: Option<u64> = conn
+                .get(&count_key)
+                .await
+                .map_err(RedisPolitenessError::from)
+                .map_err(Error::from)?;
+            if count.unwrap_or(0) >= cap {
+                record_check_decision(crate::metrics::DECISION_DISALLOW_QUOTA);
+                return Ok(PoliteDecision::Disallow);
+            }
+        }
+
         record_check_decision(crate::metrics::DECISION_ALLOW);
         Ok(PoliteDecision::Allow)
     }
@@ -275,6 +314,24 @@ impl Politeness for RedisPoliteness {
             .await
             .map_err(RedisPolitenessError::from)
             .map_err(Error::from)?;
+
+        // Per-host quota counter. Skipped entirely when no host has a
+        // max_urls cap configured (the unset path costs zero Redis
+        // ops). A failed INCR is logged and swallowed: the counter is
+        // best-effort, and refusing to ack a successful fetch because
+        // of a downstream Redis blip would hot-loop the URL.
+        if self.quotas_enabled() {
+            let count_key = self.keys.fetch_count(shard, host);
+            let incr: redis::RedisResult<u64> = conn.incr(&count_key, 1u64).await;
+            if let Err(e) = incr {
+                warn!(
+                    shard,
+                    host,
+                    error = %e,
+                    "record_fetch: fetch_count incr failed; quota counter drifts",
+                );
+            }
+        }
 
         debug!(
             shard,
@@ -354,6 +411,14 @@ impl Politeness for RedisPoliteness {
             "record_failure",
         );
         Ok(self.next_wake_after(host, backoff))
+    }
+
+    fn depth_cap(&self, host: &str) -> Option<u32> {
+        self.config
+            .per_domain
+            .get(host)
+            .and_then(|o| o.max_depth)
+            .or(self.config.max_depth)
     }
 }
 

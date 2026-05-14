@@ -31,7 +31,6 @@
 //!
 //! [runtime]
 //! workers = 4
-//! max_depth = 5
 //! max_retries = 5
 //! link_dispatch = "durable_outbox"  # or "direct"
 //!
@@ -137,6 +136,16 @@ pub struct PolitenessConfig {
     pub blocklist: HashSet<String>,
     #[serde(default)]
     pub per_domain: HashMap<String, PerDomainOverride>,
+    /// Global default depth cap. `None` (default) = unbounded; per-host
+    /// overrides in `per_domain` can still raise or lower an individual
+    /// host's cap.
+    #[serde(default)]
+    pub max_depth: Option<u32>,
+    /// Global default cap on successful fetches per host. `None`
+    /// (default) = uncapped; per-host overrides in `per_domain` can
+    /// still raise or lower an individual host's quota.
+    #[serde(default)]
+    pub max_urls: Option<u64>,
 }
 
 impl Default for PolitenessConfig {
@@ -148,6 +157,8 @@ impl Default for PolitenessConfig {
             backoff: BackoffPolicy::default(),
             blocklist: HashSet::new(),
             per_domain: HashMap::new(),
+            max_depth: None,
+            max_urls: None,
         }
     }
 }
@@ -180,13 +191,19 @@ pub struct PerDomainOverride {
     #[serde(with = "humantime_serde::option")]
     pub host_delay: Option<Duration>,
     pub obey_robots_txt: Option<bool>,
+    /// Per-host depth cap. Wins over `politeness.max_depth`. `None`
+    /// falls back to the global default.
+    pub max_depth: Option<u32>,
+    /// Per-host URL-count cap. Wins over `politeness.max_urls`.
+    /// `None` falls back to the global default (which may itself
+    /// be `None` = uncapped).
+    pub max_urls: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct RuntimeConfig {
     pub workers: usize,
-    pub max_depth: Option<u32>,
     pub max_retries: u32,
     /// Strategy for moving discovered outbound URLs into the
     /// Frontier. Default `Direct` is the lower-cost path that loses
@@ -200,7 +217,6 @@ impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
             workers: 4,
-            max_depth: Some(5),
             max_retries: 5,
             link_dispatch: LinkDispatch::default(),
         }

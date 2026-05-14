@@ -143,7 +143,6 @@ fn fast_config() -> CrawlerConfig {
     CrawlerConfig {
         workers: 2,
         user_agent: Some("TestBot/1.0".into()),
-        max_depth: Some(2),
         maintenance_interval: Duration::from_secs(60),
         promoter_tick: Duration::from_millis(20),
         empty_queue_poll: Duration::from_millis(50),
@@ -252,9 +251,12 @@ async fn missing_canned_response_records_transport_failure() {
 #[tokio::test]
 async fn discovered_links_respect_max_depth() {
     let fx = fixture().await;
-    let mut config = fast_config();
-    config.max_depth = Some(1); // seed -> depth 0; children -> depth 1; depth 2 dropped
-    let (crawler, fetcher, store, _metadata) = build_crawler(&fx, config, fast_politeness()).await;
+    // seed -> depth 0; children -> depth 1; depth 2 dropped. The cap
+    // lives on the politeness layer (alongside max_urls and the
+    // per-host override map) so all per-host quota knobs sit together.
+    let mut politeness = fast_politeness();
+    politeness.max_depth = Some(1);
+    let (crawler, fetcher, store, _metadata) = build_crawler(&fx, fast_config(), politeness).await;
 
     fetcher.install_html(
         "https://a.test/",
@@ -285,7 +287,7 @@ async fn discovered_links_respect_max_depth() {
     assert!(calls.contains(&"https://a.test/d1".to_string()));
     assert!(
         !calls.contains(&"https://a.test/d2".to_string()),
-        "d2 is at depth 2 and should be dropped under max_depth=1; calls: {calls:?}",
+        "d2 is at depth 2 and should be dropped under politeness.max_depth=1; calls: {calls:?}",
     );
     let _ = store;
 }

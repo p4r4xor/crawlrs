@@ -11,7 +11,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use bb8_redis::RedisConnectionManager;
 use crawlrs_core::{HostHashShardPolicy, ShardKey, ShardingPolicy};
 use crawlrs_fetch::{NoProxyResolver, WreqFetcher, WreqFetcherConfig};
-use crawlrs_frontier::RedisFrontier;
+use crawlrs_frontier::{RedisFrontier, validate_pool_size};
 use crawlrs_metadata::PostgresMetadataStore;
 use crawlrs_parse::LolHtmlParser;
 use crawlrs_politeness::{PolitenessConfig as CorePolitenessConfig, RedisPoliteness};
@@ -39,6 +39,14 @@ pub async fn build(config: &CrawlrsConfig) -> Result<Built> {
 
     let redis_pool = build_redis_pool(config).await?;
     let pg_pool = build_postgres_pool(config).await?;
+
+    // Defense-in-depth: an under-sized Redis pool wouldn't fail the
+    // build outright, it would just produce connection-acquisition
+    // latency at runtime. Fail-fast here instead — diagnosing pool
+    // starvation in prod is dramatically more expensive than an
+    // honest startup error.
+    validate_pool_size(&redis_pool, config.runtime.workers as u32)
+        .context("validating Redis pool size against worker count")?;
 
     let fetcher = build_fetcher(config)?;
     let parser = Arc::new(LolHtmlParser::new());
@@ -184,10 +192,14 @@ fn build_politeness_config(config: &CrawlrsConfig) -> CorePolitenessConfig {
                     crawlrs_politeness::PolitenessOverride {
                         host_delay: override_.host_delay,
                         obey_robots_txt: override_.obey_robots_txt,
+                        max_depth: override_.max_depth,
+                        max_urls: override_.max_urls,
                     },
                 )
             })
             .collect(),
+        max_depth: config.politeness.max_depth,
+        max_urls: config.politeness.max_urls,
     }
 }
 
@@ -195,7 +207,6 @@ fn build_runtime_config(config: &CrawlrsConfig) -> CrawlerConfig {
     CrawlerConfig {
         workers: config.runtime.workers,
         user_agent: config.fetch.user_agent.clone(),
-        max_depth: config.runtime.max_depth,
         max_retries: config.runtime.max_retries,
         pod_ordinal: pod_ordinal_from_env(),
         link_dispatch: config.runtime.link_dispatch,

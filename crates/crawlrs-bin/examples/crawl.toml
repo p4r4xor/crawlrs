@@ -44,30 +44,49 @@ user_agent      = "crawlrs/0.0.1 (+https://github.com/p4r4xor/crawlrs)"
 # [fetch].user_agent to be set. With random emulation (no fetch UA),
 # the wire User-Agent rotates per request and can't be matched
 # coherently against any robots.txt rule group.
+# Politeness scalar keys live at the top of the [politeness] table.
+# Subtables (politeness.backoff, politeness.per_domain.<host>) come
+# after, because every key after a [a.b] header belongs to a.b until
+# the next [...] header opens a new table.
 [politeness]
-host_delay       = "1s"
+host_delay      = "1s"
 obey_robots_txt = true
-robots_ttl = "24h"
+robots_ttl      = "24h"
 
-# Exponential backoff on 429 / 503 / transport errors.
-[politeness.backoff]
-initial_backoff             = "30s"
-max_backoff                 = "10m"
-multiplier                  = 2.0
-failure_threshold           = 10
+# Per-host caps. Both globals are null/unset by default = unbounded.
+# Per-host overrides in politeness.per_domain.<host> can raise or
+# lower any individual host's cap. Depth caps are pure config (no
+# I/O); URL-count storage is only allocated when at least one max_urls
+# value is configured, so the unset case costs zero Redis state.
+# max_depth = 5
+# max_urls  = 50000
 
 # Hosts to never crawl (in addition to robots.txt).
 # blocklist = ["example.com", "do-not-crawl.org"]
 
-# Per-host overrides. Each entry can adjust host_delay and / or
-# obey_robots_txt for that host without touching the global default.
+# Exponential backoff on 429 / 503 / transport errors.
+[politeness.backoff]
+initial_backoff   = "30s"
+max_backoff       = "10m"
+multiplier        = 2.0
+failure_threshold = 10
+
+# Per-host overrides. Each entry is its own subtable and can adjust
+# host_delay, obey_robots_txt, max_depth, and max_urls for that host
+# without touching the global defaults. Keys are exact host strings
+# (no eTLD+1 rollup); `profiles.crustdata.com` and `crustdata.com`
+# are distinct quotas.
 # [politeness.per_domain."slow-host.example"]
 # host_delay = "5s"
+# max_depth  = 3
+# max_urls   = 1000
+# [politeness.per_domain."profiles.crustdata.com"]
+# max_urls   = 1000000
 
-# Worker pool + per-URL retry budget.
+# Worker pool + per-URL retry budget. Depth and per-host quota caps
+# live under [politeness] (see above) since they're per-host policy.
 [runtime]
 workers          = 4
-max_depth        = 5      # null/unset = unbounded
 max_retries      = 5      # after this many consecutive failures, URL -> DLQ
 
 # Strategy for moving discovered outbound URLs into the Frontier.
@@ -88,16 +107,16 @@ link_dispatch    = "direct"
 
 # Per-shard Frontier knobs. Defaults are sized for the standard
 # per-shard layout; raise `bloom_capacity` for runs expected to
-# submit more than ~1M unique URLs. The bloom_fpr
-# governs the silent-drop budget at submit time (each false positive
-# is a URL we never fetch); 0.1% is a sensible default for runs that
-# re-crawl periodically.
+# submit more than ~10M unique URLs. `bloom_fpr` governs the silent-
+# drop budget at submit time (each false positive is a URL we never
+# fetch); 0.1% is a sensible default for runs that re-crawl
+# periodically.
 [frontier]
-max_host_backlog          = 10000      # divert excess to overflow LIST
-lease_timeout             = "60s"      # crash-recovery floor
-promoter_tick             = "50ms"     # wake -> ready / lease reclaim cadence
-bloom_capacity            = 1_000_000  # ~1.8 MB at fpr=0.001
-bloom_fpr                 = 0.001      # false-positive rate at capacity
+max_host_backlog          = 10000       # divert excess to overflow LIST
+lease_timeout             = "60s"       # crash-recovery floor
+promoter_tick             = "50ms"      # wake -> ready / lease reclaim cadence
+bloom_capacity            = 10_000_000  # ~18 MB at fpr=0.001
+bloom_fpr                 = 0.001       # false-positive rate at capacity
 
 # Output stores. Parquet is the analytical primary; WARC is the
 # archival mirror that preserves the original HTTP wire framing. Both

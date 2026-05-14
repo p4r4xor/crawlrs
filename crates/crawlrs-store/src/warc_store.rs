@@ -19,8 +19,8 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use crawlrs_core::{Result, Store, StoreRecord};
-use object_store::ObjectStore;
 use object_store::path::Path;
+use object_store::{ObjectStore, ObjectStoreExt};
 use tokio::sync::Mutex;
 use tracing::{debug, instrument};
 

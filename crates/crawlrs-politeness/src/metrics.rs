@@ -18,6 +18,7 @@ pub const DECISION_ALLOW: &str = "allow";
 pub const DECISION_DISALLOW_ROBOTS: &str = "disallow_robots";
 pub const DECISION_DISALLOW_BLOCKED: &str = "disallow_blocked";
 pub const DECISION_DISALLOW_CIRCUIT: &str = "disallow_circuit";
+pub const DECISION_DISALLOW_QUOTA: &str = "disallow_quota";
 
 pub const SOURCE_SERVER_HINT: &str = "server_hint";
 pub const SOURCE_COMPUTED: &str = "computed";

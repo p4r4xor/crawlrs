@@ -145,7 +145,6 @@ async fn end_to_end_against_postgres_metadata_store() {
     let config = CrawlerConfig {
         workers: 2,
         user_agent: Some("PgWireTest/1.0".into()),
-        max_depth: Some(1),
         maintenance_interval: Duration::from_secs(60),
         promoter_tick: Duration::from_millis(20),
         empty_queue_poll: Duration::from_millis(50),

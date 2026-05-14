@@ -28,7 +28,7 @@ use crawlrs_core::{
 };
 use tokio::sync::watch;
 use tokio::time::Instant as TokioInstant;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::crawler::CrawlerConfig;
 use crate::failure::{classify_status, classify_transport_error, extract_retry_after};
@@ -240,7 +240,9 @@ impl UrlPipeline {
         // (drained by a separate publisher task); Direct enqueues
         // them via `Frontier::submit_batch` after the metadata
         // commit, accepting bounded loss on transient errors.
-        let outbound = compute_outbound(&self.entry, &doc, self.deps.config.max_depth);
+        let outbound = compute_outbound(&self.entry, &doc, |host| {
+            self.deps.politeness.depth_cap(host)
+        });
         self.finalize(&resp, &doc, outbound).await;
     }
 
@@ -254,7 +256,10 @@ impl UrlPipeline {
     async fn politeness_allows(&self) -> bool {
         let _phase = PhaseTimer::start(crate::metrics::PHASE_POLITENESS);
         match self.deps.politeness.check(self.url()).await {
-            Ok(PoliteDecision::Allow) => true,
+            Ok(PoliteDecision::Allow) => {
+                info!(url = %self.url(), "politeness allow");
+                true
+            }
             Ok(PoliteDecision::Disallow) => {
                 debug!(url = %self.url(), "politeness disallowed; acking");
                 metrics::counter!(
@@ -340,6 +345,12 @@ impl UrlPipeline {
 
         let plan = self.deps.politeness.record_fetch(self.url()).await;
         self.apply_wake_plan(plan).await;
+        info!(
+            url = %self.url(),
+            status = resp.status,
+            body_bytes = resp.body.len(),
+            "fetch ok",
+        );
         Some(resp)
     }
 
@@ -372,7 +383,15 @@ impl UrlPipeline {
         let _phase = PhaseTimer::start(crate::metrics::PHASE_EXTRACT);
         if let Some(adapter) = self.deps.adapters.find_for(&resp.url) {
             match adapter.extract(resp).await {
-                Ok(Some(doc)) => return Some(doc),
+                Ok(Some(doc)) => {
+                    info!(
+                        url = %resp.url,
+                        outbound_links = doc.outbound_links.len(),
+                        via = "adapter",
+                        "parse ok",
+                    );
+                    return Some(doc);
+                }
                 Ok(None) => {} // adapter punted; fall through to generic parser
                 Err(e) => {
                     warn!(url = %resp.url, error = %e, "site adapter extract failed");
@@ -382,7 +401,15 @@ impl UrlPipeline {
             }
         }
         match self.deps.parser.parse(resp).await {
-            Ok(doc) => Some(doc),
+            Ok(doc) => {
+                info!(
+                    url = %resp.url,
+                    outbound_links = doc.outbound_links.len(),
+                    via = "lol_html",
+                    "parse ok",
+                );
+                Some(doc)
+            }
             Err(e) => {
                 warn!(url = %resp.url, error = %e, "generic parse failed");
                 self.fail_parse(&format!("parser: {e}")).await;
@@ -424,7 +451,10 @@ impl UrlPipeline {
             self.deps.store.write(&record).await
         };
         let blob_path = match store_result {
-            Ok(p) => p,
+            Ok(p) => {
+                info!(url = %self.url(), blob_path = %p, "store ok");
+                p
+            }
             Err(e) => {
                 warn!(url = %self.url(), error = %e, "store write failed; acking anyway to avoid hot loop");
                 let _phase = PhaseTimer::start(crate::metrics::PHASE_COMMIT);
@@ -473,6 +503,7 @@ impl UrlPipeline {
             warn!(url = %self.url(), error = %e, "frontier ack failed");
         }
 
+        info!(url = %self.url(), depth = self.entry.depth, "url complete");
         metrics::counter!(crate::metrics::URLS_FETCHED_TOTAL).increment(1);
     }
 
@@ -524,39 +555,55 @@ impl UrlPipeline {
 /// happens via the outbox publisher (see
 /// [`crate::outbox::outbox_publisher`]) so that the Postgres commit
 /// and the queue write are atomic from the worker's perspective.
+///
+/// `depth_cap` is called per outbound URL with its host string and
+/// returns the **effective** depth cap for that host: per-host
+/// override if configured, else the politeness layer's global
+/// default. `None` means uncapped. Both globals and per-host
+/// overrides live in `[politeness]`; the runtime doesn't carry a
+/// separate cap on this path.
 fn compute_outbound(
     parent: &UrlEntry,
     doc: &ParsedDocument,
-    max_depth: Option<u32>,
+    depth_cap: impl Fn(&str) -> Option<u32>,
 ) -> Vec<UrlEntry> {
     let new_depth = parent.depth + 1;
+    let mut dropped = 0u64;
 
-    // Count depth-limit drops: HTTP-shape outlinks that were filtered
-    // out because their depth exceeds the configured cap. Non-HTTP
-    // links (mailto:, tel:, javascript:) are silently dropped without
-    // a metric since they're scheme-mismatch, not a crawler decision
-    // worth surfacing.
-    if max_depth.is_some_and(|limit| new_depth > limit) {
-        let dropped = doc.outbound_links.iter().filter(|u| u.is_http()).count();
-        if dropped > 0 {
-            metrics::counter!(
-                crate::metrics::URLS_SKIPPED_TOTAL,
-                "reason" => crate::metrics::SKIP_DEPTH_LIMIT,
-            )
-            .increment(dropped as u64);
-        }
-    }
-
-    doc.outbound_links
+    let kept: Vec<UrlEntry> = doc
+        .outbound_links
         .iter()
         .filter(|u| u.is_http())
-        .filter(|_| max_depth.is_none_or(|limit| new_depth <= limit))
-        .map(|u| UrlEntry {
-            url: u.clone(),
-            depth: new_depth,
-            discovered_from: Some(parent.url.clone()),
+        .filter_map(|u| {
+            let cap = u.host().and_then(&depth_cap);
+            if cap.is_some_and(|limit| new_depth > limit) {
+                dropped += 1;
+                return None;
+            }
+            Some(UrlEntry {
+                url: u.clone(),
+                depth: new_depth,
+                discovered_from: Some(parent.url.clone()),
+            })
         })
-        .collect()
+        .collect();
+
+    // Non-HTTP links (mailto:, tel:, javascript:) are silently dropped
+    // without a metric because they're scheme-mismatch, not a crawler
+    // decision worth surfacing. Depth-cap drops are tracked under one
+    // skip reason regardless of whether the cap came from the global
+    // default or a per-host override; operators can correlate with
+    // politeness::check disallows (decision=disallow_quota) when
+    // they need to tell the two mechanisms apart.
+    if dropped > 0 {
+        metrics::counter!(
+            crate::metrics::URLS_SKIPPED_TOTAL,
+            "reason" => crate::metrics::SKIP_DEPTH_LIMIT,
+        )
+        .increment(dropped);
+    }
+
+    kept
 }
 
 #[cfg(test)]
@@ -615,11 +662,23 @@ mod tests {
         }
     }
 
+    /// `compute_outbound` now takes a single closure that returns the
+    /// **effective** cap (override-or-global) for each host. These
+    /// stubs mimic that: `uncapped` is "every host returns None"
+    /// (no global, no override), `capped(n)` is "every host
+    /// returns `Some(n)`" (simulates the global being set).
+    fn uncapped(_host: &str) -> Option<u32> {
+        None
+    }
+    fn capped(n: u32) -> impl Fn(&str) -> Option<u32> {
+        move |_host| Some(n)
+    }
+
     #[test]
     fn compute_outbound_with_no_cap_keeps_all_http_links() {
         let parent = parent_at(0);
         let doc = doc_with_links(&["https://a.test/", "https://b.test/"]);
-        let outbound = compute_outbound(&parent, &doc, None);
+        let outbound = compute_outbound(&parent, &doc, uncapped);
         assert_eq!(outbound.len(), 2);
         assert!(outbound.iter().all(|e| e.depth == 1));
     }
@@ -628,9 +687,9 @@ mod tests {
     fn compute_outbound_drops_links_past_max_depth() {
         let parent = parent_at(2);
         let doc = doc_with_links(&["https://a.test/", "https://b.test/"]);
-        // max_depth=2 means a parent at depth 2 produces children at
-        // depth 3, which exceeds the cap; everything is filtered out.
-        let outbound = compute_outbound(&parent, &doc, Some(2));
+        // Cap=2 means a parent at depth 2 produces children at depth
+        // 3, which exceeds the cap; everything is filtered out.
+        let outbound = compute_outbound(&parent, &doc, capped(2));
         assert!(outbound.is_empty());
     }
 
@@ -638,10 +697,10 @@ mod tests {
     fn compute_outbound_keeps_children_exactly_at_max_depth() {
         let parent = parent_at(2);
         let doc = doc_with_links(&["https://a.test/"]);
-        // max_depth=3 means a parent at depth 2 produces children at
-        // depth 3 (exactly the cap); they must be kept, not treated
-        // as past-cap.
-        let outbound = compute_outbound(&parent, &doc, Some(3));
+        // Cap=3 means a parent at depth 2 produces children at depth
+        // 3 (exactly the cap); they must be kept, not treated as
+        // past-cap.
+        let outbound = compute_outbound(&parent, &doc, capped(3));
         assert_eq!(outbound.len(), 1);
         assert_eq!(outbound[0].depth, 3);
     }
@@ -650,10 +709,37 @@ mod tests {
     fn compute_outbound_threads_parent_url_as_discovered_from() {
         let parent = parent_at(0);
         let doc = doc_with_links(&["https://a.test/"]);
-        let outbound = compute_outbound(&parent, &doc, None);
+        let outbound = compute_outbound(&parent, &doc, uncapped);
         assert_eq!(
             outbound[0].discovered_from.as_ref().map(|u| u.as_str()),
             Some("https://parent.test/"),
         );
+    }
+
+    #[test]
+    fn compute_outbound_per_host_cap_drops_only_capped_host() {
+        let parent = parent_at(2);
+        // a.test capped at depth 2 -> child at depth 3 dropped.
+        // b.test uncapped -> child at depth 3 kept.
+        let doc = doc_with_links(&["https://a.test/", "https://b.test/"]);
+        let outbound = compute_outbound(&parent, &doc, |host| (host == "a.test").then_some(2));
+        assert_eq!(outbound.len(), 1);
+        assert_eq!(outbound[0].url.as_str(), "https://b.test/");
+    }
+
+    #[test]
+    fn compute_outbound_per_host_cap_can_raise_or_lower_independently() {
+        let parent = parent_at(2);
+        // The closure encodes the effective cap each host already
+        // resolved to: a.test got override=10 (high), b.test got the
+        // global=2 (low). Children at depth 3: a.test passes (3 <= 10),
+        // b.test drops (3 > 2).
+        let doc = doc_with_links(&["https://a.test/", "https://b.test/"]);
+        let outbound = compute_outbound(&parent, &doc, |host| match host {
+            "a.test" => Some(10),
+            _ => Some(2),
+        });
+        assert_eq!(outbound.len(), 1);
+        assert_eq!(outbound[0].url.as_str(), "https://a.test/");
     }
 }

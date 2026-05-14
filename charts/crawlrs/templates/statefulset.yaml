@@ -10,11 +10,11 @@ spec:
   podManagementPolicy: Parallel
   selector:
     matchLabels:
-      {{- include "crawlrs.selectorLabels" . | nindent 6 }}
+      {{- include "crawlrs.componentSelectorLabels" (dict "component" "crawler" "context" .) | nindent 6 }}
   template:
     metadata:
       labels:
-        {{- include "crawlrs.selectorLabels" . | nindent 8 }}
+        {{- include "crawlrs.componentSelectorLabels" (dict "component" "crawler" "context" .) | nindent 8 }}
         {{- with .Values.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -50,6 +50,70 @@ spec:
       # frontier shutdown -> worker drain -> store flush -> exit.
       # terminationGracePeriodSeconds caps total drain time.
       terminationGracePeriodSeconds: 60
+      {{- if .Values.initContainers.enabled }}
+      # Gate the crawler container on Redis + Postgres being reachable.
+      # Each probe loops with a bounded deadline so a genuinely broken
+      # config still fails visibly instead of spinning forever.
+      initContainers:
+        - name: wait-for-redis
+          image: {{ .Values.initContainers.redis.image | quote }}
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: CRAWLRS_REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "crawlrs.secretName" . }}
+                  key: redisUrl
+          command: ["sh", "-c"]
+          args:
+            - |
+              deadline=$(( $(date +%s) + {{ .Values.initContainers.deadlineSeconds }} ))
+              until redis-cli -u "$CRAWLRS_REDIS_URL" ping 2>/dev/null | grep -q PONG; do
+                if [ $(date +%s) -ge $deadline ]; then
+                  echo "redis still not ready after {{ .Values.initContainers.deadlineSeconds }}s; giving up"
+                  exit 1
+                fi
+                echo "waiting for redis..."
+                sleep 2
+              done
+              echo "redis ready"
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+        - name: wait-for-postgres
+          image: {{ .Values.initContainers.postgres.image | quote }}
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: CRAWLRS_POSTGRES_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "crawlrs.secretName" . }}
+                  key: postgresUrl
+          command: ["sh", "-c"]
+          args:
+            - |
+              deadline=$(( $(date +%s) + {{ .Values.initContainers.deadlineSeconds }} ))
+              until pg_isready -d "$CRAWLRS_POSTGRES_URL" 2>/dev/null; do
+                if [ $(date +%s) -ge $deadline ]; then
+                  echo "postgres still not ready after {{ .Values.initContainers.deadlineSeconds }}s; giving up"
+                  exit 1
+                fi
+                echo "waiting for postgres..."
+                sleep 2
+              done
+              echo "postgres ready"
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+      {{- end }}
       containers:
         - name: crawlrs
           image: {{ include "crawlrs.image" . }}

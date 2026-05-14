@@ -224,6 +224,8 @@ async fn per_domain_override_uses_custom_host_delay() {
         PolitenessOverride {
             host_delay: Some(Duration::from_millis(5_000)),
             obey_robots_txt: None,
+            max_depth: None,
+            max_urls: None,
         },
     );
 
@@ -437,6 +439,8 @@ async fn robots_per_domain_override_disables_check() {
         PolitenessOverride {
             host_delay: None,
             obey_robots_txt: Some(false),
+            max_depth: None,
+            max_urls: None,
         },
     );
 

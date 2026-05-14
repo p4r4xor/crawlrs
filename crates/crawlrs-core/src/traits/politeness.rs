@@ -117,4 +117,12 @@ pub trait Politeness: Send + Sync {
     // part of the full decision; impls that want to expose a
     // robots-only debugging entry point can do so via inherent
     // methods on their concrete type.
+
+    /// Effective per-host depth cap. Returns the per-host override if
+    /// configured, otherwise the politeness layer's global default,
+    /// otherwise `None` (unbounded). The runtime drops discovered
+    /// links whose depth would exceed `Some(N)`; `None` lets them
+    /// through. Sync because all inputs are in-memory config loaded
+    /// at construction time; no I/O on this path.
+    fn depth_cap(&self, host: &str) -> Option<u32>;
 }

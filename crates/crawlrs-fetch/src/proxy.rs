@@ -77,10 +77,6 @@ pub type HeaderFn = Arc<dyn Fn(&FetchRequest) -> HashMap<String, String> + Send 
 /// **Gateway pattern**: a single fixed proxy URL plus a per-request
 /// callback that produces routing-hint headers. Optionally trusts a
 /// caller-supplied PEM CA bundle for gateways that perform TLS interception.
-///
-/// Mirrors Crustdata's HMA usage: one `HMA_PROXY_URL`, headers like
-/// `x-hma-algorithm`, `x-hma-selector`, etc. computed at request time, and
-/// a CA bundle so the client trusts the gateway's MITM cert.
 pub struct GatewayProxyResolver {
     url: String,
     header_fn: Option<HeaderFn>,

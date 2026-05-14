@@ -20,7 +20,7 @@ use bb8_redis::RedisConnectionManager;
 use bytes::Bytes;
 use crawlrs_core::{CanonicalUrl, FetchRequest, Fetcher, ShardingPolicy};
 use redis::AsyncCommands;
-use tracing::{debug, warn};
+use tracing::{info, warn};
 
 use crate::keys::KeyPrefix;
 use crate::politeness::RedisPolitenessError;
@@ -233,7 +233,7 @@ impl RobotsCache {
         match status {
             200 => {
                 self.write_cache(host, source_url, Some(&body)).await?;
-                debug!(host, bytes = body.len(), "robots.txt cached");
+                info!(host, bytes = body.len(), "robots.txt fetched and cached");
                 Ok(body)
             }
             404 | 410 => {

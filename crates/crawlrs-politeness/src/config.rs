@@ -55,6 +55,22 @@ pub struct PolitenessConfig {
     /// exact-match in v1; glob/regex matching can be added without
     /// changing the type if a real use case appears.
     pub per_domain: HashMap<String, PolitenessOverride>,
+
+    /// Global default depth cap. `None` (the default) leaves crawls
+    /// uncapped; setting a value applies it as the baseline for every
+    /// host that doesn't have an explicit `per_domain.<host>.max_depth`
+    /// override. Depth caps are pure config (no I/O), so the unset
+    /// case costs nothing.
+    pub max_depth: Option<u32>,
+
+    /// Global default cap on URLs successfully fetched per host. `None`
+    /// (the default) leaves crawls uncapped; setting a value applies
+    /// it as a baseline to every host that doesn't have an explicit
+    /// `per_domain.<host>.max_urls` override. Per-host Redis counter
+    /// storage is only allocated when at least one URL cap is
+    /// configured (global or per-host), so the unset case costs zero
+    /// Redis bytes.
+    pub max_urls: Option<u64>,
 }
 
 impl Default for PolitenessConfig {
@@ -67,6 +83,8 @@ impl Default for PolitenessConfig {
             backoff: BackoffPolicy::default(),
             blocklist: HashSet::new(),
             per_domain: HashMap::new(),
+            max_depth: None,
+            max_urls: None,
         }
     }
 }
@@ -83,6 +101,15 @@ pub struct PolitenessOverride {
     #[serde(default, with = "humantime_serde::option")]
     pub host_delay: Option<Duration>,
     pub obey_robots_txt: Option<bool>,
+    /// Per-host override for `PolitenessConfig::max_depth`. The
+    /// worker's link-follow gate uses `override.max_depth.or(global)`,
+    /// so leaving this `None` falls back to the global default
+    /// (itself `None` = unbounded out of the box).
+    pub max_depth: Option<u32>,
+    /// Per-host override for `PolitenessConfig::max_urls`. `None`
+    /// inherits the global default; both `None` leaves the host
+    /// uncapped.
+    pub max_urls: Option<u64>,
 }
 
 /// Exponential backoff parameters for failure recovery.

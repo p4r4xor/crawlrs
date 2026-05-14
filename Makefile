@@ -124,9 +124,13 @@ local-up: local-cluster-up image chart-deps ## Full pipeline: cluster + image + 
 		--wait --timeout 5m \
 		--namespace $(LOCAL_NAMESPACE)
 	@echo ""
-	@echo "Stack is up. Useful commands:"
+	@echo "Stack is up. Endpoints exposed via kind extraPortMappings:"
+	@echo "  http://localhost:3000   Grafana (admin / admin)"
+	@echo "  http://localhost:9090   crawlrs /metrics, /healthz, /readyz"
+	@echo ""
+	@echo "Useful commands:"
 	@echo "  make local-logs       # tail crawlrs logs"
-	@echo "  make local-pf         # port-forward Grafana (3000) + metrics (9090)"
+	@echo "  make local-status     # pod state + helm status"
 	@echo "  make local-down       # uninstall helm release (keeps cluster)"
 
 .PHONY: local-down
@@ -138,14 +142,18 @@ local-logs: ## Tail crawler pod logs (crawlrs-demo-0, ordinal 0)
 	$(KUBECTL) logs -n $(LOCAL_NAMESPACE) -f $(LOCAL_RELEASE)-0 --all-containers=true
 
 .PHONY: local-pf
-local-pf: ## Port-forward Grafana (3000) and crawlrs metrics (9090)
-	@echo "Forwarding:"
-	@echo "  http://localhost:3000   Grafana (admin / admin)"
-	@echo "  http://localhost:9090   crawlrs /metrics, /healthz, /readyz"
+local-pf: ## Fallback port-forward; not normally needed (NodePort + kind extraPortMappings give host:3000 + host:9090)
+	@echo "NOTE: NodePort services + kind extraPortMappings already publish"
+	@echo "      http://localhost:3000 (Grafana) and http://localhost:9090 (metrics)."
+	@echo "      Use this target only if those host ports are blocked. Forwarding"
+	@echo "      to alternate ports 3001 / 9091 to avoid colliding with docker-proxy:"
+	@echo ""
+	@echo "  http://localhost:3001   Grafana"
+	@echo "  http://localhost:9091   crawlrs /metrics"
 	@echo ""
 	@echo "Ctrl-C to stop both."
-	@( $(KUBECTL) port-forward -n $(LOCAL_NAMESPACE) svc/$(LOCAL_RELEASE)-grafana 3000:3000 & \
-	   $(KUBECTL) port-forward -n $(LOCAL_NAMESPACE) sts/$(LOCAL_RELEASE) 9090:9090 & \
+	@( $(KUBECTL) port-forward -n $(LOCAL_NAMESPACE) svc/$(LOCAL_RELEASE)-grafana 3001:3000 & \
+	   $(KUBECTL) port-forward -n $(LOCAL_NAMESPACE) sts/$(LOCAL_RELEASE) 9091:9090 & \
 	   wait )
 
 .PHONY: local-status

@@ -14,4 +14,7 @@ spec:
       port: {{ .Values.o11y.grafana.service.port }}
       targetPort: http
       protocol: TCP
+      {{- if and (eq .Values.o11y.grafana.service.type "NodePort") .Values.o11y.grafana.service.nodePort }}
+      nodePort: {{ .Values.o11y.grafana.service.nodePort }}
+      {{- end }}
 {{- end }}

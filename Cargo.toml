@@ -34,13 +34,13 @@ http        = "1"
 humantime-serde = "1"
 lol_html    = "2.8"
 moka        = { version = "0.12", features = ["sync"] }
-arrow       = { version = "54", default-features = false }
-parquet     = { version = "54", default-features = false, features = ["arrow", "zstd"] }
-object_store = { version = "0.11", default-features = false, features = ["aws"] }
+arrow       = { version = "58", default-features = false }
+parquet     = { version = "58", default-features = false, features = ["arrow", "zstd"] }
+object_store = { version = "0.13", default-features = false, features = ["aws", "fs"] }
 flate2      = "1"
 metrics     = "0.24"
-metrics-util = { version = "0.18", features = ["debugging"] }
-metrics-exporter-prometheus = { version = "0.16", default-features = false, features = ["http-listener"] }
+metrics-util = { version = "0.20", features = ["debugging"] }
+metrics-exporter-prometheus = { version = "0.18", default-features = false, features = ["http-listener"] }
 clap        = { version = "4", features = ["derive", "env"] }
 axum        = { version = "0.8", default-features = false, features = ["tokio", "http1", "json"] }
 toml        = "0.8"

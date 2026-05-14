@@ -29,6 +29,15 @@ spec:
         - name: redis
           image: {{ .Values.redis.image | quote }}
           imagePullPolicy: {{ .Values.redis.imagePullPolicy | quote }}
+          # redis-stack-server uses a custom entrypoint that runs
+          # `redis-server --loadmodule .../redisbloom.so ...` so the
+          # bloom + JSON + search modules are present at startup.
+          # We must NOT override `args:` here; doing so replaces
+          # that entrypoint and Redis comes up without modules, so
+          # the frontier's `BF.RESERVE` would fail with "unknown
+          # command". Customise via `REDIS_ARGS` instead; the
+          # entrypoint appends it to its own arg list.
+          #
           # RDB-only durability. Three save thresholds give a
           # progressively-sparser snapshot cadence:
           #   `save 60 10000`  - every 60s if >=10k keys changed
@@ -37,23 +46,15 @@ spec:
           # AOF is disabled. RedisBloom state survives RDB snapshots,
           # so the bloom's cross-run dedup substrate survives pod
           # restarts.
-          # Each `--save SECONDS CHANGES` pair must be its own pair of
-          # argv tokens; Redis CLI parses them positionally.
-          args:
-            - redis-server
-            - --appendonly
-            - "no"
-            - --save
-            - "60"
-            - "10000"
-            - --save
-            - "300"
-            - "10"
-            - --save
-            - "900"
-            - "1"
-            - --dir
-            - /data
+          #
+          # Sandbox-only: `--protected-mode no` allows cross-pod
+          # connections from the crawler / publisher. With no
+          # password set, Redis would otherwise refuse non-loopback
+          # commands. Production deploys should set a password and
+          # pass it in the connection URL instead.
+          env:
+            - name: REDIS_ARGS
+              value: "--protected-mode no --appendonly no --save 60 10000 --save 300 10 --save 900 1 --dir /data"
           ports:
             - name: redis
               containerPort: 6379

@@ -539,6 +539,113 @@
         "x": 18,
         "y": 20
       }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Phase throughput (URLs/sec entering each phase)",
+      "description": "Per-second rate of each pipeline phase. In steady state all six lines should be roughly equal; divergence indicates short-circuits (politeness drops before fetch, parse failures before store, etc.).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "crawlrs-vm"
+      },
+      "targets": [
+        {
+          "expr": "sum by (phase) (rate(crawlrs_pipeline_phase_seconds_count[1m]))",
+          "legendFormat": "{{phase}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 2,
+            "gradientMode": "opacity",
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "drawStyle": "line"
+          }
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 25
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "calcs": [
+            "mean",
+            "lastNotNull"
+          ],
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Where does pipeline time go (mean seconds per URL, by phase)",
+      "description": "Stacked area: each band is the average seconds spent in that phase per pipeline run. Total height ≈ average crawlrs_pipeline_seconds. Tallest band is the bottleneck.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "crawlrs-vm"
+      },
+      "targets": [
+        {
+          "expr": "sum by (phase) (rate(crawlrs_pipeline_phase_seconds_sum[5m])) / sum by (phase) (rate(crawlrs_pipeline_phase_seconds_count[5m]))",
+          "legendFormat": "{{phase}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 70,
+            "showPoints": "never",
+            "drawStyle": "line",
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          }
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 25
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "calcs": [
+            "mean",
+            "lastNotNull"
+          ],
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
     }
   ]
 }

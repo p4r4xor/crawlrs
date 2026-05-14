@@ -66,10 +66,6 @@ pub struct CrawlerConfig {
     /// browser-fingerprint vs. UA is a textbook bot-detection signal.
     pub user_agent: Option<String>,
 
-    /// Maximum link depth from any seed. `None` means unbounded.
-    /// Discovered links beyond this depth are dropped at submit time.
-    pub max_depth: Option<u32>,
-
     /// How often the maintenance task emits the process-health
     /// heartbeat. 30s catches slow leaks without dominating log
     /// volume.
@@ -137,7 +133,6 @@ impl Default for CrawlerConfig {
         Self {
             workers: 4,
             user_agent: None,
-            max_depth: Some(5),
             maintenance_interval: Duration::from_secs(30),
             promoter_tick: Duration::from_millis(50),
             empty_queue_poll: Duration::from_millis(500),
@@ -170,7 +165,6 @@ impl std::fmt::Debug for Crawler {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Crawler")
             .field("workers", &self.deps.config.workers)
-            .field("max_depth", &self.deps.config.max_depth)
             .field(
                 "maintenance_interval",
                 &self.deps.config.maintenance_interval,
@@ -192,8 +186,12 @@ impl Crawler {
     pub async fn run(&self) -> Result<(), CrawlerError> {
         info!(
             workers = self.deps.config.workers,
-            max_depth = ?self.deps.config.max_depth,
-            user_agent = self.deps.config.user_agent.as_deref().unwrap_or("<emulation default>"),
+            user_agent = self
+                .deps
+                .config
+                .user_agent
+                .as_deref()
+                .unwrap_or("<emulation default>"),
             "Crawler starting",
         );
 

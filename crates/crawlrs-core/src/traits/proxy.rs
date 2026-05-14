@@ -8,9 +8,8 @@
 //!    Health feedback flows back through [`ProxyResolver::report`].
 //!
 //! 2. **Gateway routing**: the resolver returns a single fixed gateway URL
-//!    plus a per-request set of routing-hint headers (e.g. Crustdata's HMA
-//!    `x-hma-*` headers). The gateway picks the upstream proxy. The
-//!    resolver may also expose a CA cert so the client trusts the
+//!    plus a per-request set of routing-hint headers. The gateway picks the upstream proxy.
+//!    The resolver may also expose a CA cert so the client trusts the
 //!    gateway's TLS-MITM certificate.
 //!
 //! Implementations live in `crawlrs-fetch` (built-ins) or in user code

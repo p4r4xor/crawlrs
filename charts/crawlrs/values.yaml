@@ -61,10 +61,32 @@ politeness:
     maxBackoff: "10m"
     multiplier: 2.0
     failureThreshold: 10
+  # Global default depth cap. `null` (the default) leaves crawls
+  # unbounded. Per-host overrides in `perDomain.<host>.maxDepth` can
+  # raise or lower an individual host's cap.
+  maxDepth: null
+  # Global default cap on successful fetches per host. `null` (the
+  # default) leaves crawls uncapped. When set, every host inherits
+  # this baseline unless it has an explicit `perDomain.<host>.maxUrls`
+  # override. Per-host Redis counter storage is only allocated when
+  # at least one cap is configured.
+  maxUrls: null
+  # Per-host overrides for politeness knobs. Keys are exact host
+  # strings (no eTLD+1 rollup); a wildcard match isn't supported in
+  # v1. Each entry may set any subset of fields; unset fields fall
+  # back to the global defaults above. Example:
+  #
+  # perDomain:
+  #   "docs.rust-lang.org":
+  #     hostDelay: "500ms"
+  #     maxUrls: 1000000
+  #     maxDepth: 12
+  #   "rust-lang.org":
+  #     maxUrls: 5000
+  perDomain: {}
 
 runtime:
   workers: 4
-  maxDepth: 5
   maxRetries: 5
   # Strategy for moving discovered outbound URLs into the Frontier.
   # "direct" (default): worker calls Frontier::submit_batch itself
@@ -95,7 +117,7 @@ frontier:
   promoterTick: "50ms"
   # Initial capacity of the RedisBloom filter that fronts submit.
   # Size to expected unique URLs in the run with ~20% headroom.
-  bloomCapacity: 1000000
+  bloomCapacity: 10000000
   # Target false-positive rate at `bloomCapacity`. Each false
   # positive silently drops a URL at submit; 0.1% is a good default
   # for runs that re-crawl periodically. 0.001 ~ 1.8 bytes/URL of
@@ -147,6 +169,15 @@ store:
 server:
   listen: "0.0.0.0:9090"
   port: 9090
+  # Optional sibling NodePort Service that exposes /metrics on a fixed
+  # node port. Intended for local-kind dev where `local/kind.yaml`'s
+  # extraPortMappings publish hostPort 9090 -> nodePort 30090, so the
+  # /metrics endpoint is reachable on the developer's host without
+  # `kubectl port-forward`. Disabled by default to keep production
+  # deploys ClusterIP-only.
+  localNodePort:
+    enabled: false
+    nodePort: 30090
 
 sharding:
   numShards: 8
@@ -186,6 +217,27 @@ containerSecurityContext:
   readOnlyRootFilesystem: true
   capabilities:
     drop: [ALL]
+
+# Init containers gate the crawler container's startup on Redis and
+# Postgres being reachable. Without them, the crawler crashloops a
+# few times during fresh `helm install` while the StatefulSets are
+# still bringing up their pods. `redis-cli ping` and `pg_isready`
+# only succeed once the server is actually serving protocol traffic,
+# which is what the crawler needs (a TCP-open Postgres mid-initdb
+# would still fail sqlx's first connect).
+#
+# Disable when running against managed databases that are reachable
+# before the chart installs.
+initContainers:
+  enabled: true
+  # Hard ceiling per init container. If the dep still isn't up after
+  # this many seconds, the init exits non-zero so k8s surfaces the
+  # real failure instead of looping silently forever.
+  deadlineSeconds: 180
+  redis:
+    image: redis:7-alpine
+  postgres:
+    image: postgres:17-alpine
 
 probes:
   startup:
@@ -244,7 +296,7 @@ o11y:
     # Persistent volume for the time-series data dir.
     storage:
       size: 10Gi
-      storageClassName: ""    # empty = cluster default StorageClass
+      storageClassName: "" # empty = cluster default StorageClass
       accessMode: ReadWriteOnce
     # vmsingle CLI flags. retentionPeriod accepts h / d / w / M / y
     # suffixes (e.g. "1M" for one month, "7d" for a week).
@@ -304,6 +356,11 @@ o11y:
     service:
       port: 3000
       type: ClusterIP
+      # Honoured only when `type: NodePort`. Local kind dev sets this
+      # to 30300 to align with `local/kind.yaml`'s extraPortMappings,
+      # which forward hostPort 3000 -> nodePort 30300. Empty in
+      # ClusterIP mode (the default).
+      nodePort: ""
     podSecurityContext:
       runAsNonRoot: true
       runAsUser: 472

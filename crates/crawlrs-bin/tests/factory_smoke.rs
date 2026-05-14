@@ -71,6 +71,8 @@ async fn factory_builds_against_real_backends() {
             backoff: BackoffPolicy::default(),
             blocklist: HashSet::new(),
             per_domain: HashMap::new(),
+            max_depth: None,
+            max_urls: None,
         },
         runtime: RuntimeConfig::default(),
         frontier: FrontierConfig::default(),

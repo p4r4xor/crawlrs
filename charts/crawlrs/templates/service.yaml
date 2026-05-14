@@ -14,7 +14,7 @@ spec:
   clusterIP: None
   publishNotReadyAddresses: false
   selector:
-    {{- include "crawlrs.selectorLabels" . | nindent 4 }}
+    {{- include "crawlrs.componentSelectorLabels" (dict "component" "crawler" "context" .) | nindent 4 }}
   ports:
     - name: http
       port: {{ .Values.server.port | int64 }}

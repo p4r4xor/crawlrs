@@ -54,18 +54,37 @@ data:
     host_delay       = {{ .Values.politeness.hostDelay | quote }}
     obey_robots_txt  = {{ .Values.politeness.obeyRobotsTxt }}
     robots_ttl       = {{ .Values.politeness.robotsTtl | quote }}
+    {{- if .Values.politeness.maxDepth }}
+    max_depth        = {{ .Values.politeness.maxDepth | int64 }}
+    {{- end }}
+    {{- if .Values.politeness.maxUrls }}
+    max_urls         = {{ .Values.politeness.maxUrls | int64 }}
+    {{- end }}
 
     [politeness.backoff]
     initial_backoff             = {{ .Values.politeness.backoff.initialBackoff | quote }}
     max_backoff                 = {{ .Values.politeness.backoff.maxBackoff | quote }}
     multiplier                  = {{ .Values.politeness.backoff.multiplier | float64 }}
     failure_threshold           = {{ .Values.politeness.backoff.failureThreshold | int64 }}
+    {{- range $host, $override := .Values.politeness.perDomain }}
+
+    [politeness.per_domain."{{ $host }}"]
+    {{- with $override.hostDelay }}
+    host_delay      = {{ . | quote }}
+    {{- end }}
+    {{- with $override.obeyRobotsTxt }}
+    obey_robots_txt = {{ . }}
+    {{- end }}
+    {{- with $override.maxDepth }}
+    max_depth       = {{ . | int64 }}
+    {{- end }}
+    {{- with $override.maxUrls }}
+    max_urls        = {{ . | int64 }}
+    {{- end }}
+    {{- end }}
 
     [runtime]
     workers          = {{ .Values.runtime.workers | int64 }}
-    {{- if .Values.runtime.maxDepth }}
-    max_depth        = {{ .Values.runtime.maxDepth | int64 }}
-    {{- end }}
     max_retries      = {{ .Values.runtime.maxRetries | int64 }}
     link_dispatch    = {{ .Values.runtime.linkDispatch | quote }}
 

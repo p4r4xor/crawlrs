@@ -34,9 +34,14 @@ crawlrs:
       memory: 2Gi
 
   runtime:
-    workers: 10
-    maxDepth: 4
+    workers: 32
     maxRetries: 5
+
+  redis:
+    poolSize: 64
+
+  postgres:
+    poolSize: 64
 
   fetch:
     maxBodyBytes: 5242880
@@ -80,3 +85,16 @@ crawlrs:
   server:
     port: 9090
     listen: "0.0.0.0:9090"
+    # Expose /metrics on host:9090 via the kind extraPortMappings.
+    # Removes the need for `kubectl port-forward` (and the host-port
+    # collisions that come with re-running it).
+    localNodePort:
+      enabled: true
+      nodePort: 30090
+
+  o11y:
+    grafana:
+      service:
+        type: NodePort
+        # Pairs with local/kind.yaml's hostPort 3000 -> nodePort 30300.
+        nodePort: 30300
