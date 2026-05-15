@@ -30,10 +30,24 @@ pub enum PoliteDecision {
 }
 
 /// Why a fetch failed. The politeness layer cares about the *category*
-/// of failure to decide backoff strategy, not the underlying error.
+/// of failure to decide backoff strategy; the runtime emits the same
+/// category as a label on failure metrics so dashboards can break
+/// failures down by cause without parsing free-form error strings.
 ///
 /// Mapped from HTTP status codes and transport errors at the boundary
 /// between `Fetcher` and `Politeness::record_failure`.
+///
+/// The variants split into two groups by how politeness treats them:
+///
+/// - **Server pushback** (`TooManyRequests`, `ServiceUnavailable`,
+///   `ConnectReset`): the remote is actively refusing us. Full-strength
+///   exponential backoff.
+/// - **Transient / our-side** (everything else): often clears on its
+///   own, or the remote isn't the cause. Backoff at half strength.
+///
+/// `Other` is the catch-all when the underlying error didn't match any
+/// known signature. A growing `Other` count is a signal to inspect raw
+/// error strings and extend the classifiers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FailureKind {
     /// HTTP 429. Server is explicitly rate-limiting; honor `Retry-After`
@@ -42,14 +56,41 @@ pub enum FailureKind {
     /// HTTP 503. Server is overloaded or down for maintenance; same
     /// category as 429 for backoff, sometimes with a `Retry-After`.
     ServiceUnavailable,
-    /// Transport-level reset (TCP RST, broken pipe). Often indicates
-    /// the server is dropping us; back off conservatively.
+    /// HTTP 404 or 410. Resource is missing; usually a stale link rather
+    /// than a politeness-shaped failure. Surfaced as its own variant so
+    /// dashboards can see how much of the failure tail is dead links.
+    NotFound,
+    /// Any 4xx that isn't `TooManyRequests` or `NotFound` (400, 401, 403,
+    /// 451, etc.). Usually permanent — auth or policy refusal — and not
+    /// something host-level backoff fixes.
+    ClientError,
+    /// Any 5xx that isn't `ServiceUnavailable` (500, 502, 504, etc.).
+    /// May be transient (origin glitch) or persistent (broken backend).
+    ServerError,
+    /// Transport-level reset (TCP RST, broken pipe, ECONNREFUSED). Often
+    /// indicates the server is actively dropping us.
     ConnectReset,
     /// We gave up waiting on the server. May indicate overload, or just
     /// network slowness; backoff is appropriate but milder than 429.
     Timeout,
-    /// Anything else (DNS failure, TLS error, malformed response). Logged
-    /// but does not necessarily trigger per-host backoff on its own.
+    /// DNS resolution failed (NXDOMAIN, SERVFAIL, resolver timeout, or
+    /// stub-resolver error). Distinguishes "we never reached the network"
+    /// from later-stage failures.
+    DnsFailure,
+    /// TLS / SSL handshake failure (bad certificate, protocol mismatch,
+    /// SNI rejection). The connection got to the wire but couldn't
+    /// negotiate the secure channel.
+    TlsError,
+    /// `ENETUNREACH` / "network is unreachable" / "no route to host".
+    /// Usually an IPv6-path-broken-but-no-fallback situation, or an
+    /// outage of the destination's network segment.
+    Unreachable,
+    /// Local-side resource exhaustion: `EMFILE` (too many open files),
+    /// connection-pool starvation, allocator failure. **Our fault**, not
+    /// the remote's; raising the relevant cap usually fixes it.
+    ResourceExhausted,
+    /// Anything else. A persistently nonzero rate here is a signal that
+    /// the classifier needs another arm.
     Other,
 }
 
@@ -63,8 +104,15 @@ impl FailureKind {
         match self {
             Self::TooManyRequests => "too_many_requests",
             Self::ServiceUnavailable => "service_unavailable",
+            Self::NotFound => "not_found",
+            Self::ClientError => "client_error",
+            Self::ServerError => "server_error",
             Self::ConnectReset => "connect_reset",
             Self::Timeout => "timeout",
+            Self::DnsFailure => "dns_failure",
+            Self::TlsError => "tls_error",
+            Self::Unreachable => "unreachable",
+            Self::ResourceExhausted => "resource_exhausted",
             Self::Other => "other",
         }
     }

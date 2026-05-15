@@ -36,6 +36,15 @@ toml.workspace                         = true
 tracing.workspace                      = true
 tracing-subscriber.workspace           = true
 
+# Replaces glibc malloc with jemalloc. Two wins: (1) more aggressive
+# page return to the OS, which collapses the fragmentation spikes we
+# can't otherwise explain; (2) `profiling` feature lets us dump a live
+# heap profile via `jeprof` when MALLOC_CONF=prof:true,prof_active:true
+# is set. Linux-only via cfg in main.rs - tikv-jemallocator doesn't
+# compile on Windows.
+[target.'cfg(target_os = "linux")'.dependencies]
+tikv-jemallocator = { version = "0.6", features = ["profiling", "unprefixed_malloc_on_supported_platforms"] }
+
 [dev-dependencies]
 tempfile.workspace               = true
 testcontainers.workspace         = true

@@ -130,6 +130,88 @@ async fn submit_dedups_via_bloom_within_run() {
     ));
 }
 
+/// Sum of all EVAL + EVALSHA calls Redis has processed so far. Used to
+/// observe how many Lua-script dispatches a single `submit_batch` call
+/// generated, independent of how many URLs were in the batch.
+async fn redis_eval_calls(pool: &Pool<RedisConnectionManager>) -> u64 {
+    let mut conn = pool.get().await.unwrap();
+    let info: String = redis::cmd("INFO")
+        .arg("commandstats")
+        .query_async(&mut *conn)
+        .await
+        .unwrap();
+    let mut total: u64 = 0;
+    for line in info.lines() {
+        for prefix in ["cmdstat_evalsha:", "cmdstat_eval:"] {
+            let Some(rest) = line.strip_prefix(prefix) else {
+                continue;
+            };
+            if let Some(calls_seg) = rest.split(',').find(|s| s.starts_with("calls="))
+                && let Some(n) = calls_seg
+                    .strip_prefix("calls=")
+                    .and_then(|s| s.parse::<u64>().ok())
+            {
+                total += n;
+            }
+        }
+    }
+    total
+}
+
+#[tokio::test]
+async fn submit_batch_collapses_round_trips_per_shard() {
+    // Pins the per-shard batching contract: one `submit_batch` call
+    // with N URLs spread across S shards must issue ~S Lua calls,
+    // not N. The contract is wire-level so the assertion is wire-
+    // level: read `INFO commandstats` before and after.
+    let fx = fixture().await;
+    let policy: Arc<dyn ShardingPolicy> = Arc::new(HostHashShardPolicy::new(8));
+    let frontier = RedisFrontier::new(
+        fx.pool.clone(),
+        policy.clone(),
+        (0..8).collect(),
+        run_id(),
+        BloomConfig::default(),
+    )
+    .await
+    .unwrap();
+
+    let entries: Vec<UrlEntry> = (0..100)
+        .map(|i| entry(&format!("https://host{i}.test/")))
+        .collect();
+    let distinct_shards: usize = entries
+        .iter()
+        .map(|e| policy.shard_key(&e.url))
+        .collect::<std::collections::HashSet<_>>()
+        .len();
+
+    let before = redis_eval_calls(&fx.pool).await;
+    let newly = frontier.submit_batch(entries).await.unwrap();
+    let after = redis_eval_calls(&fx.pool).await;
+
+    assert_eq!(newly, 100, "every URL is unique so all 100 are Queued");
+
+    // Expected exactly `distinct_shards` calls. We allow 2x headroom
+    // because a fresh script may need one SCRIPT LOAD followed by an
+    // EVALSHA on cold pool connections, and to absorb any unrelated
+    // EVAL traffic from background paths (none today, but the test
+    // shouldn't be brittle to a future maintenance script).
+    let delta = (after - before) as usize;
+    assert!(
+        delta >= 1 && delta <= distinct_shards * 2,
+        "expected 1..={} EVAL calls for a 100-URL batch over {} shards, \
+         got {}",
+        distinct_shards * 2,
+        distinct_shards,
+        delta,
+    );
+    // And definitely not the per-URL count the old loop produced.
+    assert!(
+        delta < 50,
+        "submit_batch regressed to per-URL Lua calls: delta={delta}",
+    );
+}
+
 #[tokio::test]
 async fn submit_dedups_across_runs() {
     // Cross-run dedup: a URL submitted under one `run_id` is

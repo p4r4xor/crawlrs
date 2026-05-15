@@ -35,7 +35,7 @@ impl FakeFetcher {
         let resp = FetchResponse {
             url: canon,
             status: 200,
-            headers: HashMap::from([("content-type".into(), "text/html".into())]),
+            headers: Box::new(HashMap::from([("content-type".into(), "text/html".into())])),
             body: Bytes::copy_from_slice(body.as_bytes()),
             redirect_chain: Vec::new(),
             fetched_at: Utc::now(),
@@ -59,7 +59,7 @@ impl FakeFetcher {
         let resp = FetchResponse {
             url: canon,
             status,
-            headers: HashMap::new(),
+            headers: Box::new(HashMap::new()),
             body: Bytes::copy_from_slice(body.as_bytes()),
             redirect_chain: Vec::new(),
             fetched_at: Utc::now(),
@@ -81,7 +81,7 @@ impl FakeFetcher {
         let resp = FetchResponse {
             url: canon,
             status,
-            headers,
+            headers: Box::new(headers),
             body: Bytes::new(),
             redirect_chain: Vec::new(),
             fetched_at: Utc::now(),

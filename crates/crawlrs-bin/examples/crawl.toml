@@ -127,6 +127,16 @@ parquet     = true
 warc        = true
 base_prefix = "crawlrs"
 
+# Rotation thresholds (per shard). The first trigger to fire closes
+# the current file. Peak writer memory is ~(num_shards * max_bytes)
+# since each shard buffers raw body bytes + per-row state in RAM
+# until the file is uploaded; tune in concert with the pod memory
+# limit.
+[store.rotation]
+max_bytes    = 134217728   # 128 MiB
+max_rows     = 100000
+max_duration = "30m"
+
 # Object-store backend for both Parquet and WARC files.
 # kind = "local" writes to a local directory (good for sandboxes).
 # kind = "s3" writes to any S3-compatible service (AWS, MinIO, R2,

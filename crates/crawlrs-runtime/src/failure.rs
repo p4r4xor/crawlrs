@@ -15,18 +15,21 @@ use crawlrs_core::{Error, FailureKind};
 /// status code represents a successful fetch (the politeness layer
 /// shouldn't be told about successes).
 ///
-/// 2xx and 3xx are success-shaped. 404 / 410 are missing-resource
-/// shapes that are usually a frontier or seed problem rather than
-/// a politeness one; we surface them as `Other` so they're logged
-/// but don't trigger per-host backoff on their own. 429 / 503 get
-/// the dedicated rate-limit backoff. 5xx (other than 503) are
-/// `Other` until we have a use case to distinguish.
+/// 2xx and 3xx are success-shaped. 404 / 410 surface as `NotFound`
+/// so dashboards can see how much of the failure tail is dead links
+/// (usually a frontier or seed problem rather than politeness).
+/// 429 / 503 get the dedicated rate-limit variants. Other 4xx fall
+/// to `ClientError` (auth / policy refusal), other 5xx to
+/// `ServerError` (origin glitch). Anything outside 100..=599 is
+/// `Other`.
 pub fn classify_status(status: u16) -> Option<FailureKind> {
     match status {
         200..=399 => None,
+        404 | 410 => Some(FailureKind::NotFound),
         429 => Some(FailureKind::TooManyRequests),
+        400..=499 => Some(FailureKind::ClientError),
         503 => Some(FailureKind::ServiceUnavailable),
-        404 | 410 => Some(FailureKind::Other),
+        500..=599 => Some(FailureKind::ServerError),
         _ => Some(FailureKind::Other),
     }
 }
@@ -38,18 +41,49 @@ pub fn classify_status(status: u16) -> Option<FailureKind> {
 /// string at the boundary; the alternative is a richer error enum,
 /// which is a future refactor. Until then, this keeps the
 /// classification logic in one place.
+///
+/// Match order matters: specific local-side / protocol failures are
+/// checked before generic network-shaped ones, so e.g. a TLS error
+/// whose Display string also contains "timeout" (rare but possible)
+/// lands in `TlsError` and not `Timeout`.
 pub fn classify_transport_error(err: &Error) -> FailureKind {
     let text = err.to_string().to_ascii_lowercase();
+
+    // Local resource exhaustion is "our fault" and very specific.
+    if text.contains("too many open files") || text.contains("emfile") {
+        return FailureKind::ResourceExhausted;
+    }
+    // TLS handshake failures: rustls / BoringSSL surface as "tls",
+    // "ssl", "handshake", or "certificate" depending on the failure.
+    if text.contains("tls")
+        || text.contains("ssl")
+        || text.contains("handshake")
+        || text.contains("certificate")
+    {
+        return FailureKind::TlsError;
+    }
+    // DNS resolution: hickory wraps as "dns error -> ..." and glibc's
+    // resolver surfaces as "failed to lookup address" / "name resolution".
+    if text.contains("dns error")
+        || text.contains("name resolution")
+        || text.contains("failed to lookup")
+    {
+        return FailureKind::DnsFailure;
+    }
+    // Routable-but-no-route shapes (ENETUNREACH / EHOSTUNREACH).
+    if text.contains("network is unreachable") || text.contains("no route to host") {
+        return FailureKind::Unreachable;
+    }
     if text.contains("timeout") || text.contains("timed out") {
-        FailureKind::Timeout
-    } else if text.contains("connection reset")
+        return FailureKind::Timeout;
+    }
+    if text.contains("connection reset")
         || text.contains("broken pipe")
         || text.contains("connection refused")
     {
-        FailureKind::ConnectReset
-    } else {
-        FailureKind::Other
+        return FailureKind::ConnectReset;
     }
+    FailureKind::Other
 }
 
 /// Parse the value of the HTTP `Retry-After` response header (RFC 9110

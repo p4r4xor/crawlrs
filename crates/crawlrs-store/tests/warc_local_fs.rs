@@ -27,7 +27,7 @@ fn fixture(url_str: &str, body: &[u8]) -> (ParsedDocument, FetchResponse) {
     let resp = FetchResponse {
         url: url.clone(),
         status: 200,
-        headers,
+        headers: Box::new(headers),
         body: Bytes::copy_from_slice(body),
         redirect_chain: Vec::new(),
         fetched_at: Utc::now(),
@@ -38,7 +38,7 @@ fn fixture(url_str: &str, body: &[u8]) -> (ParsedDocument, FetchResponse) {
         status: 200,
         title: None,
         text: None,
-        outbound_links: Vec::new(),
+        outbound_links: Box::new(Vec::new()),
         fetched_at: resp.fetched_at,
     };
     (doc, resp)

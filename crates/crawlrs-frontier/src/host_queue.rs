@@ -20,6 +20,7 @@ use crawlrs_core::ShardKey;
 #[derive(Clone)]
 pub struct Scripts {
     submit: Script,
+    submit_batch: Script,
     claim: Script,
     advance_wake: Script,
     promote: Script,
@@ -36,6 +37,7 @@ impl Scripts {
     pub fn new() -> Self {
         Self {
             submit: Script::new(include_str!("scripts/submit.lua")),
+            submit_batch: Script::new(include_str!("scripts/submit_batch.lua")),
             claim: Script::new(include_str!("scripts/claim.lua")),
             advance_wake: Script::new(include_str!("scripts/advance_wake.lua")),
             promote: Script::new(include_str!("scripts/promote.lua")),
@@ -127,6 +129,58 @@ impl<'a> HostQueueOps<'a> {
                 )));
             }
         })
+    }
+
+    /// Submit many URLs on one `shard` in a single Lua call. Each
+    /// `(url_id, entry, host)` triple is processed by `submit_batch.lua`
+    /// with identical semantics to the single-URL `submit`; the
+    /// difference is that N submits collapse from N Redis round-trips
+    /// to 1.
+    ///
+    /// All URLs in `items` must hash to the same `shard`; cross-shard
+    /// batching is the caller's responsibility (a single Lua script
+    /// touches a single cluster slot).
+    pub async fn submit_batch(
+        &self,
+        shard: ShardKey,
+        items: &[(UrlId, &UrlEntry, &str)],
+        now_ms: i64,
+    ) -> Result<usize, HostQueueError> {
+        if items.is_empty() {
+            return Ok(0);
+        }
+
+        // Encode all payloads upfront so a codec failure aborts before
+        // we touch Redis. Avoids a partial-batch outcome where Redis
+        // sees half the URLs and the caller sees an error.
+        let mut payloads: Vec<Vec<u8>> = Vec::with_capacity(items.len());
+        for (_, entry, _) in items {
+            payloads.push(codec::encode(entry).map_err(|e| HostQueueError::Codec(e.to_string()))?);
+        }
+
+        let mut conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| HostQueueError::Pool(format!("{e:?}")))?;
+
+        let mut invocation = self.scripts.submit_batch.prepare_invoke();
+        invocation.key(self.keys.seen(shard));
+        invocation.key(self.keys.urls(shard));
+        invocation.key(self.keys.wake(shard));
+        for (_, _, host) in items {
+            invocation.key(self.keys.host_queue(shard, host));
+        }
+        invocation.arg(items.len() as u64);
+        invocation.arg(now_ms);
+        for ((url_id, _, host), payload) in items.iter().zip(payloads.iter()) {
+            invocation.arg(url_id.to_hex());
+            invocation.arg(*host);
+            invocation.arg(payload.as_slice());
+        }
+
+        let newly: i64 = invocation.invoke_async(&mut *conn).await?;
+        Ok(newly as usize)
     }
 
     /// Claim one URL on `shard`. Returns the script's tri-state

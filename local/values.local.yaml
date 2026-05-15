@@ -74,6 +74,10 @@ crawlrs:
   store:
     parquet: true
     warc: false
+    rotation:
+      maxBytes: 134217728 # 16 MiB
+      maxRows: 100000
+      maxDuration: "30m"
     backend:
       kind: local
       path: /var/lib/crawlrs/data
@@ -106,6 +110,11 @@ crawlrs:
       nodePort: 30090
 
   o11y:
+    # Activate jemalloc heap profiling. Dumps land in /tmp/jeprof.*
+    # inside the crawler pod. Copy out with `kubectl cp` and run
+    # `jeprof --svg <binary> heap.snapshot > heap.svg`.
+    jemallocProf:
+      enabled: true
     grafana:
       service:
         type: NodePort

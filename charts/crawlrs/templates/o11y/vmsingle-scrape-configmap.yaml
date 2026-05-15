@@ -31,6 +31,21 @@ data:
             {{- end }}
             labels:
               service: crawlrs
+      {{- if .Values.o11y.vmsingle.redisExporter.enabled }}
+
+      # Redis health metrics, served by the redis_exporter sidecar
+      # baked into the Redis pod. The Service exposes the sidecar on
+      # port 9121 alongside the main 6379 port; we scrape the metrics
+      # port directly. Target name is the umbrella chart's Redis
+      # service: `<release>-redis:9121`.
+      - job_name: redis
+        metrics_path: /metrics
+        static_configs:
+          - targets:
+              - "{{ tpl .Values.o11y.vmsingle.redisExporter.target . }}"
+            labels:
+              service: redis
+      {{- end }}
       {{- if .Values.o11y.vmsingle.cadvisor.enabled }}
 
       # Kubelet's cAdvisor endpoint: per-container CPU, memory,

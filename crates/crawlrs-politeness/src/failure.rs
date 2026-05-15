@@ -19,10 +19,11 @@ use crate::config::BackoffPolicy;
 ///   computed = min(initial * multiplier^(failures - 1), max)
 ///   result   = max(computed, server_hint)
 ///
-/// `Timeout` and `Other` get a 0.5x discount on the initial because
-/// they're often transient (network blip, slow server) rather than
-/// the server actively refusing us; 429/503/ConnectReset run at full
-/// strength.
+/// `TooManyRequests`, `ServiceUnavailable`, and `ConnectReset` run at
+/// full strength because the server is actively pushing back. Every
+/// other variant gets a 0.5x discount on the initial because the
+/// failure is often transient (timeout, DNS hiccup, TLS retry) or
+/// our-side (resource exhaustion) rather than the server refusing us.
 ///
 /// `server_hint`, when present, acts as a floor: we never undercut
 /// what the server told us to wait, but we still apply our own
@@ -41,8 +42,15 @@ pub fn compute_backoff(
     } else {
         let base = policy.initial_backoff.as_secs_f64();
         let scale = match kind {
-            FailureKind::Timeout | FailureKind::Other => 0.5,
-            _ => 1.0,
+            FailureKind::TooManyRequests
+            | FailureKind::ServiceUnavailable
+            | FailureKind::ConnectReset => 1.0,
+            // Everything else is transient or our-side; the gentler
+            // 0.5x preserves the original semantics for `Timeout` /
+            // `Other` and applies the same logic to the newly-split
+            // variants (DNS / TLS / Unreachable / ResourceExhausted /
+            // NotFound / ClientError / ServerError).
+            _ => 0.5,
         };
         let exponent = (consecutive_failures - 1) as i32;
         let backoff_secs = base * scale * policy.multiplier.powi(exponent);

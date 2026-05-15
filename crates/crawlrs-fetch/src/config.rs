@@ -37,7 +37,16 @@ pub struct WreqFetcherConfig {
     /// Maximum redirect hops to follow before giving up.
     pub max_redirects: usize,
 
-    /// Idle connections held in the pool per host.
+    /// Idle connections held in the pool per host. Each idle conn
+    /// is one TCP socket (1 FD), one TLS session in memory, and one
+    /// hyper read/write task pair (1-2 tokio tasks). Default is 0
+    /// (close every connection at end-of-request, no pooling): with
+    /// `Emulation::random()` per request the pool is keyed by
+    /// `(host, emulation_profile)` and orphan entries accumulate
+    /// faster than they get reused, costing memory + FDs for no
+    /// throughput benefit. Raise above 0 only when pinning a single
+    /// emulation profile AND when same-host burst rates exceed
+    /// `politeness.host_delay`.
     pub pool_max_idle_per_host: usize,
 
     /// Maximum response body size, in bytes. Bounds memory per fetch
@@ -60,7 +69,7 @@ impl Default for WreqFetcherConfig {
             default_timeout: Duration::from_secs(30),
             connect_timeout: Duration::from_secs(10),
             max_redirects: 5,
-            pool_max_idle_per_host: 8,
+            pool_max_idle_per_host: 0,
             max_body_bytes: 32 * 1024 * 1024,
             proxy: Arc::new(NoProxyResolver),
         }

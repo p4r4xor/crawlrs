@@ -1,0 +1,327 @@
+{
+  "uid": "crawlrs-redis-v2",
+  "title": "Redis Health (v2)",
+  "tags": ["crawlrs", "redis"],
+  "editable": true,
+  "schemaVersion": 40,
+  "version": 1,
+  "timezone": "browser",
+  "refresh": "10s",
+  "time": {"from": "now-30m", "to": "now"},
+  "annotations": {"list": []},
+  "templating": {"list": []},
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Memory % of maxmemory cap",
+      "description": "redis_memory_used_bytes / redis_memory_max_bytes, expressed as percent. `--maxmemory` is Redis's own ceiling; once this line crosses 100% Redis returns OOM-on-write errors (with `--maxmemory-policy noeviction` no keys are dropped, the writer sees the error). Threshold-shaded: green <70%, yellow 70-85%, orange 85-95%, red >95%. Sustained red means raise the pod limit + `--maxmemory`, or trim the working set.",
+      "datasource": {"type": "prometheus", "uid": "crawlrs-vm"},
+      "gridPos": {"h": 10, "w": 18, "x": 0, "y": 0},
+      "targets": [
+        {"refId": "A", "expr": "100 * redis_memory_used_bytes / clamp_min(redis_memory_max_bytes, 1)", "legendFormat": "{{instance}}", "datasource": {"type": "prometheus", "uid": "crawlrs-vm"}}
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "custom": {"axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "% of maxmemory", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 20, "gradientMode": "scheme", "hideFrom": {"legend": false, "tooltip": false, "viz": false}, "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 2, "pointSize": 5, "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": false, "stacking": {"group": "A", "mode": "none"}, "thresholdsStyle": {"mode": "dashed"}},
+          "mappings": [], "min": 0, "max": 100,
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "green", "value": null},
+            {"color": "yellow", "value": 70},
+            {"color": "orange", "value": 85},
+            {"color": "red", "value": 95}
+          ]},
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "options": {"legend": {"calcs": ["mean", "max", "last"], "displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}}
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Evicted keys (cumulative)",
+      "description": "redis_evicted_keys_total: counter of keys removed by Redis's eviction policy. With `--maxmemory-policy noeviction` (our setting) this MUST stay at 0; a non-zero value means either the policy was changed or a different Redis instance is being scraped. Background turns red the moment it crosses 0.",
+      "datasource": {"type": "prometheus", "uid": "crawlrs-vm"},
+      "gridPos": {"h": 5, "w": 6, "x": 18, "y": 0},
+      "targets": [{"refId": "A", "expr": "sum(redis_evicted_keys_total)", "datasource": {"type": "prometheus", "uid": "crawlrs-vm"}}],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"}, "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "green", "value": null},
+            {"color": "red", "value": 1}
+          ]},
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto", "wideLayout": true}
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Memory used now",
+      "description": "Current redis_memory_used_bytes: bytes Redis tracks as in-use (working set). Pairs with the % chart on the left; this is the absolute value. Source: redis_memory_used_bytes.",
+      "datasource": {"type": "prometheus", "uid": "crawlrs-vm"},
+      "gridPos": {"h": 5, "w": 6, "x": 18, "y": 5},
+      "targets": [{"refId": "A", "expr": "max(redis_memory_used_bytes)", "datasource": {"type": "prometheus", "uid": "crawlrs-vm"}}],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"fixedColor": "blue", "mode": "fixed"}, "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "transparent", "value": null}]},
+          "unit": "decbytes"
+        },
+        "overrides": []
+      },
+      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto", "wideLayout": true}
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Memory composition: used / RSS / peak",
+      "description": "Three views of Redis memory. `used` (blue) = bytes Redis tracks as in-use (its working set). `RSS` (orange) = kernel-resident, includes allocator overhead. `peak` (purple) = high-water mark since process start. used and RSS diverging is the fragmentation signal; peak climbing without flat periods is the address-space-growth signature. Sources: redis_memory_used_bytes, redis_memory_used_rss_bytes, redis_memory_used_peak_bytes.",
+      "datasource": {"type": "prometheus", "uid": "crawlrs-vm"},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 10},
+      "targets": [
+        {"refId": "A", "expr": "max(redis_memory_used_bytes)", "legendFormat": "used", "datasource": {"type": "prometheus", "uid": "crawlrs-vm"}},
+        {"refId": "B", "expr": "max(redis_memory_used_rss_bytes)", "legendFormat": "RSS", "datasource": {"type": "prometheus", "uid": "crawlrs-vm"}},
+        {"refId": "C", "expr": "max(redis_memory_used_peak_bytes)", "legendFormat": "peak", "datasource": {"type": "prometheus", "uid": "crawlrs-vm"}}
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "bytes", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "hideFrom": {"legend": false, "tooltip": false, "viz": false}, "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": false, "stacking": {"group": "A", "mode": "none"}, "thresholdsStyle": {"mode": "off"}},
+          "mappings": [], "min": 0,
+          "thresholds": {"mode": "absolute", "steps": [{"color": "transparent", "value": null}]},
+          "unit": "decbytes"
+        },
+        "overrides": [
+          {"matcher": {"id": "byFrameRefID", "options": "A"}, "properties": [{"id": "color", "value": {"fixedColor": "blue", "mode": "fixed"}}, {"id": "custom.lineWidth", "value": 2}, {"id": "displayName", "value": "used (working set)"}]},
+          {"matcher": {"id": "byFrameRefID", "options": "B"}, "properties": [{"id": "color", "value": {"fixedColor": "orange", "mode": "fixed"}}, {"id": "displayName", "value": "RSS (resident)"}]},
+          {"matcher": {"id": "byFrameRefID", "options": "C"}, "properties": [{"id": "color", "value": {"fixedColor": "purple", "mode": "fixed"}}, {"id": "displayName", "value": "peak (high-water mark)"}]}
+        ]
+      },
+      "options": {"legend": {"calcs": ["mean", "max", "last"], "displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}}
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Commands per second",
+      "description": "rate(redis_commands_processed_total[5m]): total Redis commands processed per second across all clients. Tracks the crawler's actual Redis load (~50-200 ops/sec/worker is typical: claim + ack + advance_wake + 50 submits per fetched page). A drop to zero while the crawler is fetching = clients lost connection. Source: redis_commands_processed_total.",
+      "datasource": {"type": "prometheus", "uid": "crawlrs-vm"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 18},
+      "targets": [{"refId": "A", "expr": "sum(rate(redis_commands_processed_total[5m]))", "legendFormat": "ops/sec", "datasource": {"type": "prometheus", "uid": "crawlrs-vm"}}],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "ops/sec", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 20, "gradientMode": "none", "hideFrom": {"legend": false, "tooltip": false, "viz": false}, "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 2, "pointSize": 5, "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": false, "stacking": {"group": "A", "mode": "none"}, "thresholdsStyle": {"mode": "off"}},
+          "mappings": [], "min": 0,
+          "thresholds": {"mode": "absolute", "steps": [{"color": "transparent", "value": null}]},
+          "unit": "short"
+        },
+        "overrides": [
+          {"matcher": {"id": "byFrameRefID", "options": "A"}, "properties": [{"id": "color", "value": {"fixedColor": "green", "mode": "fixed"}}]}
+        ]
+      },
+      "options": {"legend": {"calcs": ["mean", "max", "last"], "displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}}
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Keyspace hit rate",
+      "description": "hits / (hits + misses) over the last 5 minutes. Reflects only commands that look up a key (GET, HGET, EXISTS); BF.ADD / RPUSH / ZADD aren't counted. For us this is mostly the `urls` HGET path at claim time. Threshold-shaded: red <50%, yellow 50-90%, green >=90%. A low ratio means we're frequently looking up keys that don't exist (could indicate orphan IDs in queues; investigate via the urls hash size). Source: redis_keyspace_hits_total / (hits + misses).",
+      "datasource": {"type": "prometheus", "uid": "crawlrs-vm"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 18},
+      "targets": [{"refId": "A", "expr": "sum(rate(redis_keyspace_hits_total[5m])) / clamp_min(sum(rate(redis_keyspace_hits_total[5m])) + sum(rate(redis_keyspace_misses_total[5m])), 1e-9)", "legendFormat": "hit rate", "datasource": {"type": "prometheus", "uid": "crawlrs-vm"}}],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "custom": {"axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "hit ratio", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 20, "gradientMode": "scheme", "hideFrom": {"legend": false, "tooltip": false, "viz": false}, "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 2, "pointSize": 5, "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": false, "stacking": {"group": "A", "mode": "none"}, "thresholdsStyle": {"mode": "off"}},
+          "decimals": 2, "mappings": [], "min": 0, "max": 1,
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "red", "value": null},
+            {"color": "yellow", "value": 0.5},
+            {"color": "green", "value": 0.9}
+          ]},
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "options": {"legend": {"calcs": ["mean", "max", "last"], "displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}}
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Connected clients + blocked",
+      "description": "Clients connected to Redis (blue) and a subset of those currently blocked on a command like BLPOP / BRPOP (yellow). Connected should roughly track the sum of all pool sizes across the crawler + outbox publisher. Blocked > 0 is rare for us (we don't use blocking commands); a sustained value means a stuck consumer. Sources: redis_connected_clients, redis_blocked_clients.",
+      "datasource": {"type": "prometheus", "uid": "crawlrs-vm"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 26},
+      "targets": [
+        {"refId": "A", "expr": "max(redis_connected_clients)", "legendFormat": "connected", "datasource": {"type": "prometheus", "uid": "crawlrs-vm"}},
+        {"refId": "B", "expr": "max(redis_blocked_clients)", "legendFormat": "blocked", "datasource": {"type": "prometheus", "uid": "crawlrs-vm"}}
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "clients", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "hideFrom": {"legend": false, "tooltip": false, "viz": false}, "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": false, "stacking": {"group": "A", "mode": "none"}, "thresholdsStyle": {"mode": "off"}},
+          "mappings": [], "min": 0,
+          "thresholds": {"mode": "absolute", "steps": [{"color": "transparent", "value": null}]},
+          "unit": "short"
+        },
+        "overrides": [
+          {"matcher": {"id": "byFrameRefID", "options": "A"}, "properties": [{"id": "color", "value": {"fixedColor": "blue", "mode": "fixed"}}, {"id": "custom.lineWidth", "value": 2}, {"id": "displayName", "value": "connected"}]},
+          {"matcher": {"id": "byFrameRefID", "options": "B"}, "properties": [{"id": "color", "value": {"fixedColor": "yellow", "mode": "fixed"}}, {"id": "displayName", "value": "blocked"}]}
+        ]
+      },
+      "options": {"legend": {"calcs": ["mean", "max", "last"], "displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}}
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Rejected connections (rate)",
+      "description": "rate(redis_rejected_connections_total[5m]): connections refused because Redis was at `maxclients`. Should be 0 in steady state; sustained non-zero = `maxclients` is too low for the crawler's pool sizing. Default `maxclients` is 10000 which is well above our needs, so this firing usually points to a connection leak in the crawler. Source: redis_rejected_connections_total.",
+      "datasource": {"type": "prometheus", "uid": "crawlrs-vm"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 26},
+      "targets": [{"refId": "A", "expr": "sum(rate(redis_rejected_connections_total[5m]))", "legendFormat": "rejected/sec", "datasource": {"type": "prometheus", "uid": "crawlrs-vm"}}],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "rejections/sec", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 30, "gradientMode": "none", "hideFrom": {"legend": false, "tooltip": false, "viz": false}, "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 2, "pointSize": 5, "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": false, "stacking": {"group": "A", "mode": "none"}, "thresholdsStyle": {"mode": "off"}},
+          "mappings": [], "min": 0,
+          "thresholds": {"mode": "absolute", "steps": [{"color": "transparent", "value": null}]},
+          "unit": "short"
+        },
+        "overrides": [
+          {"matcher": {"id": "byFrameRefID", "options": "A"}, "properties": [{"id": "color", "value": {"fixedColor": "red", "mode": "fixed"}}]}
+        ]
+      },
+      "options": {"legend": {"calcs": ["mean", "max", "last"], "displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}}
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "RDB changes since last save",
+      "description": "redis_rdb_changes_since_last_save: writes accumulated since the last successful RDB snapshot. Drops to 0 every time a snapshot fires (per the `save N M` thresholds in REDIS_ARGS: `save 60 10000`, `save 300 10`, `save 900 1`). The sawtooth pattern is healthy. A monotonically climbing line that never resets means bgsave is failing - cross-check with the next panel. Source: redis_rdb_changes_since_last_save.",
+      "datasource": {"type": "prometheus", "uid": "crawlrs-vm"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 34},
+      "targets": [{"refId": "A", "expr": "max(redis_rdb_changes_since_last_save)", "legendFormat": "pending writes", "datasource": {"type": "prometheus", "uid": "crawlrs-vm"}}],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "writes since last snapshot", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 20, "gradientMode": "none", "hideFrom": {"legend": false, "tooltip": false, "viz": false}, "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 2, "pointSize": 5, "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": false, "stacking": {"group": "A", "mode": "none"}, "thresholdsStyle": {"mode": "off"}},
+          "mappings": [], "min": 0,
+          "thresholds": {"mode": "absolute", "steps": [{"color": "transparent", "value": null}]},
+          "unit": "short"
+        },
+        "overrides": [
+          {"matcher": {"id": "byFrameRefID", "options": "A"}, "properties": [{"id": "color", "value": {"fixedColor": "blue", "mode": "fixed"}}]}
+        ]
+      },
+      "options": {"legend": {"calcs": ["mean", "max", "last"], "displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}}
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Time since last RDB save",
+      "description": "Seconds since the most recent successful RDB snapshot. Indirectly tells you how much data we'd lose on a Redis crash (everything since the last snapshot). For our `save 60 10000 / save 300 10 / save 900 1` cadence this typically stays under 15 min. Threshold-shaded: green <5min, yellow 5-15min, red >30min. Source: time() - redis_rdb_last_save_timestamp_seconds.",
+      "datasource": {"type": "prometheus", "uid": "crawlrs-vm"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 34},
+      "targets": [{"refId": "A", "expr": "time() - max(redis_rdb_last_save_timestamp_seconds)", "legendFormat": "seconds since save", "datasource": {"type": "prometheus", "uid": "crawlrs-vm"}}],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "custom": {"axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "seconds since last snapshot", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 20, "gradientMode": "scheme", "hideFrom": {"legend": false, "tooltip": false, "viz": false}, "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 2, "pointSize": 5, "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": false, "stacking": {"group": "A", "mode": "none"}, "thresholdsStyle": {"mode": "dashed"}},
+          "mappings": [], "min": 0,
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "green", "value": null},
+            {"color": "yellow", "value": 300},
+            {"color": "orange", "value": 900},
+            {"color": "red", "value": 1800}
+          ]},
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "options": {"legend": {"calcs": ["mean", "max", "last"], "displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}}
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Total keys per DB",
+      "description": "redis_db_keys{db}: total number of top-level keys in each Redis database. For us this is `db0` (the only DB we use). Includes our per-shard host_queues, wake/ready/inflight, urls hashes, and bloom filters. Growing without flat periods is the signal that submission rate is outpacing claim rate. Source: redis_db_keys.",
+      "datasource": {"type": "prometheus", "uid": "crawlrs-vm"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 42},
+      "targets": [{"refId": "A", "expr": "max by (db) (redis_db_keys)", "legendFormat": "{{db}}", "datasource": {"type": "prometheus", "uid": "crawlrs-vm"}}],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "keys", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 20, "gradientMode": "none", "hideFrom": {"legend": false, "tooltip": false, "viz": false}, "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 2, "pointSize": 5, "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": false, "stacking": {"group": "A", "mode": "none"}, "thresholdsStyle": {"mode": "off"}},
+          "mappings": [], "min": 0,
+          "thresholds": {"mode": "absolute", "steps": [{"color": "transparent", "value": null}]},
+          "unit": "short"
+        },
+        "overrides": [
+          {"matcher": {"id": "byRegexp", "options": "^db0$"}, "properties": [{"id": "color", "value": {"fixedColor": "blue", "mode": "fixed"}}]}
+        ]
+      },
+      "options": {"legend": {"calcs": ["mean", "max", "last"], "displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}}
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Expired keys (rate)",
+      "description": "rate(redis_expired_keys_total[5m]): keys removed because their TTL elapsed. We don't set TTLs on our crawler keys (host_queues, urls hash, etc.) so this is typically 0; non-zero indicates some Redis client we don't own is using this instance. Source: redis_expired_keys_total.",
+      "datasource": {"type": "prometheus", "uid": "crawlrs-vm"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 42},
+      "targets": [{"refId": "A", "expr": "sum(rate(redis_expired_keys_total[5m]))", "legendFormat": "expired/sec", "datasource": {"type": "prometheus", "uid": "crawlrs-vm"}}],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "keys expired/sec", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 20, "gradientMode": "none", "hideFrom": {"legend": false, "tooltip": false, "viz": false}, "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 2, "pointSize": 5, "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": false, "stacking": {"group": "A", "mode": "none"}, "thresholdsStyle": {"mode": "off"}},
+          "mappings": [], "min": 0,
+          "thresholds": {"mode": "absolute", "steps": [{"color": "transparent", "value": null}]},
+          "unit": "short"
+        },
+        "overrides": [
+          {"matcher": {"id": "byFrameRefID", "options": "A"}, "properties": [{"id": "color", "value": {"fixedColor": "super-light-blue", "mode": "fixed"}}]}
+        ]
+      },
+      "options": {"legend": {"calcs": ["mean", "max", "last"], "displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}}
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "Redis CPU usage (user + sys)",
+      "description": "rate(redis_cpu_user_seconds_total + redis_cpu_sys_seconds_total)[1m]: Redis process CPU in cores. Redis is single-threaded for command execution, so this is bounded at ~1.0 core in steady state. Threshold lines mark danger zones. Sustained >0.5 means commands or Lua scripts are CPU-bound; >0.8 means we're about to saturate the single thread and tail latency will climb. Sources: redis_cpu_user_seconds_total, redis_cpu_sys_seconds_total.",
+      "datasource": {"type": "prometheus", "uid": "crawlrs-vm"},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 50},
+      "targets": [
+        {"refId": "A", "expr": "sum(rate(redis_cpu_user_seconds_total[1m]))", "legendFormat": "user", "datasource": {"type": "prometheus", "uid": "crawlrs-vm"}},
+        {"refId": "B", "expr": "sum(rate(redis_cpu_sys_seconds_total[1m]))", "legendFormat": "sys", "datasource": {"type": "prometheus", "uid": "crawlrs-vm"}},
+        {"refId": "C", "expr": "sum(rate(redis_cpu_user_seconds_total[1m])) + sum(rate(redis_cpu_sys_seconds_total[1m]))", "legendFormat": "total", "datasource": {"type": "prometheus", "uid": "crawlrs-vm"}}
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "cores", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "hideFrom": {"legend": false, "tooltip": false, "viz": false}, "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": false, "stacking": {"group": "A", "mode": "none"}, "thresholdsStyle": {"mode": "dashed"}},
+          "decimals": 2, "mappings": [], "min": 0,
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "green", "value": null},
+            {"color": "yellow", "value": 0.5},
+            {"color": "orange", "value": 0.8},
+            {"color": "red", "value": 0.95}
+          ]},
+          "unit": "short"
+        },
+        "overrides": [
+          {"matcher": {"id": "byFrameRefID", "options": "A"}, "properties": [{"id": "color", "value": {"fixedColor": "super-light-blue", "mode": "fixed"}}, {"id": "displayName", "value": "user"}]},
+          {"matcher": {"id": "byFrameRefID", "options": "B"}, "properties": [{"id": "color", "value": {"fixedColor": "super-light-yellow", "mode": "fixed"}}, {"id": "displayName", "value": "sys"}]},
+          {"matcher": {"id": "byFrameRefID", "options": "C"}, "properties": [{"id": "color", "value": {"fixedColor": "blue", "mode": "fixed"}}, {"id": "custom.lineWidth", "value": 2}, {"id": "displayName", "value": "total (user + sys)"}]}
+        ]
+      },
+      "options": {"legend": {"calcs": ["mean", "max", "last"], "displayMode": "table", "placement": "right", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}}
+    }
+  ]
+}

@@ -2,6 +2,20 @@
 //! the matching command handler. Everything load-bearing lives in
 //! the lib.
 
+// Replace glibc malloc with jemalloc on linux. Two effects: (1)
+// dramatically better page-return-to-OS behaviour (the canonical
+// fragmentation cliff we see in `VmData - RSS` on glibc shrinks
+// substantially with jemalloc's `dirty_decay_ms` / `muzzy_decay_ms`
+// purging defaults); (2) when `MALLOC_CONF=prof:true,prof_active:true`
+// is set in the environment, jemalloc samples allocations and dumps
+// heap profiles parseable by `jeprof`, letting us see which call
+// sites are holding memory at any instant. Linux-only because the
+// crate doesn't build on Windows; on other Unixes the default
+// allocator stays in place.
+#[cfg(target_os = "linux")]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 use anyhow::{Context, Result};
 use clap::Parser;
 use crawlrs_bin::cli::{Cli, Command};

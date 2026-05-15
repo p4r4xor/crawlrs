@@ -141,6 +141,17 @@ spec:
               value: {{ .Values.logFormat | quote }}
             - name: CRAWLRS_LISTEN
               value: {{ .Values.server.listen | quote }}
+            {{- if .Values.o11y.jemallocProf.enabled }}
+            # jemalloc heap profiler. `prof:true` registers the
+            # profiler; `prof_active:true` starts collecting on boot.
+            # `lg_prof_sample:19` samples every 2^19 (~512KB) of
+            # allocated bytes (low overhead, good coverage).
+            # `lg_prof_interval:30` dumps a heap profile every 2^30
+            # (~1 GiB) of sampled allocation - tunable. Dumps land
+            # under `prof_prefix` and are readable with `jeprof`.
+            - name: MALLOC_CONF
+              value: {{ .Values.o11y.jemallocProf.mallocConf | quote }}
+            {{- end }}
             # Credentials sourced from the Secret. envFrom would pull
             # *every* key in the Secret; explicit envs document the
             # surface area.

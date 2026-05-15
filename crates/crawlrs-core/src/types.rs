@@ -236,7 +236,12 @@ pub struct RedirectHop {
 pub struct FetchResponse {
     pub url: CanonicalUrl,
     pub status: u16,
-    pub headers: HashMap<String, String>,
+    /// Boxed: HashMap is 48+ bytes inline; behind a Box the parent
+    /// struct (and any async future capturing it across awaits)
+    /// shrinks by ~40 bytes per captured response. Construction now
+    /// requires `Box::new(headers)`; reads via `&resp.headers`
+    /// continue to work through `Box`'s `Deref<Target = HashMap>`.
+    pub headers: Box<HashMap<String, String>>,
     pub body: Bytes,
     pub redirect_chain: Vec<RedirectHop>,
     pub fetched_at: DateTime<Utc>,
@@ -252,8 +257,18 @@ pub struct ParsedDocument {
     pub url: CanonicalUrl,
     pub status: u16,
     pub title: Option<String>,
-    pub text: Option<String>,
-    pub outbound_links: Vec<CanonicalUrl>,
+    /// Boxed: extracted visible text can be 100KB-5MB on text-heavy
+    /// pages. Boxing puts the String descriptor (24 bytes) behind an
+    /// 8-byte pointer, shrinking every future variant that captures a
+    /// `ParsedDocument` across awaits. Construction wraps the String
+    /// in `Box::new`; reads go through `Option::as_deref()` to get
+    /// `Option<&str>` as usual.
+    pub text: Option<Box<String>>,
+    /// Boxed: outbound link lists can run to thousands on aggregator
+    /// pages. Same reasoning as `text`: shrinks future-captured
+    /// `ParsedDocument` by indirecting the Vec triple (24 bytes) to
+    /// a single pointer.
+    pub outbound_links: Box<Vec<CanonicalUrl>>,
     pub fetched_at: DateTime<Utc>,
 }
 

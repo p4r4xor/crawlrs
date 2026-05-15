@@ -11,7 +11,7 @@ fn resp(url: &str, body: &str) -> FetchResponse {
     FetchResponse {
         url: CanonicalUrl::parse(url).unwrap(),
         status: 200,
-        headers: HashMap::new(),
+        headers: Box::new(HashMap::new()),
         body: Bytes::copy_from_slice(body.as_bytes()),
         redirect_chain: Vec::new(),
         fetched_at: chrono::Utc::now(),

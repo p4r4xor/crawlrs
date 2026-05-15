@@ -124,6 +124,11 @@ crawlrs:
         limits:
           cpu: 500m
           memory: 512Mi
+      # Demo bundles a redis_exporter sidecar in its Redis pod; enable
+      # the scrape job pointing at the metrics port on the Redis svc.
+      redisExporter:
+        enabled: true
+        target: "{{ .Release.Name }}-redis:9121"
     grafana:
       adminPassword: admin
       resources:

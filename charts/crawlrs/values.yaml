@@ -139,6 +139,14 @@ store:
   parquet: true
   warc: true
   basePrefix: "crawlrs"
+  # Rotation thresholds (per shard). The first trigger to fire closes
+  # the current file. Peak writer memory is ~(num_shards * maxBytes)
+  # since each shard buffers raw bytes + per-row state in RAM until
+  # the file is uploaded; tune these together with resources.limits.
+  rotation:
+    maxBytes: 134217728   # 128 MiB
+    maxRows: 100000
+    maxDuration: "30m"
   backend:
     # kind: local | s3
     kind: local
@@ -288,6 +296,22 @@ serviceAccount:
 o11y:
   enabled: true
 
+  # jemalloc heap profiler controls. Off by default; flip on when you
+  # need to investigate "what's allocated right now" - the binary is
+  # already linked with tikv-jemallocator so jemalloc is always the
+  # allocator. Setting `enabled: true` adds the MALLOC_CONF env var to
+  # activate profiling at startup. Heap dumps land in /tmp/jeprof.*
+  # inside the pod; `kubectl cp` them out and feed to `jeprof` for
+  # SVG flame graphs.
+  jemallocProf:
+    enabled: false
+    # `prof:true` - register the profiler.
+    # `prof_active:true` - start collecting at boot (false = manual via mallctl).
+    # `lg_prof_sample:19` - sample every 2^19 (~512KB) of allocated bytes.
+    # `lg_prof_interval:30` - auto-dump every 2^30 (~1 GiB) of sampled allocations.
+    # `prof_prefix:/tmp/jeprof` - where dumps land (writable in pod).
+    mallocConf: "prof:true,prof_active:true,lg_prof_sample:19,lg_prof_interval:30,prof_prefix:/tmp/jeprof"
+
   vmsingle:
     image:
       repository: victoriametrics/victoria-metrics
@@ -325,6 +349,17 @@ o11y:
       # namespace so vmsingle storage isn't polluted by kube-system /
       # other-tenant pods. Set to "" to keep all namespaces.
       namespaceFilter: "crawlrs"
+    # redis_exporter scrape job. Only enable when a redis_exporter
+    # sidecar (or standalone) is actually running and exposing
+    # /metrics; otherwise the scrape just fails noisily. The umbrella
+    # demo chart enables this by default (its Redis pod ships the
+    # sidecar); standalone deploys leave it off.
+    redisExporter:
+      enabled: false
+      # DNS name + port of the redis_exporter metrics endpoint. For
+      # the demo umbrella this is the Redis service's metrics port:
+      # `<release>-redis:9121`.
+      target: ""
     podSecurityContext:
       runAsNonRoot: true
       runAsUser: 1000

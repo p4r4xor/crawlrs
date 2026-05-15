@@ -24,7 +24,7 @@ impl SiteAdapter for GitHubFake {
             status: resp.status,
             title: Some("github-fake".to_string()),
             text: None,
-            outbound_links: Vec::new(),
+            outbound_links: Box::new(Vec::new()),
             fetched_at: resp.fetched_at,
         }))
     }
@@ -35,7 +35,7 @@ fn fake_response(url: &str) -> FetchResponse {
     FetchResponse {
         url,
         status: 200,
-        headers: HashMap::new(),
+        headers: Box::new(HashMap::new()),
         body: Bytes::new(),
         redirect_chain: Vec::new(),
         fetched_at: Utc::now(),

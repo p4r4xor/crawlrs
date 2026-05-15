@@ -85,6 +85,40 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data
+        # redis_exporter sidecar. Connects to Redis on localhost
+        # (same pod), scrapes INFO + CLIENT LIST + CONFIG, and serves
+        # Prometheus-shaped metrics on :9121/metrics. vmsingle scrapes
+        # the metrics port via the redis Service (see the o11y
+        # scrape configmap).
+        - name: redis-exporter
+          image: oliver006/redis_exporter:v1.83.0
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: REDIS_ADDR
+              value: "redis://localhost:6379"
+          ports:
+            - name: metrics
+              containerPort: 9121
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
   volumeClaimTemplates:
     - metadata:
         name: data

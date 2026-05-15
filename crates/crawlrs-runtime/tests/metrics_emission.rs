@@ -188,8 +188,8 @@ fn metric_name_contract_holds() {
 
     assert_eq!(
         expected.len(),
-        33,
-        "expected 33 distinct metric names per the metric-name contract; \
+        32,
+        "expected 32 distinct metric names per the metric-name contract; \
          if you intentionally added or removed one, update both this \
          assertion and the contract"
     );

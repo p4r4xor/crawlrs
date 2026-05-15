@@ -2,6 +2,19 @@
 members = ["crates/*"]
 resolver = "3"
 
+# Keep line tables in release builds. Adds ~3-5% binary size but is
+# the minimum needed for jeprof / perf / addr2line to resolve heap-
+# profile addresses and CPU samples back to function names + lines.
+# Without this, every memory or CPU profile collected against a
+# release build is just hex addresses. Full `debug = true` would
+# more than double the binary; `debug = 1` (line tables) is the
+# sweet spot.
+[profile.release]
+debug = 1
+# Disable LLVM's strip-on-link. The Dockerfile no longer runs `strip`
+# either, so the binary we ship has its symbol table intact.
+strip = false
+
 # Lint config inherited by every crate via `[lints] workspace = true`.
 # Tier 1 baseline: warn-level clippy::all, deny unsafe. CI runs with
 # `-D warnings` so any clippy hit fails the build; locally devs see
@@ -56,8 +69,17 @@ thiserror   = "2"
 tokio       = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
 tracing     = "0.1"
 url         = { version = "2", features = ["serde"] }
-wreq        = { version = "=6.0.0-rc.28", features = ["gzip", "brotli", "zstd", "deflate", "socks", "stream"] }
-wreq-util   = { version = "=3.0.0-rc.10", features = ["emulation-rand"] }
+# Pinned to wreq/wreq-util main HEAD (post-rc.28) so we can install a
+# no-op `TlsSessionCache` via the new `ClientBuilder::tls_session_cache`
+# API (#1101). The default LRU cache pins each peer's parsed X.509
+# chain in memory; with random emulation x high host diversity it
+# accumulated ~10-15 MB/min in the pod. main also migrated the TLS
+# backend from boring2 -> btls, but the public surface we use stays
+# the same. `Cargo.lock` pins the actual commits for reproducibility.
+wreq        = { git = "https://github.com/0x676e67/wreq.git", default-features = false, features = ["gzip", "brotli", "zstd", "deflate", "socks", "stream", "hickory-dns"] }
+# Main folded the old `emulation-rand` feature into `emulation`;
+# `Emulation::random()` is unconditionally available.
+wreq-util   = { git = "https://github.com/0x676e67/wreq-util.git", default-features = false, features = ["emulation"] }
 
 # Test-only.
 testcontainers         = "0.27"

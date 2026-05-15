@@ -84,6 +84,7 @@ async fn factory_builds_against_real_backends() {
             },
             base_prefix: "crawlrs".to_string(),
             worker_id: Some("0".to_string()),
+            rotation: Default::default(),
         },
         server: ServerConfig::default(),
         sharding: ShardingConfig {

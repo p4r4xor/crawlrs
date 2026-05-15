@@ -240,7 +240,7 @@ impl MetadataStore for PostgresMetadataStore {
 
         let (id, last_run_id, retry_count) =
             row.ok_or_else(|| PostgresMetadataError::Missing(url.as_str().to_string()))?;
-        let detail = json!({ "kind": failure_kind_str(kind) });
+        let detail = json!({ "kind": kind.as_str() });
         insert_history(&mut tx, id, &last_run_id, EVENT_FAILED, Some(detail), None).await?;
         tx.commit().await.map_err(PostgresMetadataError::from)?;
         debug!(url = url.as_str(), retry_count, "mark_failed");
@@ -499,16 +499,6 @@ struct OutboxRow {
     discovered_from: Option<String>,
 }
 
-fn failure_kind_str(kind: FailureKind) -> &'static str {
-    match kind {
-        FailureKind::TooManyRequests => "too_many_requests",
-        FailureKind::ServiceUnavailable => "service_unavailable",
-        FailureKind::ConnectReset => "connect_reset",
-        FailureKind::Timeout => "timeout",
-        FailureKind::Other => "other",
-    }
-}
-
 fn parse_status(s: &str) -> LocalResult<UrlStatus> {
     Ok(match s {
         STATUS_PENDING => UrlStatus::Pending,
@@ -569,20 +559,18 @@ fn datetime_to_system_time(dt: DateTime<Utc>) -> SystemTime {
     }
 }
 
-// Inline because: `parse_status`, `failure_kind_str`, and
-// `datetime_to_system_time` are all private boundary functions that
-// translate Postgres-vocabulary (TEXT statuses, BIGINT timestamps,
-// chrono::DateTime) into our domain types. Making them `pub` would
-// commit the public API to a specific DB schema and break a future
-// swap to DynamoDB / Scylla. They stay private; their tests stay
-// here.
+// Inline because: `parse_status` and `datetime_to_system_time` are
+// private boundary functions that translate Postgres-vocabulary
+// (TEXT statuses, BIGINT timestamps, chrono::DateTime) into our
+// domain types. Making them `pub` would commit the public API to a
+// specific DB schema and break a future swap to DynamoDB / Scylla.
+// They stay private; their tests stay here.
 #[cfg(test)]
 mod tests {
     // Inline because: visibility-forced. These tests exercise the
-    // private helpers `parse_status`, `failure_kind_str`, and
-    // `datetime_to_system_time`; `tests/*.rs` (compiled as a separate
-    // crate) cannot reach them. Public-API integration tests live in
-    // `tests/postgres_metadata.rs`.
+    // private helpers `parse_status` and `datetime_to_system_time`;
+    // `tests/*.rs` (compiled as a separate crate) cannot reach them.
+    // Public-API integration tests live in `tests/postgres_metadata.rs`.
 
     use super::*;
     use chrono::TimeZone;
@@ -604,15 +592,6 @@ mod tests {
     #[test]
     fn unknown_status_string_fails_to_decode() {
         assert!(parse_status("nonsense").is_err());
-    }
-
-    #[test]
-    fn failure_kind_str_is_stable() {
-        assert_eq!(
-            failure_kind_str(FailureKind::TooManyRequests),
-            "too_many_requests"
-        );
-        assert_eq!(failure_kind_str(FailureKind::Other), "other");
     }
 
     #[test]

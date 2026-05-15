@@ -99,6 +99,11 @@ data:
     warc        = {{ .Values.store.warc }}
     base_prefix = {{ .Values.store.basePrefix | quote }}
 
+    [store.rotation]
+    max_bytes    = {{ .Values.store.rotation.maxBytes | int64 }}
+    max_rows     = {{ .Values.store.rotation.maxRows | int64 }}
+    max_duration = {{ .Values.store.rotation.maxDuration | quote }}
+
     [store.backend]
     kind = {{ .Values.store.backend.kind | quote }}
     {{- if eq .Values.store.backend.kind "local" }}

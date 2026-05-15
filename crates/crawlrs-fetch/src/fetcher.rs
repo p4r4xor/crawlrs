@@ -9,10 +9,29 @@ use crawlrs_core::{
     CanonicalUrl, Error, FetchRequest, FetchResponse, Fetcher, ProxyOutcome, RedirectHop, Result,
 };
 use futures::StreamExt;
+use wreq::tls::session::{Key, TlsSession, TlsSessionCache};
 use wreq::{Client, redirect};
 use wreq_util::Emulation;
 
 use crate::config::WreqFetcherConfig;
+
+/// `TlsSessionCache` impl that discards every session BoringSSL hands
+/// us. wreq's default LRU cache keeps each server's parsed X.509 chain
+/// (held inside the cached `SslSession`); the outer host-map is not
+/// globally capped, so under random emulation across many unique hosts
+/// the cache grows linearly with (host, profile) tuples. With
+/// `pool_max_idle_per_host = 0` we don't reuse TLS connections anyway,
+/// so PSK resumption can't pay off; dropping the session lets the
+/// parsed certs fall out of scope at end-of-handshake.
+#[derive(Default)]
+struct NoopTlsSessionCache;
+
+impl TlsSessionCache for NoopTlsSessionCache {
+    fn put(&self, _key: Key, _session: TlsSession) {}
+    fn pop(&self, _key: &Key) -> Option<TlsSession> {
+        None
+    }
+}
 
 pub struct WreqFetcher {
     client: Client,
@@ -25,13 +44,16 @@ impl WreqFetcher {
             .connect_timeout(config.connect_timeout)
             .timeout(config.default_timeout)
             .pool_max_idle_per_host(config.pool_max_idle_per_host)
-            .redirect(redirect::Policy::limited(config.max_redirects));
+            .redirect(redirect::Policy::limited(config.max_redirects))
+            .tls_session_cache(NoopTlsSessionCache);
 
         // Pinned profile -> lock it on the client so the connection
         // pool can fully reuse. Unpinned -> leave the client neutral;
         // `fetch()` attaches a fresh `Emulation::random()` per request
-        // for fingerprint diversity.
-        if let Some(emulation) = config.emulation {
+        // for fingerprint diversity. Clone here because `Emulation` no
+        // longer implements `Copy` upstream and `config` is moved into
+        // `Self` below.
+        if let Some(emulation) = config.emulation.clone() {
             client_builder = client_builder.emulation(emulation);
         }
 
@@ -40,10 +62,11 @@ impl WreqFetcher {
         }
 
         if let Some(ca_pem_bytes) = config.proxy.trusted_ca_pem() {
-            let cert_store = wreq::tls::CertStore::from_pem_stack(ca_pem_bytes).map_err(|err| {
-                Error::Fetch(format!("invalid CA PEM from proxy resolver: {err}"))
-            })?;
-            client_builder = client_builder.cert_store(cert_store);
+            let cert_store =
+                wreq::tls::trust::CertStore::from_pem_stack(ca_pem_bytes).map_err(|err| {
+                    Error::Fetch(format!("invalid CA PEM from proxy resolver: {err}"))
+                })?;
+            client_builder = client_builder.tls_cert_store(cert_store);
         }
 
         let client = client_builder
@@ -184,7 +207,7 @@ impl Fetcher for WreqFetcher {
                 Ok(FetchResponse {
                     url: final_url,
                     status: status_code,
-                    headers: response_headers,
+                    headers: Box::new(response_headers),
                     body: response_body,
                     redirect_chain,
                     fetched_at: started_at,
@@ -244,9 +267,22 @@ fn classify_outcome(status: u16) -> ProxyOutcome {
 /// the server advertised a Content-Length - chunked-transfer
 /// responses can otherwise stream forever, and a content-length
 /// pre-check (done by the caller) only catches honest servers.
+///
+/// Pre-sizes the accumulator from the Content-Length header when one
+/// is present and within `cap`, clamping above; this avoids the
+/// 4 -> 8 -> 16 -> ... realloc chain on every fetch (the standard
+/// growth strategy doubles capacity, freeing each intermediate
+/// allocation, which both costs CPU and fragments the heap).
 async fn read_body(response: wreq::Response, cap: u64) -> Result<Bytes> {
+    let preset = response
+        .headers()
+        .get(wreq::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok())
+        .map(|n| n.min(cap) as usize)
+        .unwrap_or(0);
     let mut stream = response.bytes_stream();
-    let mut buf = BytesMut::new();
+    let mut buf = BytesMut::with_capacity(preset);
     while let Some(chunk_result) = stream.next().await {
         let chunk = chunk_result.map_err(|err| Error::Fetch(format!("body read failed: {err}")))?;
         if (buf.len() as u64).saturating_add(chunk.len() as u64) > cap {

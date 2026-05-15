@@ -85,7 +85,7 @@ fn build_http_response_payload(record: &StoreRecord<'_>) -> Vec<u8> {
         .unwrap_or("");
     let status_line = format!("HTTP/1.1 {} {}\r\n", record.resp.status, reason);
     buf.extend_from_slice(status_line.as_bytes());
-    for (name, value) in &record.resp.headers {
+    for (name, value) in record.resp.headers.iter() {
         buf.extend_from_slice(format!("{name}: {value}\r\n").as_bytes());
     }
     buf.extend_from_slice(b"\r\n");

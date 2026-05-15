@@ -247,23 +247,62 @@ impl Frontier for RedisFrontier {
     async fn submit_batch(&self, entries: Vec<UrlEntry>) -> Result<usize> {
         let started_at = Instant::now();
         metrics::histogram!(m::FRONTIER_SUBMIT_BATCH_SIZE).record(entries.len() as f64);
-        // The Lua script is per-URL; pipelining is the caller's job.
-        // We iterate sequentially so submit-time errors surface
-        // immediately; under high fan-out the runtime can fan submits
-        // across tasks if it needs to.
-        let mut newly = 0;
-        for entry in entries {
-            match self.submit(entry).await? {
-                SubmitOutcome::Queued => newly += 1,
-                SubmitOutcome::SkippedDuplicate => {}
-            }
+        if entries.is_empty() {
+            metrics::histogram!(
+                m::FRONTIER_CALL_SECONDS,
+                "op" => m::OP_SUBMIT_BATCH,
+            )
+            .record(started_at.elapsed().as_secs_f64());
+            return Ok(0);
         }
+
+        // Group entries by shard. Outbound URLs from a single page can
+        // span multiple shards under HostHashShardPolicy, but the Lua
+        // script touches one cluster slot per call, so we issue one
+        // call per shard. In the common case (most outbound links share
+        // the source page's host -> same shard) this collapses to one
+        // call total.
+        let mut shard_to_indices: std::collections::HashMap<ShardKey, Vec<usize>> =
+            std::collections::HashMap::new();
+        let mut shard_hosts: Vec<String> = Vec::with_capacity(entries.len());
+        let mut shard_url_ids: Vec<UrlId> = Vec::with_capacity(entries.len());
+        for (i, entry) in entries.iter().enumerate() {
+            let (shard, host, url_id) = self.shard_of(entry).map_err(Error::from)?;
+            shard_hosts.push(host);
+            shard_url_ids.push(url_id);
+            shard_to_indices.entry(shard).or_default().push(i);
+        }
+
+        let now = now_ms();
+        let mut total_newly = 0usize;
+        for (shard, indices) in &shard_to_indices {
+            let mut items: Vec<(UrlId, &UrlEntry, &str)> = Vec::with_capacity(indices.len());
+            for &i in indices {
+                items.push((shard_url_ids[i], &entries[i], shard_hosts[i].as_str()));
+            }
+            let newly = self
+                .ops()
+                .submit_batch(*shard, &items, now)
+                .await
+                .map_err(RedisFrontierError::from)?;
+            // Surface per-URL bloom verdicts so the existing
+            // `crawlrs_frontier_bloom_total{verdict=...}` panels stay
+            // accurate after the loop moves into Redis.
+            for _ in 0..newly {
+                record_submit_outcome(SubmitOutcome::Queued);
+            }
+            for _ in 0..(items.len() - newly) {
+                record_submit_outcome(SubmitOutcome::SkippedDuplicate);
+            }
+            total_newly += newly;
+        }
+
         metrics::histogram!(
             m::FRONTIER_CALL_SECONDS,
             "op" => m::OP_SUBMIT_BATCH,
         )
         .record(started_at.elapsed().as_secs_f64());
-        Ok(newly)
+        Ok(total_newly)
     }
 
     #[tracing::instrument(skip(self), fields(identity = %identity))]

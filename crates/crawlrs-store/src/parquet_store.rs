@@ -212,7 +212,7 @@ impl OwnedRow {
             content_type,
             content_hash: record.content_hash as i64,
             body: record.resp.body.clone(),
-            text: record.doc.text.clone(),
+            text: record.doc.text.as_deref().cloned(),
             title: record.doc.title.clone(),
             discovered_links: record
                 .doc

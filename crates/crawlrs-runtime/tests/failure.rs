@@ -29,9 +29,23 @@ fn rate_limit_codes_map_explicitly() {
 }
 
 #[test]
-fn other_codes_map_to_other_kind() {
-    for code in [404, 410, 500, 502] {
-        assert_eq!(classify_status(code), Some(FailureKind::Other));
+fn missing_resource_codes_map_to_not_found() {
+    for code in [404, 410] {
+        assert_eq!(classify_status(code), Some(FailureKind::NotFound));
+    }
+}
+
+#[test]
+fn other_4xx_codes_map_to_client_error() {
+    for code in [400, 401, 403, 451] {
+        assert_eq!(classify_status(code), Some(FailureKind::ClientError));
+    }
+}
+
+#[test]
+fn other_5xx_codes_map_to_server_error() {
+    for code in [500, 502, 504] {
+        assert_eq!(classify_status(code), Some(FailureKind::ServerError));
     }
 }
 
@@ -47,6 +61,30 @@ fn transport_errors_match_on_keywords() {
     );
     assert_eq!(
         classify_transport_error(&Error::Fetch("certificate verification failed".into())),
+        FailureKind::TlsError,
+    );
+    assert_eq!(
+        classify_transport_error(&Error::Fetch(
+            "dns error -> Invalid argument (os error 22)".into()
+        )),
+        FailureKind::DnsFailure,
+    );
+    assert_eq!(
+        classify_transport_error(&Error::Fetch(
+            "dns error -> proto error: io error: Too many open files (os error 24)".into()
+        )),
+        // ResourceExhausted wins over DnsFailure because the local-side
+        // cap is the actionable cause; the DNS wrapper is incidental.
+        FailureKind::ResourceExhausted,
+    );
+    assert_eq!(
+        classify_transport_error(&Error::Fetch(
+            "tcp connect error -> Network is unreachable (os error 101)".into()
+        )),
+        FailureKind::Unreachable,
+    );
+    assert_eq!(
+        classify_transport_error(&Error::Fetch("something completely unknown".into())),
         FailureKind::Other,
     );
 }

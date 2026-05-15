@@ -283,7 +283,11 @@ async fn build_store(config: &CrawlrsConfig) -> Result<Arc<dyn crawlrs_core::Sto
         config.run_id.clone(),
         worker_id,
     );
-    let rotation = RotationPolicy::default();
+    let rotation = RotationPolicy {
+        max_bytes: config.store.rotation.max_bytes,
+        max_rows: config.store.rotation.max_rows,
+        max_duration: config.store.rotation.max_duration,
+    };
 
     let mut stores: Vec<Arc<dyn crawlrs_core::Store>> = Vec::new();
     if config.store.parquet {

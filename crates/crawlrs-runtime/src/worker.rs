@@ -223,15 +223,25 @@ impl UrlPipeline {
     /// they terminally handle the URL (acking the frontier and/or
     /// writing any metadata transition), they signal that to `run`
     /// via the return type so we exit early.
+    ///
+    /// Each phase future is `Box::pin`-ed before being awaited so its
+    /// frame lives on the heap rather than getting concatenated into
+    /// the parent future. Without this, `run`'s state machine becomes
+    /// the union of every phase's locals (the worst-case envelope of
+    /// politeness + fetch + extract + finalize) and the per-worker
+    /// future weighs in at multiple KB; with the heap indirection each
+    /// awaited frame's size is amortized across the few phases that
+    /// are live, and the parent future shrinks to just a handful of
+    /// pointers plus the always-live locals (`self`, `resp`, `doc`).
     async fn run(self) {
-        if !self.politeness_allows().await {
+        if !Box::pin(self.politeness_allows()).await {
             return;
         }
-        self.mark_attempting().await;
-        let Some(resp) = self.fetch().await else {
+        Box::pin(self.mark_attempting()).await;
+        let Some(resp) = Box::pin(self.fetch()).await else {
             return;
         };
-        let Some(doc) = self.extract(&resp).await else {
+        let Some(doc) = Box::pin(self.extract(&resp)).await else {
             return;
         };
         // Outbound URLs are computed here but their dispatch path
@@ -243,7 +253,7 @@ impl UrlPipeline {
         let outbound = compute_outbound(&self.entry, &doc, |host| {
             self.deps.politeness.depth_cap(host)
         });
-        self.finalize(&resp, &doc, outbound).await;
+        Box::pin(self.finalize(&resp, &doc, outbound)).await;
     }
 
     /// Returns `true` iff politeness allows the fetch. `false` means
@@ -651,10 +661,11 @@ mod tests {
             status: 200,
             title: None,
             text: None,
-            outbound_links: urls
-                .iter()
-                .map(|u| CanonicalUrl::parse(u).unwrap())
-                .collect(),
+            outbound_links: Box::new(
+                urls.iter()
+                    .map(|u| CanonicalUrl::parse(u).unwrap())
+                    .collect(),
+            ),
             fetched_at: chrono::Utc::now(),
         }
     }

@@ -275,6 +275,7 @@ pub struct StoreConfig {
     pub backend: StoreBackend,
     pub base_prefix: String,
     pub worker_id: Option<String>,
+    pub rotation: StoreRotationConfig,
 }
 
 impl Default for StoreConfig {
@@ -285,6 +286,32 @@ impl Default for StoreConfig {
             backend: StoreBackend::default(),
             base_prefix: "crawlrs".into(),
             worker_id: None,
+            rotation: StoreRotationConfig::default(),
+        }
+    }
+}
+
+/// Rotation thresholds for an output file. The first trigger to fire
+/// (rows, bytes, or duration) closes the current file. Lowering these
+/// caps cuts the steady-state memory the writer holds: every active
+/// shard buffers rows + body bytes in RAM until rotation, so peak
+/// resident memory is bounded by (shards * max_bytes) plus the
+/// per-row inline overhead.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct StoreRotationConfig {
+    pub max_bytes: usize,
+    pub max_rows: usize,
+    #[serde(with = "humantime_serde")]
+    pub max_duration: Duration,
+}
+
+impl Default for StoreRotationConfig {
+    fn default() -> Self {
+        Self {
+            max_bytes: 128 * 1024 * 1024,
+            max_rows: 100_000,
+            max_duration: Duration::from_secs(30 * 60),
         }
     }
 }

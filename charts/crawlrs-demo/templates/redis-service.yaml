@@ -12,6 +12,10 @@ spec:
       port: 6379
       targetPort: redis
       protocol: TCP
+    - name: metrics
+      port: 9121
+      targetPort: metrics
+      protocol: TCP
   selector:
     {{- include "crawlrs-demo.selectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: redis
