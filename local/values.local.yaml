@@ -110,11 +110,6 @@ crawlrs:
       nodePort: 30090
 
   o11y:
-    # Activate jemalloc heap profiling. Dumps land in /tmp/jeprof.*
-    # inside the crawler pod. Copy out with `kubectl cp` and run
-    # `jeprof --svg <binary> heap.snapshot > heap.svg`.
-    jemallocProf:
-      enabled: true
     grafana:
       service:
         type: NodePort

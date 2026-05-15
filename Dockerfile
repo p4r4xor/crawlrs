@@ -40,12 +40,8 @@ COPY --from=planner /build/recipe.json recipe.json
 # of BoringSSL recompilation.
 RUN cargo chef cook --release --recipe-path recipe.json -p crawlrs-bin
 COPY . .
-RUN cargo build --release -p crawlrs-bin
-# Note: we intentionally do NOT strip. Release-profile `debug = 1`
-# (in workspace Cargo.toml) keeps line tables so heap profiles
-# from jemalloc resolve to function names + source lines via
-# `jeprof`. Adds ~30-50 MB to the image but is non-negotiable for
-# evidence-driven performance work.
+RUN cargo build --release -p crawlrs-bin && \
+    strip target/release/crawlrs
 
 # ---- runtime: minimal Debian + ca-certs + the binary; non-root ----------
 FROM debian:bookworm-slim AS runtime

@@ -2,19 +2,6 @@
 members = ["crates/*"]
 resolver = "3"
 
-# Keep line tables in release builds. Adds ~3-5% binary size but is
-# the minimum needed for jeprof / perf / addr2line to resolve heap-
-# profile addresses and CPU samples back to function names + lines.
-# Without this, every memory or CPU profile collected against a
-# release build is just hex addresses. Full `debug = true` would
-# more than double the binary; `debug = 1` (line tables) is the
-# sweet spot.
-[profile.release]
-debug = 1
-# Disable LLVM's strip-on-link. The Dockerfile no longer runs `strip`
-# either, so the binary we ship has its symbol table intact.
-strip = false
-
 # Lint config inherited by every crate via `[lints] workspace = true`.
 # Tier 1 baseline: warn-level clippy::all, deny unsafe. CI runs with
 # `-D warnings` so any clippy hit fails the build; locally devs see

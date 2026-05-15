@@ -296,22 +296,6 @@ serviceAccount:
 o11y:
   enabled: true
 
-  # jemalloc heap profiler controls. Off by default; flip on when you
-  # need to investigate "what's allocated right now" - the binary is
-  # already linked with tikv-jemallocator so jemalloc is always the
-  # allocator. Setting `enabled: true` adds the MALLOC_CONF env var to
-  # activate profiling at startup. Heap dumps land in /tmp/jeprof.*
-  # inside the pod; `kubectl cp` them out and feed to `jeprof` for
-  # SVG flame graphs.
-  jemallocProf:
-    enabled: false
-    # `prof:true` - register the profiler.
-    # `prof_active:true` - start collecting at boot (false = manual via mallctl).
-    # `lg_prof_sample:19` - sample every 2^19 (~512KB) of allocated bytes.
-    # `lg_prof_interval:30` - auto-dump every 2^30 (~1 GiB) of sampled allocations.
-    # `prof_prefix:/tmp/jeprof` - where dumps land (writable in pod).
-    mallocConf: "prof:true,prof_active:true,lg_prof_sample:19,lg_prof_interval:30,prof_prefix:/tmp/jeprof"
-
   vmsingle:
     image:
       repository: victoriametrics/victoria-metrics
