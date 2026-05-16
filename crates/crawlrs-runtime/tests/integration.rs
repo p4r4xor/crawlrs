@@ -132,7 +132,6 @@ async fn build_crawler_with_scope(
             fetcher.clone(),
             rid.clone(),
             politeness_config,
-            blocklist,
         )
         .await
         .unwrap(),
@@ -153,6 +152,7 @@ async fn build_crawler_with_scope(
         .adapters(adapters)
         .config(config)
         .crawl_scope(crawl_scope)
+        .blocklist(blocklist)
         .run_id(rid)
         .build()
         .unwrap();

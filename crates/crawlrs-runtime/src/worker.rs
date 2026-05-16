@@ -21,7 +21,7 @@
 use std::sync::Arc;
 
 use crawlrs_core::{
-    AttemptId, CanonicalUrl, ClaimOutcome, Clock, CrawlScope, FailureKind, FetchRequest,
+    AttemptId, Blocklist, CanonicalUrl, ClaimOutcome, Clock, CrawlScope, FailureKind, FetchRequest,
     FetchResponse, Fetcher, Frontier, LinkDispatch, MetadataStore, NextWake, ParsedDocument,
     Parser, PoliteDecision, Politeness, ShardingPolicy, SiteAdapterRegistry, Store, StoreRecord,
     SuccessRecord, UrlEntry, UrlId, WorkerIdentity, content_hash,
@@ -85,6 +85,12 @@ pub struct WorkerDeps {
     /// struct + HashMap), so per-task `Arc` indirection isn't
     /// worth it.
     pub crawl_scope: CrawlScope,
+    /// Operator-mandated access blocklist from `[access]`. The
+    /// worker consults this before calling `politeness.check`, so
+    /// the politeness layer is purely host-as-guest behavior.
+    /// Cheap to clone (HashSet wrapper); same rationale as
+    /// `crawl_scope`.
+    pub blocklist: Blocklist,
     /// Identity of this crawl run. Stamped on every `mark_attempting`
     /// so cross-run dedup and history queries can distinguish "URL X
     /// was last touched by run Y." Must be stable for the lifetime of
@@ -263,15 +269,39 @@ impl UrlPipeline {
         Box::pin(self.finalize(&resp, &doc, outbound)).await;
     }
 
-    /// Returns `true` iff politeness allows the fetch. `false` means
-    /// the pipeline is already finalized (acked on Disallow, lease
-    /// left to expire on check-error).
+    /// Returns `true` iff the worker may proceed to fetch. `false`
+    /// means the pipeline is already finalized (acked on Disallow,
+    /// lease left to expire on check-error).
     ///
-    /// No metadata write on Disallow: the verdict is per-run policy
-    /// (robots / blocklist / circuit-open), not a URL-level failure
-    /// worth recording in the ledger.
+    /// Two gates fire here:
+    ///
+    /// 1. **Access blocklist** (`[access]`). Sync, in-memory; runs
+    ///    first because it's cheap and a hit short-circuits the
+    ///    politeness call. The blocklist verdict outlives the
+    ///    politeness master switch by design.
+    /// 2. **Politeness** (`[politeness]`): backoff + robots gates
+    ///    via `Politeness::check`. Returns `Disallow` for
+    ///    open-circuit or robots-blocked URLs.
+    ///
+    /// No metadata write on either rejection: both are per-run
+    /// policy, not URL-level failures worth recording in the
+    /// ledger.
     async fn politeness_allows(&self) -> bool {
         let _phase = PhaseTimer::start(crate::metrics::PHASE_POLITENESS);
+
+        if let Some(host) = self.url().host()
+            && self.deps.blocklist.is_blocked(host)
+        {
+            debug!(url = %self.url(), "blocklisted; acking");
+            metrics::counter!(
+                crate::metrics::URLS_SKIPPED_TOTAL,
+                "reason" => crate::metrics::SKIP_BLOCKLISTED,
+            )
+            .increment(1);
+            let _ = self.deps.frontier.ack(self.attempt()).await;
+            return false;
+        }
+
         match self.deps.politeness.check(self.url()).await {
             Ok(PoliteDecision::Allow) => {
                 info!(url = %self.url(), "politeness allow");
@@ -670,11 +700,12 @@ mod tests {
             "adapters",
             "config",
             "crawl_scope",
+            "blocklist",
             "run_id",
             "sharding_policy",
             "clock",
         ];
-        assert_eq!(names.len(), 12);
+        assert_eq!(names.len(), 13);
     }
 
     fn parent_at(depth: u32) -> UrlEntry {

@@ -44,4 +44,15 @@ pub trait BackoffTracker: Send + Sync {
         kind: FailureKind,
         server_hint: Option<Duration>,
     ) -> Result<NextWake>;
+
+    /// Clear any per-host failure state after a successful fetch.
+    /// Called by the aggregate `Politeness::record_fetch` so the
+    /// circuit closes and the failure counter resets to zero.
+    ///
+    /// Default impl is a no-op: stateless implementations (noop /
+    /// in-memory-fake-with-no-failures) inherit it for free. The
+    /// Redis-backed impl overrides to clear the hoststate hash.
+    async fn reset_on_success(&self, _host: &str) -> Result<()> {
+        Ok(())
+    }
 }

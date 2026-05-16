@@ -1,7 +1,6 @@
 //! `CompositePoliteness`: orchestrator that satisfies
 //! [`crawlrs_core::Politeness`] by delegating to three sub-traits
-//! ([`WakePlanner`], [`RobotsChecker`], [`BackoffTracker`]) plus
-//! the [`Blocklist`] pure-config service.
+//! ([`WakePlanner`], [`RobotsChecker`], [`BackoffTracker`]).
 //!
 //! Splitting `Politeness` into sub-traits means a deployment can
 //! swap any sub-impl independently: Redis-backed wake planning
@@ -9,6 +8,15 @@
 //! whole layer wired to no-ops when `politeness.enabled = false`.
 //! The composite is the only `Politeness`-implementing type the
 //! runtime sees; it is unaware of which sub-impls back it.
+//!
+//! Concerns NOT owned here:
+//!
+//! - Access blocklist (`[access].blocklist`): consulted by the
+//!   worker before `politeness.check` is even called. The
+//!   composite is purely host-as-guest behavior.
+//! - Crawl scope (`[crawl]`): depth caps live on
+//!   `WorkerDeps.crawl_scope`; URL-count quotas live on
+//!   `RedisFrontier`'s scope and are enforced at submit time.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,7 +25,7 @@ use async_trait::async_trait;
 use bb8::Pool;
 use bb8_redis::RedisConnectionManager;
 use crawlrs_core::{
-    BackoffTracker, Blocklist, CanonicalUrl, Error, FailureKind, Fetcher, NextWake, PoliteDecision,
+    BackoffTracker, CanonicalUrl, Error, FailureKind, Fetcher, NextWake, PoliteDecision,
     Politeness, Result, RobotsChecker, ShardKey, ShardingPolicy, WakePlanner,
 };
 use tracing::info;
@@ -30,16 +38,14 @@ use crate::robots::RobotsCache;
 use crate::robots_checker::RedisRobotsChecker;
 use crate::wake_planner::RedisWakePlanner;
 
-/// Composed `Politeness` impl. Holds three sub-trait Arcs plus
-/// the pure-config blocklist by value. Constructed via [`Self::new`]
-/// (Redis-backed sub-impls, the default in production) or via
-/// [`Self::from_parts`] (any sub-impl mix; used by the factory's
-/// noop branch and by tests).
+/// Composed `Politeness` impl. Holds three sub-trait Arcs.
+/// Constructed via [`Self::new`] (Redis-backed sub-impls, the
+/// default in production) or via [`Self::from_parts`] (any
+/// sub-impl mix; used by the factory's noop branch and by tests).
 pub struct CompositePoliteness {
     wake: Arc<dyn WakePlanner>,
     robots: Arc<dyn RobotsChecker>,
     backoff: Arc<dyn BackoffTracker>,
-    blocklist: Blocklist,
     config: PolitenessConfig,
 
     /// Held purely so the maintenance loop can report the bb8
@@ -53,21 +59,11 @@ pub struct CompositePoliteness {
     /// without going through the full `check`. `None` when the
     /// composite is built with a non-Redis robots checker.
     robots_cache: Option<Arc<RobotsCache>>,
-
-    /// Backoff sub-impl handle for the success-path reset. The
-    /// `Politeness` trait doesn't expose a "reset on success"
-    /// method, but `record_fetch` semantically resets the
-    /// circuit-breaker state in addition to computing the next
-    /// wake; this handle lets us call
-    /// `RedisBackoffTracker::reset_on_success` directly. `None`
-    /// when the backoff sub-impl isn't the Redis one.
-    redis_backoff: Option<Arc<RedisBackoffTracker>>,
 }
 
 impl std::fmt::Debug for CompositePoliteness {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CompositePoliteness")
-            .field("blocklist_len", &self.blocklist.len())
             .field("host_delay", &self.config.host_delay)
             .field("obey_robots_txt", &self.config.obey_robots_txt)
             .field("per_domain_overrides", &self.config.per_domain.len())
@@ -79,15 +75,15 @@ impl CompositePoliteness {
     /// Construct a Redis-backed composite (the production wiring).
     /// Builds [`RedisWakePlanner`], [`RedisRobotsChecker`], and
     /// [`RedisBackoffTracker`] from the shared pool + config and
-    /// composes them, then attaches the supplied blocklist
-    /// (`[access]` config) as a pure-config sub-service.
+    /// composes them.
     ///
-    /// Crawl-scope (`[crawl]`) does not appear here: depth caps
-    /// are read by the worker directly from `WorkerDeps.crawl_scope`,
-    /// and URL-count quotas are enforced atomically at submit
-    /// time by `Frontier::submit_batch` against its own scope
-    /// handle. The politeness layer no longer touches scope at all.
-    #[allow(clippy::too_many_arguments)]
+    /// Access (`[access]`) and crawl scope (`[crawl]`) do not
+    /// appear here: the worker consults the blocklist before
+    /// calling `politeness.check`, depth caps are read by the
+    /// worker directly from `WorkerDeps.crawl_scope`, and URL-count
+    /// quotas are enforced atomically at submit time by
+    /// `Frontier::submit_batch`. The politeness layer is purely
+    /// host-as-guest behavior.
     pub async fn new(
         pool: Pool<RedisConnectionManager>,
         sharding_policy: Arc<dyn ShardingPolicy>,
@@ -95,7 +91,6 @@ impl CompositePoliteness {
         fetcher: Arc<dyn Fetcher>,
         run_id: impl Into<String>,
         config: PolitenessConfig,
-        blocklist: Blocklist,
     ) -> Result<Self> {
         let keys = KeyPrefix::new(run_id);
         let count = sharding_policy.shard_count();
@@ -114,16 +109,16 @@ impl CompositePoliteness {
             config.robots_ttl,
         ));
 
-        let wake = Arc::new(RedisWakePlanner::new(
+        let wake: Arc<dyn WakePlanner> = Arc::new(RedisWakePlanner::new(
             sharding_policy.clone(),
             owned_shards.clone(),
             config.clone(),
         ));
-        let robots = Arc::new(RedisRobotsChecker::new(
+        let robots: Arc<dyn RobotsChecker> = Arc::new(RedisRobotsChecker::new(
             robots_cache.clone(),
             config.user_agent.clone(),
         ));
-        let redis_backoff = Arc::new(RedisBackoffTracker::new(
+        let backoff: Arc<dyn BackoffTracker> = Arc::new(RedisBackoffTracker::new(
             pool.clone(),
             keys,
             sharding_policy,
@@ -138,16 +133,13 @@ impl CompositePoliteness {
             "CompositePoliteness (redis-backed) ready",
         );
 
-        let backoff_dyn: Arc<dyn BackoffTracker> = redis_backoff.clone();
         Ok(Self {
             wake,
             robots,
-            backoff: backoff_dyn,
-            blocklist,
+            backoff,
             config,
             pool: Some(pool),
             robots_cache: Some(robots_cache),
-            redis_backoff: Some(redis_backoff),
         })
     }
 
@@ -158,18 +150,15 @@ impl CompositePoliteness {
         wake: Arc<dyn WakePlanner>,
         robots: Arc<dyn RobotsChecker>,
         backoff: Arc<dyn BackoffTracker>,
-        blocklist: Blocklist,
         config: PolitenessConfig,
     ) -> Self {
         Self {
             wake,
             robots,
             backoff,
-            blocklist,
             config,
             pool: None,
             robots_cache: None,
-            redis_backoff: None,
         }
     }
 
@@ -220,11 +209,6 @@ impl Politeness for CompositePoliteness {
             .ok_or_else(|| PolitenessError::NoHost(url.as_str().into()))
             .map_err(Error::from)?;
 
-        if self.blocklist.is_blocked(host) {
-            record_check_decision(crate::metrics::DECISION_DISALLOW_BLOCKED);
-            return Ok(PoliteDecision::Disallow);
-        }
-
         if self.backoff.is_open(host).await? {
             metrics::counter!(crate::metrics::POLITENESS_CIRCUIT_OPEN_TOTAL).increment(1);
             record_check_decision(crate::metrics::DECISION_DISALLOW_CIRCUIT);
@@ -251,13 +235,10 @@ impl Politeness for CompositePoliteness {
             .ok_or_else(|| PolitenessError::NoHost(url.as_str().into()))
             .map_err(Error::from)?;
 
-        // A successful fetch resets the circuit-breaker state.
-        // When the backoff sub-impl is the Redis one, call its
-        // inherent reset directly; otherwise (noop / fakes) skip
-        // (those have no failure state to clear).
-        if let Some(redis_backoff) = &self.redis_backoff {
-            redis_backoff.reset_on_success(host).await?;
-        }
+        // A successful fetch clears any per-host failure state.
+        // The trait's default `reset_on_success` is `Ok(())`, so
+        // stateless impls (noop, fakes) inherit a no-op for free.
+        self.backoff.reset_on_success(host).await?;
 
         self.wake.record_fetch(host).await
     }

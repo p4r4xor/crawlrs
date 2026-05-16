@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use bb8::Pool;
 use bb8_redis::RedisConnectionManager;
 use crawlrs_core::{
-    Blocklist, CanonicalUrl, FailureKind, Fetcher, PoliteDecision, Politeness, ShardingPolicy,
+    CanonicalUrl, FailureKind, Fetcher, PoliteDecision, Politeness, ShardingPolicy,
     SingleShardPolicy,
 };
 use crawlrs_fakes::FakeFetcher;
@@ -76,27 +76,10 @@ async fn build(
     fetcher: Arc<dyn Fetcher>,
     config: PolitenessConfig,
 ) -> CompositePoliteness {
-    build_with(pool, fetcher, config, Blocklist::default()).await
-}
-
-async fn build_with(
-    pool: &Pool<RedisConnectionManager>,
-    fetcher: Arc<dyn Fetcher>,
-    config: PolitenessConfig,
-    blocklist: Blocklist,
-) -> CompositePoliteness {
     let policy: Arc<dyn ShardingPolicy> = Arc::new(SingleShardPolicy);
-    CompositePoliteness::new(
-        pool.clone(),
-        policy,
-        vec![0],
-        fetcher,
-        run_id(),
-        config,
-        blocklist,
-    )
-    .await
-    .unwrap()
+    CompositePoliteness::new(pool.clone(), policy, vec![0], fetcher, run_id(), config)
+        .await
+        .unwrap()
 }
 
 /// Helper: extract `until` as a Duration-from-now from a `NextWake`.
@@ -121,20 +104,6 @@ async fn unseen_host_is_allowed() {
     assert_eq!(
         p.check(&url("https://a.test/")).await.unwrap(),
         PoliteDecision::Allow
-    );
-}
-
-#[tokio::test]
-async fn blocklist_returns_disallow() {
-    let fx = fixture().await;
-    let fake = Arc::new(FakeFetcher::default());
-    let config = config_with(Duration::from_millis(1_000), false);
-    let blocklist = Blocklist::new(["excluded.test".to_string()].into_iter().collect());
-
-    let p = build_with(&fx.pool, fake.clone(), config, blocklist).await;
-    assert_eq!(
-        p.check(&url("https://excluded.test/page")).await.unwrap(),
-        PoliteDecision::Disallow,
     );
 }
 

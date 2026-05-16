@@ -16,8 +16,12 @@ pub const POLITENESS_POOL_PENDING: &str = "crawlrs_politeness_pool_pending";
 
 pub const DECISION_ALLOW: &str = "allow";
 pub const DECISION_DISALLOW_ROBOTS: &str = "disallow_robots";
-pub const DECISION_DISALLOW_BLOCKED: &str = "disallow_blocked";
 pub const DECISION_DISALLOW_CIRCUIT: &str = "disallow_circuit";
+// `disallow_blocked` was removed when blocklist consultation
+// moved from the politeness composite into the worker. Access
+// control is now `[access]` and the worker emits
+// `URLS_SKIPPED_TOTAL{reason="blocklisted"}` on a blocklist hit
+// before calling `politeness.check`.
 // `disallow_quota` was removed when quota enforcement moved
 // entirely into the frontier's `submit_batch.lua`. The
 // operational replacement is `crawlrs_urls_rejected_total{reason="quota"}`

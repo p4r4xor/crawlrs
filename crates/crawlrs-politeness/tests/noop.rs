@@ -11,8 +11,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crawlrs_core::{
-    BackoffTracker, Blocklist, CanonicalUrl, FailureKind, PoliteDecision, Politeness,
-    RobotsChecker, WakePlanner,
+    BackoffTracker, CanonicalUrl, FailureKind, PoliteDecision, Politeness, RobotsChecker,
+    WakePlanner,
 };
 use crawlrs_politeness::{
     BackoffPolicy, CompositePoliteness, NoopBackoffTracker, NoopRobotsChecker, NoopWakePlanner,
@@ -28,7 +28,6 @@ fn noop_composite_with_config(config: PolitenessConfig) -> CompositePoliteness {
         Arc::new(NoopWakePlanner),
         Arc::new(NoopRobotsChecker),
         Arc::new(NoopBackoffTracker),
-        Blocklist::default(),
         config,
     )
 }
@@ -102,30 +101,6 @@ async fn noop_composite_record_failure_returns_immediate_wake() {
     assert!(
         delta <= Duration::from_millis(100),
         "noop backoff should ignore server hint and return ~0; got {delta:?}",
-    );
-}
-
-#[tokio::test]
-async fn noop_composite_honors_blocklist() {
-    // The blocklist is owned by `[access]`, not by `[politeness]`,
-    // so it stays active even when the master switch is off. The
-    // composite checks blocklist BEFORE delegating to backoff /
-    // robots / rate, so an `[access].blocklist` hit returns
-    // Disallow even with all-noop sub-traits.
-    let composite = CompositePoliteness::from_parts(
-        Arc::new(NoopWakePlanner),
-        Arc::new(NoopRobotsChecker),
-        Arc::new(NoopBackoffTracker),
-        Blocklist::new(["excluded.test".to_string()].into_iter().collect()),
-        PolitenessConfig::default(),
-    );
-    assert_eq!(
-        composite
-            .check(&url("https://excluded.test/page"))
-            .await
-            .unwrap(),
-        PoliteDecision::Disallow,
-        "blocklist is access-layer config and outlives the politeness master switch",
     );
 }
 

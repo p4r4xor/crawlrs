@@ -89,7 +89,6 @@ pub async fn build(config: &CrawlrsConfig) -> Result<Built> {
         &sharding_policy,
         &owned_shards,
         &fetcher,
-        blocklist,
     )
     .await?;
 
@@ -112,6 +111,7 @@ pub async fn build(config: &CrawlrsConfig) -> Result<Built> {
         .sharding_policy(sharding_policy)
         .config(runtime_config)
         .crawl_scope(crawl_scope)
+        .blocklist(blocklist)
         .run_id(&config.run_id)
         .build()
         .map_err(|e| anyhow!("CrawlerBuilder::build: {e}"))?;
@@ -240,8 +240,8 @@ fn build_blocklist(config: &CrawlrsConfig) -> Blocklist {
 /// (`NoopWakePlanner` / `NoopRobotsChecker` / `NoopBackoffTracker`),
 /// wrapped in the same `CompositePoliteness`. The runtime sees an
 /// `Arc<dyn Politeness>` either way; the blocklist (`[access]`)
-/// and crawl scope (`[crawl]`) are *independent* concerns and
-/// stay active when politeness is disabled.
+/// and crawl scope (`[crawl]`) are *independent* concerns owned
+/// by the worker and stay active when politeness is disabled.
 ///
 /// When disabled, any `[politeness.per_domain]` overrides are
 /// dead config; we log one warning per ignored override so the
@@ -252,7 +252,6 @@ async fn build_politeness(
     sharding_policy: &Arc<dyn ShardingPolicy>,
     owned_shards: &[ShardKey],
     fetcher: &Arc<WreqFetcher>,
-    blocklist: Blocklist,
 ) -> Result<Arc<CompositePoliteness>> {
     if config.politeness.enabled {
         return Ok(Arc::new(
@@ -263,7 +262,6 @@ async fn build_politeness(
                 fetcher.clone(),
                 &config.run_id,
                 build_politeness_config(config),
-                blocklist,
             )
             .await
             .context("constructing CompositePoliteness")?,
@@ -283,7 +281,6 @@ async fn build_politeness(
         wake,
         robots,
         backoff,
-        blocklist,
         build_politeness_config(config),
     )))
 }

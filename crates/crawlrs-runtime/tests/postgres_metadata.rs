@@ -132,7 +132,6 @@ async fn end_to_end_against_postgres_metadata_store() {
             fetcher.clone(),
             rid.clone(),
             politeness_cfg,
-            crawlrs_core::Blocklist::default(),
         )
         .await
         .unwrap(),

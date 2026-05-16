@@ -40,6 +40,9 @@ pub const TOKIO_WORKERS: &str = "crawlrs_tokio_workers";
 
 pub const SKIP_POLITENESS_DISALLOWED: &str = "politeness_disallowed";
 pub const SKIP_DEPTH_LIMIT: &str = "depth_limit";
+/// `[access].blocklist` hit; the worker rejected the URL before
+/// even calling `politeness.check`.
+pub const SKIP_BLOCKLISTED: &str = "blocklisted";
 
 /// Label value for `URLS_REJECTED_TOTAL`. The frontier's atomic
 /// per-host counter (set by `[crawl].max_urls`) rejected the URL

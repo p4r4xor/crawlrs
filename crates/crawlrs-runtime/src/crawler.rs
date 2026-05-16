@@ -4,8 +4,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crawlrs_core::{
-    Clock, CrawlScope, Fetcher, Frontier, HostHashShardPolicy, LinkDispatch, MetadataStore, Outbox,
-    Parser, Politeness, ShardingPolicy, SiteAdapterRegistry, Store, SystemClock,
+    Blocklist, Clock, CrawlScope, Fetcher, Frontier, HostHashShardPolicy, LinkDispatch,
+    MetadataStore, Outbox, Parser, Politeness, ShardingPolicy, SiteAdapterRegistry, Store,
+    SystemClock,
 };
 use thiserror::Error;
 use tokio::sync::watch;
@@ -279,6 +280,7 @@ pub struct CrawlerBuilder {
     clock: Option<Arc<dyn Clock>>,
     config: Option<CrawlerConfig>,
     crawl_scope: Option<CrawlScope>,
+    blocklist: Option<Blocklist>,
     run_id: Option<String>,
 }
 
@@ -341,6 +343,13 @@ impl CrawlerBuilder {
         self.crawl_scope = Some(s);
         self
     }
+    /// Inject the `[access]` blocklist. Defaults to an empty
+    /// blocklist when omitted. Checked by the worker's
+    /// `politeness_allows` before delegating to `Politeness::check`.
+    pub fn blocklist(mut self, b: Blocklist) -> Self {
+        self.blocklist = Some(b);
+        self
+    }
     pub fn run_id(mut self, id: impl Into<String>) -> Self {
         self.run_id = Some(id.into());
         self
@@ -371,6 +380,7 @@ impl CrawlerBuilder {
         let clock: Arc<dyn Clock> = self.clock.unwrap_or_else(|| Arc::new(SystemClock));
         let config = self.config.unwrap_or_default();
         let crawl_scope = self.crawl_scope.unwrap_or_default();
+        let blocklist = self.blocklist.unwrap_or_default();
 
         let deps = Arc::new(WorkerDeps {
             frontier,
@@ -382,6 +392,7 @@ impl CrawlerBuilder {
             adapters,
             config,
             crawl_scope,
+            blocklist,
             run_id,
             sharding_policy,
             clock,

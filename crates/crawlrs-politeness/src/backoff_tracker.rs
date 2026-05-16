@@ -52,30 +52,6 @@ impl RedisBackoffTracker {
         }
     }
 
-    /// Reset the hoststate hash. Called by the composite when a
-    /// fetch succeeds so the circuit closes and the failure count
-    /// resets to zero.
-    pub async fn reset_on_success(&self, host: &str) -> Result<()> {
-        let shard = self.sharding_policy.shard_key_from_host(host);
-        self.assert_owned(shard).map_err(Error::from)?;
-
-        let state_key = self.keys.hoststate(shard, host);
-        let mut conn = self.checkout().await.map_err(Error::from)?;
-        let _: () = conn
-            .hdel(
-                &state_key,
-                &[
-                    HOSTSTATE_FIELD_FAILURES,
-                    HOSTSTATE_FIELD_BACKOFF_UNTIL,
-                    HOSTSTATE_FIELD_LAST_KIND,
-                ],
-            )
-            .await
-            .map_err(PolitenessError::from)
-            .map_err(Error::from)?;
-        Ok(())
-    }
-
     async fn checkout(&self) -> LocalResult<bb8::PooledConnection<'_, RedisConnectionManager>> {
         self.pool
             .get()
@@ -173,5 +149,26 @@ impl BackoffTracker for RedisBackoffTracker {
             host: host.to_string(),
             until: Instant::now() + backoff,
         })
+    }
+
+    async fn reset_on_success(&self, host: &str) -> Result<()> {
+        let shard = self.sharding_policy.shard_key_from_host(host);
+        self.assert_owned(shard).map_err(Error::from)?;
+
+        let state_key = self.keys.hoststate(shard, host);
+        let mut conn = self.checkout().await.map_err(Error::from)?;
+        let _: () = conn
+            .hdel(
+                &state_key,
+                &[
+                    HOSTSTATE_FIELD_FAILURES,
+                    HOSTSTATE_FIELD_BACKOFF_UNTIL,
+                    HOSTSTATE_FIELD_LAST_KIND,
+                ],
+            )
+            .await
+            .map_err(PolitenessError::from)
+            .map_err(Error::from)?;
+        Ok(())
     }
 }
