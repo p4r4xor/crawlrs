@@ -48,36 +48,39 @@ for i = 0, n - 1 do
 
   -- Counter-first: cheap GET. URLs already at/over quota are
   -- rejected before we mark the bloom, so they're still eligible
-  -- for a future run when the counter resets.
+  -- for a future run when the counter resets. Downstream tradeoff:
+  -- a URL that would have been a bloom-duplicate is instead counted
+  -- as rejected_quota. Acceptable because quota and dedup are both
+  -- "drop this URL" outcomes; the metric attribution is the only
+  -- difference.
+  --
+  -- The flag-then-branch shape (rather than `goto`) is required
+  -- because Redis EVAL embeds Lua 5.1, which predates `goto`/labels.
+  local quota_exceeded = false
   if cap >= 0 then
     local cur = tonumber(redis.call('GET', host_count_key)) or 0
     if cur >= cap then
       rejected_quota = rejected_quota + 1
-      -- Skip the bloom check entirely. Downstream tradeoff: a URL
-      -- that would have been a bloom-duplicate is instead counted as
-      -- rejected_quota. Acceptable because quota and dedup are both
-      -- "drop this URL" outcomes; the metric attribution is the only
-      -- difference.
-      goto continue
+      quota_exceeded = true
     end
   end
 
-  -- BF.ADD: 1 if newly added, 0 if already present. Atomic check-and-set.
-  if redis.call('BF.ADD', KEYS[1], url_id) == 1 then
-    -- Bloom accepted as new: bump the per-host counter, then
-    -- enqueue.
-    if cap >= 0 then
-      redis.call('INCR', host_count_key)
+  if not quota_exceeded then
+    -- BF.ADD: 1 if newly added, 0 if already present. Atomic check-and-set.
+    if redis.call('BF.ADD', KEYS[1], url_id) == 1 then
+      -- Bloom accepted as new: bump the per-host counter, then
+      -- enqueue.
+      if cap >= 0 then
+        redis.call('INCR', host_count_key)
+      end
+      redis.call('HSET',  KEYS[2], url_id, payload)
+      redis.call('RPUSH', host_queue_key, url_id)
+      -- NX so we don't stomp a wake-time already set by a prior claim
+      -- or advance_wake against the same host.
+      redis.call('ZADD',  KEYS[3], 'NX', now_ms, host)
+      newly = newly + 1
     end
-    redis.call('HSET',  KEYS[2], url_id, payload)
-    redis.call('RPUSH', host_queue_key, url_id)
-    -- NX so we don't stomp a wake-time already set by a prior claim
-    -- or advance_wake against the same host.
-    redis.call('ZADD',  KEYS[3], 'NX', now_ms, host)
-    newly = newly + 1
   end
-
-  ::continue::
 end
 
 return {newly, rejected_quota}

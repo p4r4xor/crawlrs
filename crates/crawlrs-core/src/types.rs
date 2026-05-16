@@ -19,6 +19,8 @@ use std::collections::HashMap;
 use std::fmt;
 use std::time::{Duration, Instant, SystemTime};
 
+use smallvec::SmallVec;
+
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -243,7 +245,12 @@ pub struct FetchResponse {
     /// continue to work through `Box`'s `Deref<Target = HashMap>`.
     pub headers: Box<HashMap<String, String>>,
     pub body: Bytes,
-    pub redirect_chain: Vec<RedirectHop>,
+    /// `SmallVec<[_; 4]>`: 95%+ of fetches don't redirect, and the
+    /// rest are usually 1-2 hops. The inline capacity of 4 absorbs
+    /// the common case without a heap allocation; deeper chains spill
+    /// to the heap transparently. `Vec` ergonomics are preserved
+    /// (push/iter/index all work).
+    pub redirect_chain: SmallVec<[RedirectHop; 4]>,
     pub fetched_at: DateTime<Utc>,
     pub duration: Duration,
 }

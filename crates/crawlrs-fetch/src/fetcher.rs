@@ -184,7 +184,7 @@ impl Fetcher for WreqFetcher {
 
                 let final_url =
                     CanonicalUrl::parse(&final_uri_string).unwrap_or_else(|_| request.url.clone());
-                let redirect_chain = redirect_history
+                let redirect_chain: smallvec::SmallVec<[RedirectHop; 4]> = redirect_history
                     .map(|history| {
                         history
                             .into_iter()
@@ -195,7 +195,7 @@ impl Fetcher for WreqFetcher {
                                     .unwrap_or_else(|_| request.url.clone()),
                                 status: history_entry.status.as_u16(),
                             })
-                            .collect::<Vec<_>>()
+                            .collect()
                     })
                     .unwrap_or_default();
 

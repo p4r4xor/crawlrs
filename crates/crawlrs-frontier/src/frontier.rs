@@ -271,8 +271,11 @@ impl Frontier for RedisFrontier {
         // call per shard. In the common case (most outbound links share
         // the source page's host -> same shard) this collapses to one
         // call total.
+        // Capacity bounded by min(owned_shards, entries): every entry
+        // maps to at most one shard, and we can't have more shards in
+        // the map than we own. Pre-sizing skips the 0->4->8 grow chain.
         let mut shard_to_indices: std::collections::HashMap<ShardKey, Vec<usize>> =
-            std::collections::HashMap::new();
+            std::collections::HashMap::with_capacity(self.owned_shards.len().min(entries.len()));
         let mut shard_hosts: Vec<String> = Vec::with_capacity(entries.len());
         let mut shard_url_ids: Vec<UrlId> = Vec::with_capacity(entries.len());
         for (i, entry) in entries.iter().enumerate() {

@@ -15,6 +15,7 @@ bytes.workspace       = true
 chrono.workspace      = true
 futures.workspace     = true
 metrics.workspace     = true
+smallvec.workspace    = true
 tracing.workspace     = true
 wreq.workspace        = true
 wreq-util.workspace   = true

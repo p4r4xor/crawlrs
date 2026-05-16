@@ -8,6 +8,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::Utc;
 use crawlrs_core::{CanonicalUrl, Error, FetchRequest, FetchResponse, Fetcher, Result};
+use smallvec::SmallVec;
 
 /// Routes URLs to canned responses installed before the test runs.
 ///
@@ -37,7 +38,7 @@ impl FakeFetcher {
             status: 200,
             headers: Box::new(HashMap::from([("content-type".into(), "text/html".into())])),
             body: Bytes::copy_from_slice(body.as_bytes()),
-            redirect_chain: Vec::new(),
+            redirect_chain: SmallVec::new(),
             fetched_at: Utc::now(),
             duration: Duration::from_millis(0),
         };
@@ -61,7 +62,7 @@ impl FakeFetcher {
             status,
             headers: Box::new(HashMap::new()),
             body: Bytes::copy_from_slice(body.as_bytes()),
-            redirect_chain: Vec::new(),
+            redirect_chain: SmallVec::new(),
             fetched_at: Utc::now(),
             duration: Duration::from_millis(0),
         };
@@ -83,7 +84,7 @@ impl FakeFetcher {
             status,
             headers: Box::new(headers),
             body: Bytes::new(),
-            redirect_chain: Vec::new(),
+            redirect_chain: SmallVec::new(),
             fetched_at: Utc::now(),
             duration: Duration::from_millis(0),
         };

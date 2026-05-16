@@ -76,9 +76,9 @@ crawlrs:
     parquet: true
     warc: false
     rotation:
-      maxBytes: 134217728 # 16 MiB
-      maxRows: 100000
-      maxDuration: "30m"
+      maxBytes: 16777216  # 16 MiB
+      maxRows: 8000
+      maxDuration: "5m"
     backend:
       kind: local
       path: /var/lib/crawlrs/data

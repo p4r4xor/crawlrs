@@ -28,7 +28,7 @@ use crawlrs_core::{
 };
 use tokio::sync::watch;
 use tokio::time::Instant as TokioInstant;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use crate::crawler::CrawlerConfig;
 use crate::failure::{classify_status, classify_transport_error, extract_retry_after};
@@ -303,10 +303,7 @@ impl UrlPipeline {
         }
 
         match self.deps.politeness.check(self.url()).await {
-            Ok(PoliteDecision::Allow) => {
-                info!(url = %self.url(), "politeness allow");
-                true
-            }
+            Ok(PoliteDecision::Allow) => true,
             Ok(PoliteDecision::Disallow) => {
                 debug!(url = %self.url(), "politeness disallowed; acking");
                 metrics::counter!(
@@ -389,7 +386,7 @@ impl UrlPipeline {
 
         let plan = self.deps.politeness.record_fetch(self.url()).await;
         self.apply_wake_plan(plan).await;
-        info!(
+        debug!(
             url = %self.url(),
             status = resp.status,
             body_bytes = resp.body.len(),
@@ -437,7 +434,7 @@ impl UrlPipeline {
         if let Some(adapter) = self.deps.adapters.find_for(&resp.url) {
             match adapter.extract(resp).await {
                 Ok(Some(doc)) => {
-                    info!(
+                    debug!(
                         url = %resp.url,
                         outbound_links = doc.outbound_links.len(),
                         via = "adapter",
@@ -455,7 +452,7 @@ impl UrlPipeline {
         }
         match self.deps.parser.parse(resp).await {
             Ok(doc) => {
-                info!(
+                debug!(
                     url = %resp.url,
                     outbound_links = doc.outbound_links.len(),
                     via = "lol_html",
@@ -505,7 +502,7 @@ impl UrlPipeline {
         };
         let blob_path = match store_result {
             Ok(p) => {
-                info!(url = %self.url(), blob_path = %p, "store ok");
+                debug!(url = %self.url(), blob_path = %p, "store ok");
                 p
             }
             Err(e) => {
@@ -569,7 +566,10 @@ impl UrlPipeline {
             warn!(url = %self.url(), error = %e, "frontier ack failed");
         }
 
-        info!(url = %self.url(), depth = self.entry.depth, "url complete");
+        // No per-URL "complete" log: the `process_url` span exit (with
+        // url + identity + depth + url_id fields, see #[instrument] on
+        // the function) marks completion, and `URLS_FETCHED_TOTAL`
+        // counts. Logging both would be redundant at high volume.
         metrics::counter!(crate::metrics::URLS_FETCHED_TOTAL).increment(1);
     }
 

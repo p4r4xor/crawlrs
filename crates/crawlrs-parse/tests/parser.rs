@@ -13,7 +13,7 @@ fn resp(url: &str, body: &str) -> FetchResponse {
         status: 200,
         headers: Box::new(HashMap::new()),
         body: Bytes::copy_from_slice(body.as_bytes()),
-        redirect_chain: Vec::new(),
+        redirect_chain: Vec::new().into(),
         fetched_at: chrono::Utc::now(),
         duration: Duration::from_millis(1),
     }

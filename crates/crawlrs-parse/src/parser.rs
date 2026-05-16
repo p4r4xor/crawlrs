@@ -204,7 +204,11 @@ fn extract_html(body: &[u8]) -> Result<Extracted> {
 /// per-fetch metric only needs the cardinality, not the values.
 fn resolve_links(raw: &[String], base: &CanonicalUrl) -> (Vec<CanonicalUrl>, usize) {
     let mut seen = HashSet::new();
-    let mut out = Vec::new();
+    // Pre-size: upper bound is `raw.len()` (some hrefs drop out for
+    // empty / anchor-only / parse-failure / extension-deny reasons,
+    // but allocating once up-front beats the doubling chain on link-
+    // heavy pages where `raw.len()` is in the hundreds).
+    let mut out = Vec::with_capacity(raw.len());
     let mut extension_denied = 0usize;
     for href in raw {
         let trimmed = href.trim();

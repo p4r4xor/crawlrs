@@ -2,10 +2,9 @@
 members = ["crates/*"]
 resolver = "3"
 
-# Lint config inherited by every crate via `[lints] workspace = true`.
-# Tier 1 baseline: warn-level clippy::all, deny unsafe. CI runs with
-# `-D warnings` so any clippy hit fails the build; locally devs see
-# them as warnings to keep the inner loop fast.
+[profile.dev]
+debug = "line-tables-only"
+
 [workspace.lints.rust]
 unsafe_code      = "deny"
 unreachable_pub  = "warn"
@@ -50,28 +49,21 @@ postcard    = { version = "1", features = ["use-std"] }
 redis       = { version = "1.2", default-features = false, features = ["tokio-comp", "streams", "script"] }
 serde       = { version = "1", features = ["derive"] }
 serde_json  = "1"
+smallvec    = "1"
 sqlx        = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "macros", "migrate", "chrono", "json"] }
 texting_robots = "0.2"
 thiserror   = "2"
 tokio       = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
 tracing     = "0.1"
 url         = { version = "2", features = ["serde"] }
-# Pinned to wreq/wreq-util main HEAD (post-rc.28) so we can install a
-# no-op `TlsSessionCache` via the new `ClientBuilder::tls_session_cache`
-# API (#1101). The default LRU cache pins each peer's parsed X.509
-# chain in memory; with random emulation x high host diversity it
-# accumulated ~10-15 MB/min in the pod. main also migrated the TLS
-# backend from boring2 -> btls, but the public surface we use stays
-# the same. `Cargo.lock` pins the actual commits for reproducibility.
 wreq        = { git = "https://github.com/0x676e67/wreq.git", default-features = false, features = ["gzip", "brotli", "zstd", "deflate", "socks", "stream", "hickory-dns"] }
-# Main folded the old `emulation-rand` feature into `emulation`;
-# `Emulation::random()` is unconditionally available.
 wreq-util   = { git = "https://github.com/0x676e67/wreq-util.git", default-features = false, features = ["emulation"] }
 
 # Test-only.
 testcontainers         = "0.27"
 testcontainers-modules = { version = "0.15", features = ["redis", "postgres"] }
 tempfile               = "3"
+criterion              = { version = "0.8", features = ["html_reports"] }
 
 # Workspace-internal crates (referenced from sub-crates by name).
 crawlrs-core            = { path = "crates/crawlrs-core",            version = "0.0.1" }

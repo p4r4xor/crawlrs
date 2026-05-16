@@ -13,11 +13,21 @@ blake3.workspace      = true
 bytes.workspace       = true
 chrono.workspace      = true
 serde.workspace       = true
+smallvec.workspace    = true
 thiserror.workspace   = true
 url.workspace         = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+criterion.workspace = true
+
+[[bench]]
+name = "canonical_url"
+harness = false
+
+[[bench]]
+name = "hash"
+harness = false
 
 [lints]
 workspace = true

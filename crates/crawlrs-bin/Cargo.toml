@@ -36,6 +36,22 @@ toml.workspace                         = true
 tracing.workspace                      = true
 tracing-subscriber.workspace           = true
 
+# Replaces glibc malloc with jemalloc on Linux. The motivating win is
+# aggressive page-return-to-OS via jemalloc's `dirty_decay_ms` /
+# `muzzy_decay_ms` purging defaults: for our many-small-short-lived
+# allocation pattern (per-request scratch buffers, parser collections,
+# TLS handshake state), glibc tends to hold freed pages in its arenas
+# and inflate RSS even when live allocations have shrunk. jemalloc
+# returns dirty pages aggressively, collapsing the VmData - RSS gap.
+#
+# `unprefixed_malloc_on_supported_platforms` exports jemalloc's
+# `malloc` / `free` under the standard libc symbol names so the C
+# dependencies (BoringSSL via btls-sys, lz4, snappy) also route
+# through jemalloc - without it, jemalloc only sees Rust's `alloc`
+# traffic and the C-side allocations stay on glibc.
+[target.'cfg(target_os = "linux")'.dependencies]
+tikv-jemallocator = { version = "0.6", features = ["unprefixed_malloc_on_supported_platforms"] }
+
 [dev-dependencies]
 tempfile.workspace               = true
 testcontainers.workspace         = true

@@ -37,7 +37,7 @@ fn fake_response(url: &str) -> FetchResponse {
         status: 200,
         headers: Box::new(HashMap::new()),
         body: Bytes::new(),
-        redirect_chain: Vec::new(),
+        redirect_chain: Vec::new().into(),
         fetched_at: Utc::now(),
         duration: Duration::from_millis(0),
     }

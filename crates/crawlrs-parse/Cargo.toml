@@ -15,9 +15,15 @@ lol_html.workspace    = true
 metrics.workspace     = true
 
 [dev-dependencies]
-bytes.workspace  = true
-chrono.workspace = true
-tokio.workspace  = true
+bytes.workspace     = true
+chrono.workspace    = true
+tokio.workspace     = true
+criterion.workspace = true
+smallvec.workspace  = true
+
+[[bench]]
+name = "parser"
+harness = false
 
 [lints]
 workspace = true

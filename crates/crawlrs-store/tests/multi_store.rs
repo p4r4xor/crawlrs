@@ -87,7 +87,7 @@ fn fixture(url_str: &str, body: &[u8]) -> (ParsedDocument, FetchResponse) {
         status: 200,
         headers: Box::new(headers),
         body: Bytes::copy_from_slice(body),
-        redirect_chain: Vec::new(),
+        redirect_chain: Vec::new().into(),
         fetched_at: Utc::now(),
         duration: Duration::from_millis(11),
     };
