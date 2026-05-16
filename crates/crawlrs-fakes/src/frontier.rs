@@ -49,8 +49,8 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use crawlrs_core::{
-    AttemptId, ClaimOutcome, Clock, Error, Frontier, Result, ShardKey, ShardingPolicy,
-    SubmitOutcome, SystemClock, UrlEntry, UrlId, WorkerIdentity,
+    AttemptId, ClaimOutcome, Clock, CrawlScope, Error, Frontier, Result, ShardKey, ShardingPolicy,
+    SubmitBatchOutcome, SubmitOutcome, SystemClock, UrlEntry, UrlId, WorkerIdentity,
 };
 
 /// Default lease timeout. A worker that crashes mid-fetch holds its
@@ -65,6 +65,11 @@ pub struct InMemoryFrontier {
     state: Mutex<FrontierState>,
     clock: Arc<dyn Clock>,
     lease_timeout_ms: u64,
+    /// Crawl scope for the `[crawl].max_urls` quota enforcement
+    /// inside `submit_batch`. Mirrors the per-shard `host_count`
+    /// counter the Redis impl writes; default scope leaves every
+    /// host uncapped.
+    crawl_scope: CrawlScope,
     /// Reference wall-clock instant. The Frontier trait carries wake-
     /// times as `Instant` but `Clock` only exposes millis since
     /// process start; we capture an anchor here so we can convert
@@ -98,6 +103,10 @@ struct ShardState {
     urls: HashMap<UrlId, UrlEntry>,
     /// Submit-time dedup. Mirrors RedisBloom's `seen:s{shard}`.
     seen: HashSet<UrlId>,
+    /// Per-host accepted-URL counter. Mirrors the Redis
+    /// `host_count:<host>` INCR target. Reset would happen with a
+    /// fresh `InMemoryFrontier` (the per-run scope of the prod key).
+    host_count: HashMap<String, u64>,
     /// Host -> next-allowed-fetch-millis. Score-sorted (we walk the
     /// values on `tick`; explicit sort isn't worth maintaining at this
     /// scale).
@@ -130,6 +139,7 @@ impl InMemoryFrontier {
             anchor_instant: Instant::now(),
             clock,
             lease_timeout_ms: DEFAULT_LEASE_TIMEOUT.as_millis() as u64,
+            crawl_scope: CrawlScope::default(),
         }
     }
 
@@ -147,6 +157,15 @@ impl InMemoryFrontier {
     /// clock advance.
     pub fn with_lease_timeout(mut self, t: Duration) -> Self {
         self.lease_timeout_ms = t.as_millis() as u64;
+        self
+    }
+
+    /// Wire a [`CrawlScope`] so `submit_batch` enforces per-host
+    /// `[crawl].max_urls` quotas. Default is empty scope (every
+    /// host uncapped); tests asserting on quota behavior populate
+    /// the scope explicitly.
+    pub fn with_crawl_scope(mut self, scope: CrawlScope) -> Self {
+        self.crawl_scope = scope;
         self
     }
 
@@ -235,14 +254,52 @@ impl Frontier for InMemoryFrontier {
         Ok(SubmitOutcome::Queued)
     }
 
-    async fn submit_batch(&self, entries: Vec<UrlEntry>) -> Result<usize> {
-        let mut newly = 0usize;
+    async fn submit_batch(&self, entries: Vec<UrlEntry>) -> Result<SubmitBatchOutcome> {
+        let mut outcome = SubmitBatchOutcome::default();
         for entry in entries {
-            if matches!(self.submit(entry).await?, SubmitOutcome::Queued) {
-                newly += 1;
+            let shard = self.sharding_policy.shard_key(&entry.url);
+            self.assert_owned(shard)?;
+            let url_id = UrlId::from_canonical(&entry.url);
+            let host = entry
+                .url
+                .host()
+                .ok_or_else(|| Error::Frontier(format!("URL has no host: {}", entry.url)))?
+                .to_string();
+            let now_ms = self.clock.now_ms();
+            let cap = self.crawl_scope.max_urls_for(&host);
+
+            let mut state = self.state.lock().unwrap();
+            let shard_state = state
+                .shards
+                .get_mut(&shard)
+                .expect("owned shard initialised at construction");
+
+            // Counter-first: reject before touching the bloom so the
+            // URL stays eligible for a future-run resubmit (matches
+            // the Lua script's ordering).
+            if let Some(cap) = cap
+                && shard_state.host_count.get(&host).copied().unwrap_or(0) >= cap
+            {
+                outcome.rejected_quota += 1;
+                continue;
             }
+
+            if !shard_state.seen.insert(url_id) {
+                continue;
+            }
+            if cap.is_some() {
+                *shard_state.host_count.entry(host.clone()).or_insert(0) += 1;
+            }
+            shard_state.urls.insert(url_id, entry);
+            shard_state
+                .host_queue
+                .entry(host.clone())
+                .or_default()
+                .push_back(url_id);
+            shard_state.wake.entry(host).or_insert(now_ms);
+            outcome.newly += 1;
         }
-        Ok(newly)
+        Ok(outcome)
     }
 
     async fn claim(&self, _identity: &WorkerIdentity) -> Result<ClaimOutcome> {

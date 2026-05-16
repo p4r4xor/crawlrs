@@ -87,6 +87,7 @@ async fn single_shard_frontier_with_run_id(
         vec![0],
         run_id,
         BloomConfig::default(),
+        crawlrs_core::CrawlScope::default(),
     )
     .await
     .unwrap()
@@ -172,6 +173,7 @@ async fn submit_batch_collapses_round_trips_per_shard() {
         (0..8).collect(),
         run_id(),
         BloomConfig::default(),
+        crawlrs_core::CrawlScope::default(),
     )
     .await
     .unwrap();
@@ -186,10 +188,14 @@ async fn submit_batch_collapses_round_trips_per_shard() {
         .len();
 
     let before = redis_eval_calls(&fx.pool).await;
-    let newly = frontier.submit_batch(entries).await.unwrap();
+    let outcome = frontier.submit_batch(entries).await.unwrap();
     let after = redis_eval_calls(&fx.pool).await;
 
-    assert_eq!(newly, 100, "every URL is unique so all 100 are Queued");
+    assert_eq!(
+        outcome.newly, 100,
+        "every URL is unique so all 100 are Queued",
+    );
+    assert_eq!(outcome.rejected_quota, 0, "no quota configured");
 
     // Expected exactly `distinct_shards` calls. We allow 2x headroom
     // because a fresh script may need one SCRIPT LOAD followed by an
@@ -337,6 +343,7 @@ async fn expired_lease_is_reclaimed_and_url_re_pushed() {
         vec![0],
         run_id(),
         BloomConfig::default(),
+        crawlrs_core::CrawlScope::default(),
     )
     .await
     .unwrap()
@@ -405,6 +412,7 @@ async fn host_hash_policy_routes_urls_to_owned_shard() {
         vec![shard],
         run_id(),
         BloomConfig::default(),
+        crawlrs_core::CrawlScope::default(),
     )
     .await
     .unwrap();
@@ -432,6 +440,7 @@ async fn submit_rejects_url_for_unowned_shard() {
         owned,
         run_id(),
         BloomConfig::default(),
+        crawlrs_core::CrawlScope::default(),
     )
     .await
     .unwrap();
@@ -451,4 +460,124 @@ async fn submit_rejects_url_for_unowned_shard() {
         msg.contains("not owned"),
         "expected ShardNotOwned error; got {msg}",
     );
+}
+
+// ---------------------------------------------------------------------------
+// Per-host quota (`[crawl].max_urls`) enforcement via submit_batch.lua
+// ---------------------------------------------------------------------------
+
+fn scope_with_host_cap(host: &str, max_urls: u64) -> crawlrs_core::CrawlScope {
+    let per_domain: std::collections::HashMap<String, crawlrs_core::CrawlOverride> = [(
+        host.to_string(),
+        crawlrs_core::CrawlOverride {
+            max_depth: None,
+            max_urls: Some(max_urls),
+        },
+    )]
+    .into_iter()
+    .collect();
+    crawlrs_core::CrawlScope::new(None, None, per_domain)
+}
+
+#[tokio::test]
+async fn submit_batch_enforces_per_host_quota() {
+    // 100 URLs all on one host; cap is 50. submit_batch.lua's
+    // counter-first ordering should accept the first 50 (each marks
+    // the bloom and bumps the counter) and reject the rest with
+    // counter unchanged + bloom NOT marked.
+    let fx = fixture().await;
+    let policy: Arc<dyn ShardingPolicy> = Arc::new(SingleShardPolicy);
+    let frontier = RedisFrontier::new(
+        fx.pool.clone(),
+        policy,
+        vec![0],
+        run_id(),
+        BloomConfig::default(),
+        scope_with_host_cap("capped.test", 50),
+    )
+    .await
+    .unwrap();
+
+    let entries: Vec<UrlEntry> = (0..100)
+        .map(|i| entry(&format!("https://capped.test/p{i}")))
+        .collect();
+    let outcome = frontier.submit_batch(entries).await.unwrap();
+    assert_eq!(outcome.newly, 50, "counter caps acceptances at 50");
+    assert_eq!(
+        outcome.rejected_quota, 50,
+        "the other 50 must be quota-rejected, not bloom-dropped",
+    );
+}
+
+#[tokio::test]
+async fn quota_rejected_urls_remain_eligible_after_run_reset() {
+    // The counter is per-run (key includes the run_id). A second
+    // RedisFrontier with a fresh run_id sees the counter at zero.
+    // We don't share a bloom across runs in this test (each fixture
+    // is its own container, so `seen:s0` is also fresh), so this
+    // verifies the counter-reset half of the contract.
+    let fx = fixture().await;
+    let policy: Arc<dyn ShardingPolicy> = Arc::new(SingleShardPolicy);
+
+    let cap = scope_with_host_cap("capped.test", 5);
+    let frontier_a = RedisFrontier::new(
+        fx.pool.clone(),
+        policy.clone(),
+        vec![0],
+        run_id(),
+        BloomConfig::default(),
+        cap.clone(),
+    )
+    .await
+    .unwrap();
+
+    let entries: Vec<UrlEntry> = (0..10)
+        .map(|i| entry(&format!("https://capped.test/p{i}")))
+        .collect();
+    let outcome_a = frontier_a.submit_batch(entries.clone()).await.unwrap();
+    assert_eq!(outcome_a.newly, 5);
+    assert_eq!(outcome_a.rejected_quota, 5);
+
+    // Fresh run: counter resets. Bloom resets too (different
+    // container per fixture, but in any case `seen` is per-shard
+    // not per-run; we use a fresh fixture for the second run to
+    // sidestep that).
+    let fx_b = fixture().await;
+    let frontier_b = RedisFrontier::new(
+        fx_b.pool.clone(),
+        policy,
+        vec![0],
+        run_id(),
+        BloomConfig::default(),
+        cap,
+    )
+    .await
+    .unwrap();
+    let outcome_b = frontier_b.submit_batch(entries).await.unwrap();
+    assert_eq!(outcome_b.newly, 5, "fresh run accepts up to the cap again");
+    assert_eq!(outcome_b.rejected_quota, 5);
+}
+
+#[tokio::test]
+async fn submit_batch_without_quota_accepts_all_unique() {
+    // Uncapped host: every unique URL goes through; rejected_quota
+    // stays zero regardless of batch size.
+    let fx = fixture().await;
+    let policy: Arc<dyn ShardingPolicy> = Arc::new(SingleShardPolicy);
+    let frontier = RedisFrontier::new(
+        fx.pool.clone(),
+        policy,
+        vec![0],
+        run_id(),
+        BloomConfig::default(),
+        crawlrs_core::CrawlScope::default(),
+    )
+    .await
+    .unwrap();
+    let entries: Vec<UrlEntry> = (0..50)
+        .map(|i| entry(&format!("https://free.test/p{i}")))
+        .collect();
+    let outcome = frontier.submit_batch(entries).await.unwrap();
+    assert_eq!(outcome.newly, 50);
+    assert_eq!(outcome.rejected_quota, 0);
 }

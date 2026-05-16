@@ -38,31 +38,44 @@ max_body_bytes  = 10485760  # 10 MB hard cap; rejects responses past this
 default_timeout = "30s"
 user_agent      = "crawlrs/0.0.1 (+https://github.com/p4r4xor/crawlrs)"
 
+# Operator-mandated crawl scope: how deep to follow links and how
+# many URLs to take per host. Distinct from `[politeness]` (which is
+# behavior toward a host as a guest); scope describes your own
+# crawl's shape. Both globals are unset by default = unbounded.
+[crawl]
+# max_depth = 5
+# max_urls  = 50000
+
+# Per-host scope overrides. Each entry adjusts max_depth / max_urls
+# for one host. Keys are exact host strings (no eTLD+1 rollup;
+# `docs.python.org` and `python.org` are distinct quotas).
+# [crawl.per_domain."python.org"]
+# max_depth = 3
+# max_urls  = 1000
+
+# Access control: hosts the crawler refuses to visit. Checked first,
+# before robots.txt / rate / backoff.
+[access]
+# blocklist = ["example.com", "do-not-crawl.org"]
+
 # Politeness layer: per-host delays, robots.txt, backoff.
 #
 # Coherence rule enforced at startup: obey_robots_txt = true requires
 # [fetch].user_agent to be set. With random emulation (no fetch UA),
 # the wire User-Agent rotates per request and can't be matched
 # coherently against any robots.txt rule group.
-# Politeness scalar keys live at the top of the [politeness] table.
-# Subtables (politeness.backoff, politeness.per_domain.<host>) come
-# after, because every key after a [a.b] header belongs to a.b until
-# the next [...] header opens a new table.
+#
+# `enabled = false` is the master switch: the entire politeness layer
+# is wired to no-op impls and the runtime sees a `Politeness` that
+# allows every URL with no Redis I/O. Use only against infrastructure
+# you own or with explicit permission. Scope (`[crawl]`) and access
+# (`[access]`) controls remain active when politeness is disabled;
+# they're separate concerns.
 [politeness]
+enabled         = true
 host_delay      = "1s"
 obey_robots_txt = true
 robots_ttl      = "24h"
-
-# Per-host caps. Both globals are null/unset by default = unbounded.
-# Per-host overrides in politeness.per_domain.<host> can raise or
-# lower any individual host's cap. Depth caps are pure config (no
-# I/O); URL-count storage is only allocated when at least one max_urls
-# value is configured, so the unset case costs zero Redis state.
-# max_depth = 5
-# max_urls  = 50000
-
-# Hosts to never crawl (in addition to robots.txt).
-# blocklist = ["example.com", "do-not-crawl.org"]
 
 # Exponential backoff on 429 / 503 / transport errors.
 [politeness.backoff]
@@ -71,20 +84,13 @@ max_backoff       = "10m"
 multiplier        = 2.0
 failure_threshold = 10
 
-# Per-host overrides. Each entry is its own subtable and can adjust
-# host_delay, obey_robots_txt, max_depth, and max_urls for that host
-# without touching the global defaults. Keys are exact host strings
-# (no eTLD+1 rollup); `profiles.crustdata.com` and `crustdata.com`
-# are distinct quotas.
-# [politeness.per_domain."slow-host.example"]
+# Per-host politeness overrides. Each entry can adjust host_delay,
+# obey_robots_txt, and robots_ttl for that host without touching the
+# global defaults. Keys are exact host strings.
+# [politeness.per_domain."python.org"]
 # host_delay = "5s"
-# max_depth  = 3
-# max_urls   = 1000
-# [politeness.per_domain."profiles.crustdata.com"]
-# max_urls   = 1000000
 
-# Worker pool + per-URL retry budget. Depth and per-host quota caps
-# live under [politeness] (see above) since they're per-host policy.
+# Worker pool + per-URL retry budget.
 [runtime]
 workers          = 4
 max_retries      = 5      # after this many consecutive failures, URL -> DLQ

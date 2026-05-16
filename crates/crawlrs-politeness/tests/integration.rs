@@ -17,8 +17,8 @@ use std::time::{Duration, Instant};
 use bb8::Pool;
 use bb8_redis::RedisConnectionManager;
 use crawlrs_core::{
-    CanonicalUrl, FailureKind, Fetcher, PoliteDecision, Politeness, ShardingPolicy,
-    SingleShardPolicy,
+    Blocklist, CanonicalUrl, CrawlScope, FailureKind, Fetcher, PoliteDecision, Politeness,
+    ShardingPolicy, SingleShardPolicy,
 };
 use crawlrs_fakes::FakeFetcher;
 use crawlrs_politeness::{BackoffPolicy, PolitenessConfig, PolitenessOverride, RedisPoliteness};
@@ -74,10 +74,36 @@ async fn build(
     fetcher: Arc<dyn Fetcher>,
     config: PolitenessConfig,
 ) -> RedisPoliteness {
+    build_with(
+        pool,
+        fetcher,
+        config,
+        CrawlScope::default(),
+        Blocklist::default(),
+    )
+    .await
+}
+
+async fn build_with(
+    pool: &Pool<RedisConnectionManager>,
+    fetcher: Arc<dyn Fetcher>,
+    config: PolitenessConfig,
+    crawl_scope: CrawlScope,
+    blocklist: Blocklist,
+) -> RedisPoliteness {
     let policy: Arc<dyn ShardingPolicy> = Arc::new(SingleShardPolicy);
-    RedisPoliteness::new(pool.clone(), policy, vec![0], fetcher, run_id(), config)
-        .await
-        .unwrap()
+    RedisPoliteness::new(
+        pool.clone(),
+        policy,
+        vec![0],
+        fetcher,
+        run_id(),
+        config,
+        crawl_scope,
+        blocklist,
+    )
+    .await
+    .unwrap()
 }
 
 /// Helper: extract `until` as a Duration-from-now from a `NextWake`.
@@ -109,10 +135,17 @@ async fn unseen_host_is_allowed() {
 async fn blocklist_returns_disallow() {
     let fx = fixture().await;
     let fake = Arc::new(FakeFetcher::default());
-    let mut config = config_with(Duration::from_millis(1_000), false);
-    config.blocklist.insert("excluded.test".into());
+    let config = config_with(Duration::from_millis(1_000), false);
+    let blocklist = Blocklist::new(["excluded.test".to_string()].into_iter().collect());
 
-    let p = build(&fx.pool, fake.clone(), config).await;
+    let p = build_with(
+        &fx.pool,
+        fake.clone(),
+        config,
+        CrawlScope::default(),
+        blocklist,
+    )
+    .await;
     assert_eq!(
         p.check(&url("https://excluded.test/page")).await.unwrap(),
         PoliteDecision::Disallow,
@@ -175,8 +208,7 @@ async fn per_domain_override_uses_custom_host_delay() {
         PolitenessOverride {
             host_delay: Some(Duration::from_millis(5_000)),
             obey_robots_txt: None,
-            max_depth: None,
-            max_urls: None,
+            robots_ttl: None,
         },
     );
 
@@ -390,8 +422,7 @@ async fn robots_per_domain_override_disables_check() {
         PolitenessOverride {
             host_delay: None,
             obey_robots_txt: Some(false),
-            max_depth: None,
-            max_urls: None,
+            robots_ttl: None,
         },
     );
 
@@ -422,18 +453,22 @@ async fn in_process_robots_lru_populates_after_first_check() {
     )
     .await;
 
-    assert_eq!(p.robots().cache_len(), 0, "LRU empty at startup");
+    let robots = || {
+        p.robots()
+            .expect("redis-backed composite exposes its robots cache")
+    };
+    assert_eq!(robots().cache_len(), 0, "LRU empty at startup");
 
     let _ = p.check(&url("https://lru.test/some/page")).await.unwrap();
-    p.robots().run_pending_tasks();
+    robots().run_pending_tasks();
 
     assert_eq!(
-        p.robots().cache_len(),
+        robots().cache_len(),
         1,
         "LRU should hold the one host we just checked",
     );
 
     let _ = p.check(&url("https://lru.test/another")).await.unwrap();
-    p.robots().run_pending_tasks();
-    assert_eq!(p.robots().cache_len(), 1);
+    robots().run_pending_tasks();
+    assert_eq!(robots().cache_len(), 1);
 }

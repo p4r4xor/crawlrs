@@ -15,8 +15,8 @@ use std::time::Duration;
 use bb8::Pool;
 use bb8_redis::RedisConnectionManager;
 use crawlrs_core::{
-    CanonicalUrl, LinkDispatch, MetadataStore, ShardingPolicy, SingleShardPolicy,
-    SiteAdapterRegistry, UrlEntry, UrlStatus,
+    Blocklist, CanonicalUrl, CrawlScope, LinkDispatch, MetadataStore, ShardingPolicy,
+    SingleShardPolicy, SiteAdapterRegistry, UrlEntry, UrlStatus,
 };
 use crawlrs_fakes::{FakeFetcher, InMemoryMetadataStore, InMemoryStore};
 use crawlrs_frontier::{BloomConfig, RedisFrontier};
@@ -81,6 +81,28 @@ async fn build_crawler(
     Arc<InMemoryStore>,
     Arc<InMemoryMetadataStore>,
 ) {
+    build_crawler_with_scope(
+        fx,
+        config,
+        politeness_config,
+        CrawlScope::default(),
+        Blocklist::default(),
+    )
+    .await
+}
+
+async fn build_crawler_with_scope(
+    fx: &Fixture,
+    config: CrawlerConfig,
+    politeness_config: PolitenessConfig,
+    crawl_scope: CrawlScope,
+    blocklist: Blocklist,
+) -> (
+    Crawler,
+    Arc<FakeFetcher>,
+    Arc<InMemoryStore>,
+    Arc<InMemoryMetadataStore>,
+) {
     let policy: Arc<dyn ShardingPolicy> = Arc::new(SingleShardPolicy);
     let rid = run_id();
 
@@ -91,6 +113,7 @@ async fn build_crawler(
             vec![0],
             rid.clone(),
             BloomConfig::default(),
+            crawl_scope.clone(),
         )
         .await
         .unwrap()
@@ -109,6 +132,8 @@ async fn build_crawler(
             fetcher.clone(),
             rid.clone(),
             politeness_config,
+            crawl_scope.clone(),
+            blocklist,
         )
         .await
         .unwrap(),
@@ -128,6 +153,7 @@ async fn build_crawler(
         .outbox(metadata.clone())
         .adapters(adapters)
         .config(config)
+        .crawl_scope(crawl_scope)
         .run_id(rid)
         .build()
         .unwrap();
@@ -251,11 +277,18 @@ async fn missing_canned_response_records_transport_failure() {
 async fn discovered_links_respect_max_depth() {
     let fx = fixture().await;
     // seed -> depth 0; children -> depth 1; depth 2 dropped. The cap
-    // lives on the politeness layer (alongside max_urls and the
-    // per-host override map) so all per-host quota knobs sit together.
-    let mut politeness = fast_politeness();
-    politeness.max_depth = Some(1);
-    let (crawler, fetcher, store, _metadata) = build_crawler(&fx, fast_config(), politeness).await;
+    // lives on the `CrawlScope` (the `[crawl]` config table); the
+    // worker reads it via `Politeness::depth_cap` which the composite
+    // delegates to its scope.
+    let crawl_scope = CrawlScope::new(Some(1), None, std::collections::HashMap::new());
+    let (crawler, fetcher, store, _metadata) = build_crawler_with_scope(
+        &fx,
+        fast_config(),
+        fast_politeness(),
+        crawl_scope,
+        Blocklist::default(),
+    )
+    .await;
 
     fetcher.install_html(
         "https://a.test/",

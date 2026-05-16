@@ -4,8 +4,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crawlrs_core::{
-    Clock, Fetcher, Frontier, HostHashShardPolicy, LinkDispatch, MetadataStore, Outbox, Parser,
-    Politeness, ShardingPolicy, SiteAdapterRegistry, Store, SystemClock,
+    Clock, CrawlScope, Fetcher, Frontier, HostHashShardPolicy, LinkDispatch, MetadataStore, Outbox,
+    Parser, Politeness, ShardingPolicy, SiteAdapterRegistry, Store, SystemClock,
 };
 use thiserror::Error;
 use tokio::sync::watch;
@@ -278,6 +278,7 @@ pub struct CrawlerBuilder {
     sharding_policy: Option<Arc<dyn ShardingPolicy>>,
     clock: Option<Arc<dyn Clock>>,
     config: Option<CrawlerConfig>,
+    crawl_scope: Option<CrawlScope>,
     run_id: Option<String>,
 }
 
@@ -332,6 +333,14 @@ impl CrawlerBuilder {
         self.config = Some(c);
         self
     }
+    /// Inject the `[crawl]` config table (per-host depth + URL
+    /// caps). Defaults to an unbounded scope when omitted, which
+    /// is appropriate for tests that don't exercise scope
+    /// controls.
+    pub fn crawl_scope(mut self, s: CrawlScope) -> Self {
+        self.crawl_scope = Some(s);
+        self
+    }
     pub fn run_id(mut self, id: impl Into<String>) -> Self {
         self.run_id = Some(id.into());
         self
@@ -361,6 +370,7 @@ impl CrawlerBuilder {
             .unwrap_or_else(|| Arc::new(HostHashShardPolicy::new(8)));
         let clock: Arc<dyn Clock> = self.clock.unwrap_or_else(|| Arc::new(SystemClock));
         let config = self.config.unwrap_or_default();
+        let crawl_scope = self.crawl_scope.unwrap_or_default();
 
         let deps = Arc::new(WorkerDeps {
             frontier,
@@ -371,6 +381,7 @@ impl CrawlerBuilder {
             metadata,
             adapters,
             config,
+            crawl_scope,
             run_id,
             sharding_policy,
             clock,

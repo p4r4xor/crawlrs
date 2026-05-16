@@ -100,6 +100,7 @@ async fn end_to_end_against_postgres_metadata_store() {
             vec![0],
             rid.clone(),
             BloomConfig::default(),
+            crawlrs_core::CrawlScope::default(),
         )
         .await
         .unwrap()
@@ -131,6 +132,8 @@ async fn end_to_end_against_postgres_metadata_store() {
             fetcher.clone(),
             rid.clone(),
             politeness_cfg,
+            crawlrs_core::CrawlScope::default(),
+            crawlrs_core::Blocklist::default(),
         )
         .await
         .unwrap(),

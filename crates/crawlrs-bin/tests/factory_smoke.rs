@@ -12,12 +12,13 @@
 //! covered by `crawlrs-runtime/tests/integration.rs`; replicating
 //! it here would re-test the runtime, not the binary's wiring.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::time::Duration;
 
 use crawlrs_bin::config::{
-    BackoffPolicy, CrawlrsConfig, FetchConfig, FrontierConfig, PolitenessConfig, PostgresConfig,
-    RedisConfig, RuntimeConfig, ServerConfig, ShardingConfig, StoreBackend, StoreConfig,
+    AccessConfig, BackoffPolicy, CrawlConfig, CrawlrsConfig, FetchConfig, FrontierConfig,
+    PolitenessConfig, PostgresConfig, RedisConfig, RuntimeConfig, ServerConfig, ShardingConfig,
+    StoreBackend, StoreConfig,
 };
 use crawlrs_bin::factory;
 use crawlrs_core::{CanonicalUrl, ClaimOutcome, Frontier, UrlEntry, WorkerIdentity};
@@ -64,15 +65,15 @@ async fn factory_builds_against_real_backends() {
             user_agent: Some("crawlrs-test/0.0.1".to_string()),
             default_timeout: Duration::from_secs(30),
         },
+        crawl: CrawlConfig::default(),
+        access: AccessConfig::default(),
         politeness: PolitenessConfig {
+            enabled: true,
             host_delay: Duration::from_secs(1),
             obey_robots_txt: true,
             robots_ttl: Duration::from_secs(24 * 60 * 60),
             backoff: BackoffPolicy::default(),
-            blocklist: HashSet::new(),
             per_domain: HashMap::new(),
-            max_depth: None,
-            max_urls: None,
         },
         runtime: RuntimeConfig::default(),
         frontier: FrontierConfig::default(),
@@ -101,12 +102,13 @@ async fn factory_builds_against_real_backends() {
     // `ready`, and `submit` only places the host into `wake`; the
     // promoter pass in `tick` moves it.
     let url = CanonicalUrl::parse("https://example.test/page").unwrap();
-    let n = built
+    let outcome = built
         .frontier
         .submit_batch(vec![UrlEntry::seed(url.clone())])
         .await
         .expect("submit_batch");
-    assert_eq!(n, 1, "exactly one URL should be newly inserted");
+    assert_eq!(outcome.newly, 1, "exactly one URL should be newly inserted",);
+    assert_eq!(outcome.rejected_quota, 0, "no quota configured");
 
     built.frontier.tick().await.expect("tick promotes the host");
 

@@ -46,6 +46,23 @@ impl Scripts {
     }
 }
 
+/// One URL's input to [`HostQueueOps::submit_batch`].
+///
+/// Bundled into a named struct so each field's role at the call
+/// site is unambiguous: tuples-of-four made the per-URL payload
+/// noisy at every line.
+#[derive(Debug, Clone, Copy)]
+pub struct SubmitItem<'a> {
+    pub url_id: UrlId,
+    pub entry: &'a UrlEntry,
+    pub host: &'a str,
+    /// Effective `[crawl].max_urls` for this host, or `-1` when the
+    /// host is uncapped. The Lua script branches on the sign: a
+    /// non-negative value gates the `BF.ADD` on a counter check;
+    /// `-1` skips both the GET and the INCR entirely.
+    pub max_urls: i64,
+}
+
 /// Result of `claim.lua`. Matches the three-state contract of the
 /// `ClaimOutcome` enum in the core trait; the frontier orchestrator
 /// translates this into the public type.
@@ -132,30 +149,33 @@ impl<'a> HostQueueOps<'a> {
     }
 
     /// Submit many URLs on one `shard` in a single Lua call. Each
-    /// `(url_id, entry, host)` triple is processed by `submit_batch.lua`
-    /// with identical semantics to the single-URL `submit`; the
-    /// difference is that N submits collapse from N Redis round-trips
-    /// to 1.
+    /// [`SubmitItem`] is processed by `submit_batch.lua` with the
+    /// counter-first quota check + bloom dedup + enqueue flow; N
+    /// submits collapse from N Redis round-trips to 1.
     ///
     /// All URLs in `items` must hash to the same `shard`; cross-shard
     /// batching is the caller's responsibility (a single Lua script
     /// touches a single cluster slot).
+    ///
+    /// Returns `(newly, rejected_quota)`. Bloom duplicates are the
+    /// remainder: `items.len() - newly - rejected_quota`.
     pub async fn submit_batch(
         &self,
         shard: ShardKey,
-        items: &[(UrlId, &UrlEntry, &str)],
+        items: &[SubmitItem<'_>],
         now_ms: i64,
-    ) -> Result<usize, HostQueueError> {
+    ) -> Result<(usize, usize), HostQueueError> {
         if items.is_empty() {
-            return Ok(0);
+            return Ok((0, 0));
         }
 
         // Encode all payloads upfront so a codec failure aborts before
         // we touch Redis. Avoids a partial-batch outcome where Redis
         // sees half the URLs and the caller sees an error.
         let mut payloads: Vec<Vec<u8>> = Vec::with_capacity(items.len());
-        for (_, entry, _) in items {
-            payloads.push(codec::encode(entry).map_err(|e| HostQueueError::Codec(e.to_string()))?);
+        for item in items {
+            payloads
+                .push(codec::encode(item.entry).map_err(|e| HostQueueError::Codec(e.to_string()))?);
         }
 
         let mut conn = self
@@ -168,19 +188,21 @@ impl<'a> HostQueueOps<'a> {
         invocation.key(self.keys.seen(shard));
         invocation.key(self.keys.urls(shard));
         invocation.key(self.keys.wake(shard));
-        for (_, _, host) in items {
-            invocation.key(self.keys.host_queue(shard, host));
+        for item in items {
+            invocation.key(self.keys.host_queue(shard, item.host));
+            invocation.key(self.keys.host_count(shard, item.host));
         }
         invocation.arg(items.len() as u64);
         invocation.arg(now_ms);
-        for ((url_id, _, host), payload) in items.iter().zip(payloads.iter()) {
-            invocation.arg(url_id.to_hex());
-            invocation.arg(*host);
+        for (item, payload) in items.iter().zip(payloads.iter()) {
+            invocation.arg(item.url_id.to_hex());
+            invocation.arg(item.host);
             invocation.arg(payload.as_slice());
+            invocation.arg(item.max_urls);
         }
 
-        let newly: i64 = invocation.invoke_async(&mut *conn).await?;
-        Ok(newly as usize)
+        let raw: Value = invocation.invoke_async(&mut *conn).await?;
+        parse_submit_batch_value(raw)
     }
 
     /// Claim one URL on `shard`. Returns the script's tri-state
@@ -320,6 +342,21 @@ impl<'a> HostQueueOps<'a> {
             .await?;
         Ok(())
     }
+}
+
+fn parse_submit_batch_value(value: Value) -> Result<(usize, usize), HostQueueError> {
+    // submit_batch.lua returns a two-element array {newly, rejected_quota}.
+    let parts = <Vec<Value> as FromRedisValue>::from_redis_value(value)?;
+    let mut iter = parts.into_iter();
+    let newly_v = iter
+        .next()
+        .ok_or_else(|| HostQueueError::BadTag("submit_batch.lua returned empty array".into()))?;
+    let rejected_v = iter
+        .next()
+        .ok_or_else(|| HostQueueError::BadTag("submit_batch.lua missing rejected_quota".into()))?;
+    let newly = <i64 as FromRedisValue>::from_redis_value(newly_v)?;
+    let rejected = <i64 as FromRedisValue>::from_redis_value(rejected_v)?;
+    Ok((newly as usize, rejected as usize))
 }
 
 fn parse_claim_value(value: Value) -> Result<ClaimRaw, HostQueueError> {

@@ -15,6 +15,7 @@
 //! mechanical: open `src/traits/` to see what the crate's surface is,
 //! open `src/` to see what flows between abstractions.
 
+pub mod backoff_tracker;
 pub mod clock;
 pub mod fetcher;
 pub mod frontier;
@@ -23,6 +24,8 @@ pub mod outbox;
 pub mod parser;
 pub mod politeness;
 pub mod proxy;
+pub mod rate_limiter;
+pub mod robots_checker;
 pub mod sharding;
 pub mod site_adapter;
 pub mod store;

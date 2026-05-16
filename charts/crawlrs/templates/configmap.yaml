@@ -50,16 +50,35 @@ data:
     {{- end }}
     default_timeout = {{ .Values.fetch.defaultTimeout | quote }}
 
+    [crawl]
+    {{- if .Values.crawl.maxDepth }}
+    max_depth = {{ .Values.crawl.maxDepth | int64 }}
+    {{- end }}
+    {{- if .Values.crawl.maxUrls }}
+    max_urls  = {{ .Values.crawl.maxUrls | int64 }}
+    {{- end }}
+    {{- range $host, $override := .Values.crawl.perDomain }}
+
+    [crawl.per_domain."{{ $host }}"]
+    {{- with $override.maxDepth }}
+    max_depth = {{ . | int64 }}
+    {{- end }}
+    {{- with $override.maxUrls }}
+    max_urls  = {{ . | int64 }}
+    {{- end }}
+    {{- end }}
+
+    [access]
+    blocklist = [
+    {{- range $i, $host := .Values.access.blocklist }}
+    {{- if $i }},{{ end }} {{ $host | quote }}
+    {{- end }} ]
+
     [politeness]
+    enabled          = {{ .Values.politeness.enabled }}
     host_delay       = {{ .Values.politeness.hostDelay | quote }}
     obey_robots_txt  = {{ .Values.politeness.obeyRobotsTxt }}
     robots_ttl       = {{ .Values.politeness.robotsTtl | quote }}
-    {{- if .Values.politeness.maxDepth }}
-    max_depth        = {{ .Values.politeness.maxDepth | int64 }}
-    {{- end }}
-    {{- if .Values.politeness.maxUrls }}
-    max_urls         = {{ .Values.politeness.maxUrls | int64 }}
-    {{- end }}
 
     [politeness.backoff]
     initial_backoff             = {{ .Values.politeness.backoff.initialBackoff | quote }}
@@ -75,11 +94,8 @@ data:
     {{- with $override.obeyRobotsTxt }}
     obey_robots_txt = {{ . }}
     {{- end }}
-    {{- with $override.maxDepth }}
-    max_depth       = {{ . | int64 }}
-    {{- end }}
-    {{- with $override.maxUrls }}
-    max_urls        = {{ . | int64 }}
+    {{- with $override.robotsTtl }}
+    robots_ttl      = {{ . | quote }}
     {{- end }}
     {{- end }}
 

@@ -31,6 +31,11 @@ fn metric_name_contract_holds() {
         "reason" => crawlrs_runtime::metrics::SKIP_POLITENESS_DISALLOWED,
     )
     .increment(1);
+    metrics::counter!(
+        crawlrs_runtime::metrics::URLS_REJECTED_TOTAL,
+        "reason" => crawlrs_runtime::metrics::REJECTED_REASON_QUOTA,
+    )
+    .increment(1);
     metrics::gauge!(crawlrs_runtime::metrics::WORKERS_ACTIVE).set(0.0);
     metrics::histogram!(crawlrs_runtime::metrics::PIPELINE_SECONDS).record(0.1);
 
@@ -155,6 +160,7 @@ fn metric_name_contract_holds() {
         crawlrs_runtime::metrics::URLS_FETCHED_TOTAL,
         crawlrs_runtime::metrics::URLS_FAILED_TOTAL,
         crawlrs_runtime::metrics::URLS_SKIPPED_TOTAL,
+        crawlrs_runtime::metrics::URLS_REJECTED_TOTAL,
         crawlrs_runtime::metrics::WORKERS_ACTIVE,
         crawlrs_runtime::metrics::PIPELINE_SECONDS,
         crawlrs_frontier::metrics::FRONTIER_CLAIM_TOTAL,
@@ -188,8 +194,8 @@ fn metric_name_contract_holds() {
 
     assert_eq!(
         expected.len(),
-        32,
-        "expected 32 distinct metric names per the metric-name contract; \
+        33,
+        "expected 33 distinct metric names per the metric-name contract; \
          if you intentionally added or removed one, update both this \
          assertion and the contract"
     );
@@ -209,6 +215,7 @@ fn metric_name_contract_holds() {
         "crawlrs_urls_fetched_total",
         "crawlrs_urls_failed_total",
         "crawlrs_urls_skipped_total",
+        "crawlrs_urls_rejected_total",
         "crawlrs_workers_active",
         "crawlrs_pipeline_seconds",
         "crawlrs_frontier_claim_total",

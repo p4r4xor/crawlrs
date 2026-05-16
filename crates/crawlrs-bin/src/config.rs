@@ -18,10 +18,18 @@
 //! max_body_bytes = 10485760
 //! user_agent = "crawlrs/0.0.1 (+https://github.com/p4r4xor/crawlrs)"
 //!
+//! [crawl]
+//! # max_depth = 5
+//! # max_urls  = 50000
+//!
+//! [access]
+//! # blocklist = ["example.com"]
+//!
 //! [politeness]
-//! host_delay = "1s"
+//! enabled         = true
+//! host_delay      = "1s"
 //! obey_robots_txt = true
-//! robots_ttl = "24h"
+//! robots_ttl      = "24h"
 //!
 //! [politeness.backoff]
 //! initial_backoff = "30s"
@@ -49,6 +57,11 @@
 //! num_shards = 8
 //! ```
 //!
+//! Per-host overrides live in their own tables alongside the
+//! global keys: `[crawl.per_domain."example.com"]` (max_depth,
+//! max_urls); `[politeness.per_domain."example.com"]` (host_delay,
+//! obey_robots_txt, robots_ttl).
+//!
 //! Env-var overlay: a small set of high-impact knobs accept env
 //! overrides so an operator can tweak a deployment without rewriting
 //! the ConfigMap. Documented inline in `apply_env_overlay`.
@@ -68,6 +81,10 @@ pub struct CrawlrsConfig {
     pub postgres: PostgresConfig,
     #[serde(default)]
     pub fetch: FetchConfig,
+    #[serde(default)]
+    pub crawl: CrawlConfig,
+    #[serde(default)]
+    pub access: AccessConfig,
     #[serde(default)]
     pub politeness: PolitenessConfig,
     #[serde(default)]
@@ -123,48 +140,75 @@ impl Default for FetchConfig {
     }
 }
 
+/// Operator-mandated crawl scope: per-host depth and URL caps.
+/// Distinct from `[politeness]`, which is behavior toward a host
+/// *as a guest*. Scope describes your own crawl's shape; setting
+/// `max_depth = 2` doesn't relax when you're feeling generous
+/// toward the host, it tightens when you want a smaller crawl.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CrawlConfig {
+    /// Global default depth cap. `None` (default) = unbounded;
+    /// per-host overrides in `per_domain` can still raise or
+    /// lower an individual host's cap.
+    pub max_depth: Option<u32>,
+    /// Global default cap on successful fetches per host. `None`
+    /// (default) = uncapped; per-host overrides in `per_domain`
+    /// can still raise or lower an individual host's quota.
+    pub max_urls: Option<u64>,
+    /// Per-host overrides keyed by exact host string (no eTLD+1
+    /// rollup; `docs.python.org` and `python.org` are distinct
+    /// quotas).
+    pub per_domain: HashMap<String, CrawlOverride>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CrawlOverride {
+    pub max_depth: Option<u32>,
+    pub max_urls: Option<u64>,
+}
+
+/// Access control: hosts the operator refuses to crawl. Sync
+/// first-gate check, in-memory.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AccessConfig {
+    pub blocklist: HashSet<String>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct PolitenessConfig {
+    /// Master switch. When `false`, the politeness layer is wired
+    /// to no-op impls and the runtime sees a `Politeness` that
+    /// allows every URL with no Redis I/O. Other fields in this
+    /// table are ignored.
+    pub enabled: bool,
     #[serde(with = "humantime_serde")]
     pub host_delay: Duration,
     pub obey_robots_txt: bool,
     #[serde(with = "humantime_serde")]
     pub robots_ttl: Duration,
     pub backoff: BackoffPolicy,
-    #[serde(default)]
-    pub blocklist: HashSet<String>,
-    #[serde(default)]
-    pub per_domain: HashMap<String, PerDomainOverride>,
-    /// Global default depth cap. `None` (default) = unbounded; per-host
-    /// overrides in `per_domain` can still raise or lower an individual
-    /// host's cap.
-    #[serde(default)]
-    pub max_depth: Option<u32>,
-    /// Global default cap on successful fetches per host. `None`
-    /// (default) = uncapped; per-host overrides in `per_domain` can
-    /// still raise or lower an individual host's quota.
-    #[serde(default)]
-    pub max_urls: Option<u64>,
+    pub per_domain: HashMap<String, PolitenessOverride>,
 }
 
 impl Default for PolitenessConfig {
     fn default() -> Self {
         Self {
+            enabled: true,
             host_delay: Duration::from_secs(1),
             obey_robots_txt: true,
             robots_ttl: Duration::from_secs(24 * 60 * 60),
             backoff: BackoffPolicy::default(),
-            blocklist: HashSet::new(),
             per_domain: HashMap::new(),
-            max_depth: None,
-            max_urls: None,
         }
     }
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct BackoffPolicy {
     #[serde(with = "humantime_serde")]
     pub initial_backoff: Duration,
@@ -186,18 +230,13 @@ impl Default for BackoffPolicy {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
-pub struct PerDomainOverride {
+#[serde(default, deny_unknown_fields)]
+pub struct PolitenessOverride {
     #[serde(with = "humantime_serde::option")]
     pub host_delay: Option<Duration>,
     pub obey_robots_txt: Option<bool>,
-    /// Per-host depth cap. Wins over `politeness.max_depth`. `None`
-    /// falls back to the global default.
-    pub max_depth: Option<u32>,
-    /// Per-host URL-count cap. Wins over `politeness.max_urls`.
-    /// `None` falls back to the global default (which may itself
-    /// be `None` = uncapped).
-    pub max_urls: Option<u64>,
+    #[serde(default, with = "humantime_serde::option")]
+    pub robots_ttl: Option<Duration>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

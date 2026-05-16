@@ -22,10 +22,8 @@ use crawlrs_core::{CanonicalUrl, FetchRequest, Fetcher, ShardingPolicy};
 use redis::AsyncCommands;
 use tracing::{info, warn};
 
+use crate::error::{LocalResult, RedisPolitenessError};
 use crate::keys::KeyPrefix;
-use crate::politeness::RedisPolitenessError;
-
-type LocalResult<T> = std::result::Result<T, RedisPolitenessError>;
 
 const ROBOTS_FIELD_BODY: &str = "body";
 const ROBOTS_FIELD_STATUS: &str = "status";

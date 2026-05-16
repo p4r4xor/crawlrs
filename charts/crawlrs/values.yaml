@@ -52,7 +52,46 @@ fetch:
   userAgent: ""
   defaultTimeout: "30s"
 
+crawl:
+  # Operator-mandated crawl scope: per-host depth and URL caps.
+  # Distinct from `politeness` (which is behavior toward a host as
+  # a guest); scope describes your own crawl's shape. Both globals
+  # are `null` (= unbounded) by default; per-host overrides in
+  # `perDomain.<host>.{maxDepth,maxUrls}` can raise or lower an
+  # individual host's cap. Per-host Redis counter storage is only
+  # allocated when at least one cap is configured.
+  maxDepth: null
+  maxUrls: null
+  # Per-host scope overrides. Keys are exact host strings (no
+  # eTLD+1 rollup; `docs.python.org` and `python.org` are distinct
+  # quotas). Example:
+  #
+  # perDomain:
+  #   "docs.rust-lang.org":
+  #     maxDepth: 12
+  #     maxUrls: 1000000
+  #   "rust-lang.org":
+  #     maxUrls: 5000
+  perDomain: {}
+
+access:
+  # Hosts the crawler refuses to visit. Checked first, before
+  # robots / rate / backoff. Exact host strings; subdomain matching
+  # is not performed here.
+  #
+  # blocklist:
+  #   - "example.com"
+  #   - "do-not-crawl.org"
+  blocklist: []
+
 politeness:
+  # Master switch. `false` wires the politeness layer to no-op
+  # impls; the runtime sees an `Allow`-everything `Politeness` with
+  # zero Redis I/O for rate/robots/backoff. Use only against
+  # infrastructure you own or with explicit permission. The
+  # `[crawl]` and `[access]` controls remain active when politeness
+  # is disabled; they're separate concerns.
+  enabled: true
   hostDelay: "1s"
   # Default off: pairs with the empty fetch.userAgent above so the
   # chart validates out of the box in stealth mode (random emulation,
@@ -65,28 +104,14 @@ politeness:
     maxBackoff: "10m"
     multiplier: 2.0
     failureThreshold: 10
-  # Global default depth cap. `null` (the default) leaves crawls
-  # unbounded. Per-host overrides in `perDomain.<host>.maxDepth` can
-  # raise or lower an individual host's cap.
-  maxDepth: null
-  # Global default cap on successful fetches per host. `null` (the
-  # default) leaves crawls uncapped. When set, every host inherits
-  # this baseline unless it has an explicit `perDomain.<host>.maxUrls`
-  # override. Per-host Redis counter storage is only allocated when
-  # at least one cap is configured.
-  maxUrls: null
-  # Per-host overrides for politeness knobs. Keys are exact host
-  # strings (no eTLD+1 rollup); a wildcard match isn't supported in
-  # v1. Each entry may set any subset of fields; unset fields fall
-  # back to the global defaults above. Example:
+  # Per-host politeness overrides. Each entry can set any subset of
+  # hostDelay / obeyRobotsTxt / robotsTtl; unset fields inherit the
+  # global defaults above. Per-host scope overrides (maxDepth /
+  # maxUrls) live under `crawl.perDomain`, not here. Example:
   #
   # perDomain:
   #   "docs.rust-lang.org":
   #     hostDelay: "500ms"
-  #     maxUrls: 1000000
-  #     maxDepth: 12
-  #   "rust-lang.org":
-  #     maxUrls: 5000
   perDomain: {}
 
 runtime:

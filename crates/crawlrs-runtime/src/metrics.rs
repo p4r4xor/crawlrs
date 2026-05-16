@@ -17,6 +17,7 @@ use metrics::{Unit, describe_counter, describe_gauge, describe_histogram};
 pub const URLS_FETCHED_TOTAL: &str = "crawlrs_urls_fetched_total";
 pub const URLS_FAILED_TOTAL: &str = "crawlrs_urls_failed_total";
 pub const URLS_SKIPPED_TOTAL: &str = "crawlrs_urls_skipped_total";
+pub const URLS_REJECTED_TOTAL: &str = "crawlrs_urls_rejected_total";
 pub const WORKERS_ACTIVE: &str = "crawlrs_workers_active";
 pub const PIPELINE_SECONDS: &str = "crawlrs_pipeline_seconds";
 pub const PIPELINE_PHASE_SECONDS: &str = "crawlrs_pipeline_phase_seconds";
@@ -39,6 +40,13 @@ pub const TOKIO_WORKERS: &str = "crawlrs_tokio_workers";
 
 pub const SKIP_POLITENESS_DISALLOWED: &str = "politeness_disallowed";
 pub const SKIP_DEPTH_LIMIT: &str = "depth_limit";
+
+/// Label value for `URLS_REJECTED_TOTAL`. The frontier's atomic
+/// per-host counter (set by `[crawl].max_urls`) rejected the URL
+/// at submit time before it ever reached a worker. Bounded label
+/// set; the family is reserved for future submit-time rejection
+/// reasons.
+pub const REJECTED_REASON_QUOTA: &str = "quota";
 
 /// Phase labels for `PIPELINE_PHASE_SECONDS`. Six fixed values
 /// covering the per-URL pipeline in `worker.rs::UrlPipeline`. Sum
@@ -75,6 +83,15 @@ pub fn register() {
         URLS_SKIPPED_TOTAL,
         "Total URLs that were not fetched, by reason. Covers cross-run \
          dedup hits, politeness disallows, and depth-limit drops."
+    );
+    describe_counter!(
+        URLS_REJECTED_TOTAL,
+        "URLs rejected at submit time before reaching a worker. \
+         Labelled by `reason`: today only `quota`, meaning the \
+         frontier's per-host `[crawl].max_urls` counter was already \
+         at the host's cap. Distinct from `URLS_SKIPPED_TOTAL` \
+         (which counts post-claim drops) and `URLS_FAILED_TOTAL` \
+         (post-fetch failures)."
     );
     describe_gauge!(
         WORKERS_ACTIVE,

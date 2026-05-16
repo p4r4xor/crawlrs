@@ -14,23 +14,32 @@
 //! - [`url`] - the `CanonicalUrl` newtype + canonicalization rules.
 //! - [`error`] - the crate-wide `Error` enum.
 //! - [`hash`] - pure helper functions for FNV-1a + content hashing.
+//! - [`crawl_scope`] - operator-mandated per-host depth and URL caps.
+//! - [`blocklist`] - operator-mandated host exclusion set.
 
+pub mod blocklist;
+pub mod crawl_scope;
 pub mod error;
 pub mod hash;
 pub mod traits;
 pub mod types;
 pub mod url;
 
+pub use blocklist::Blocklist;
+pub use crawl_scope::{CrawlOverride, CrawlScope};
 pub use error::{Error, Result};
 pub use hash::{content_hash, fnv1a_64};
+pub use traits::backoff_tracker::BackoffTracker;
 pub use traits::clock::{Clock, SystemClock, system_clock};
 pub use traits::fetcher::Fetcher;
-pub use traits::frontier::{ClaimOutcome, Frontier, SubmitOutcome};
+pub use traits::frontier::{ClaimOutcome, Frontier, SubmitBatchOutcome, SubmitOutcome};
 pub use traits::metadata::{MetadataStore, SuccessRecord};
 pub use traits::outbox::{Outbox, OutboxEntry, OutboxRowId, ShipFn, ShipFuture};
 pub use traits::parser::Parser;
 pub use traits::politeness::{FailureKind, PoliteDecision, Politeness};
 pub use traits::proxy::{ProxyOutcome, ProxyResolver, ProxySelection};
+pub use traits::rate_limiter::RateLimiter;
+pub use traits::robots_checker::RobotsChecker;
 pub use traits::sharding::{HostHashShardPolicy, ShardKey, ShardingPolicy, SingleShardPolicy};
 pub use traits::site_adapter::{SiteAdapter, SiteAdapterRegistry};
 pub use traits::store::Store;

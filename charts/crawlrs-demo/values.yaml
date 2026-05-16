@@ -99,6 +99,10 @@ crawlrs:
 
   runtime:
     workers: 2
+
+  # Operator-mandated crawl scope. Sandbox-friendly defaults so the
+  # demo crawl doesn't run away; raise/remove in real deployments.
+  crawl:
     maxDepth: 3
 
   resources:

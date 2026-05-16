@@ -21,9 +21,9 @@
 use std::sync::Arc;
 
 use crawlrs_core::{
-    AttemptId, CanonicalUrl, ClaimOutcome, Clock, FailureKind, FetchRequest, FetchResponse,
-    Fetcher, Frontier, LinkDispatch, MetadataStore, NextWake, ParsedDocument, Parser,
-    PoliteDecision, Politeness, ShardingPolicy, SiteAdapterRegistry, Store, StoreRecord,
+    AttemptId, CanonicalUrl, ClaimOutcome, Clock, CrawlScope, FailureKind, FetchRequest,
+    FetchResponse, Fetcher, Frontier, LinkDispatch, MetadataStore, NextWake, ParsedDocument,
+    Parser, PoliteDecision, Politeness, ShardingPolicy, SiteAdapterRegistry, Store, StoreRecord,
     SuccessRecord, UrlEntry, UrlId, WorkerIdentity, content_hash,
 };
 use tokio::sync::watch;
@@ -78,6 +78,13 @@ pub struct WorkerDeps {
     pub metadata: Arc<dyn MetadataStore>,
     pub adapters: Arc<SiteAdapterRegistry>,
     pub config: CrawlerConfig,
+    /// Operator-mandated crawl scope: per-host depth and URL caps
+    /// from `[crawl]`. Depth caps are read inline by the worker
+    /// when filtering outbound URLs; URL caps are passed through
+    /// to the frontier at submit time. Cheap to clone (small
+    /// struct + HashMap), so per-task `Arc` indirection isn't
+    /// worth it.
+    pub crawl_scope: CrawlScope,
     /// Identity of this crawl run. Stamped on every `mark_attempting`
     /// so cross-run dedup and history queries can distinguish "URL X
     /// was last touched by run Y." Must be stable for the lifetime of
@@ -251,7 +258,7 @@ impl UrlPipeline {
         // them via `Frontier::submit_batch` after the metadata
         // commit, accepting bounded loss on transient errors.
         let outbound = compute_outbound(&self.entry, &doc, |host| {
-            self.deps.politeness.depth_cap(host)
+            self.deps.crawl_scope.depth_cap(host)
         });
         Box::pin(self.finalize(&resp, &doc, outbound)).await;
     }
@@ -366,9 +373,18 @@ impl UrlPipeline {
     /// the write. Frontier errors are warned and dropped: the lease
     /// is the safety net (a missed wake-time defaults to the lease
     /// timeout via the claim-time wake stamp).
+    ///
+    /// When `next.until` is at or before now (the rate limiter's
+    /// zero-delay signal), the frontier write is skipped: there's
+    /// no future wake to record, and writing a now-time would just
+    /// fail the frontier's GT semantics anyway. Saves one Redis
+    /// round-trip per fetch for operators who set `host_delay = 0s`.
     async fn apply_wake_plan(&self, plan: crawlrs_core::Result<NextWake>) {
         match plan {
             Ok(next) => {
+                if next.until <= std::time::Instant::now() {
+                    return;
+                }
                 if let Err(e) = self
                     .deps
                     .frontier
@@ -500,9 +516,21 @@ impl UrlPipeline {
             // buffer would re-implement the outbox without the
             // durability that justifies it.
             let n = outbound.len();
-            if let Err(e) = self.deps.frontier.submit_batch(outbound).await {
-                warn!(url = %self.url(), error = %e, n, "direct dispatch lost outbound URLs");
-                metrics::counter!(crate::metrics::DIRECT_DISPATCH_LOST_TOTAL).increment(n as u64);
+            match self.deps.frontier.submit_batch(outbound).await {
+                Ok(outcome) => {
+                    if outcome.rejected_quota > 0 {
+                        metrics::counter!(
+                            crate::metrics::URLS_REJECTED_TOTAL,
+                            "reason" => crate::metrics::REJECTED_REASON_QUOTA,
+                        )
+                        .increment(outcome.rejected_quota as u64);
+                    }
+                }
+                Err(e) => {
+                    warn!(url = %self.url(), error = %e, n, "direct dispatch lost outbound URLs");
+                    metrics::counter!(crate::metrics::DIRECT_DISPATCH_LOST_TOTAL)
+                        .increment(n as u64);
+                }
             }
         }
 
@@ -640,11 +668,12 @@ mod tests {
             "metadata",
             "adapters",
             "config",
+            "crawl_scope",
             "run_id",
             "sharding_policy",
             "clock",
         ];
-        assert_eq!(names.len(), 11);
+        assert_eq!(names.len(), 12);
     }
 
     fn parent_at(depth: u32) -> UrlEntry {

@@ -72,6 +72,30 @@ pub enum SubmitOutcome {
     SkippedDuplicate,
 }
 
+/// Aggregated outcome of one `Frontier::submit_batch` call.
+///
+/// `newly` and `rejected_quota` partition the batch alongside the
+/// implicit "bloom-duplicate" count (which equals
+/// `batch_size - newly - rejected_quota`). Two named fields rather
+/// than three because the duplicate count is derivable and rarely
+/// the operator-facing number.
+///
+/// Pattern: Parameter Object on the return side. Keeps the trait
+/// method's return monomorphic so adding a future per-batch field
+/// (e.g. a per-URL audit log) doesn't break callers.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SubmitBatchOutcome {
+    /// URLs that the bloom filter accepted as new AND that the
+    /// per-host counter accepted as within quota; now waiting on
+    /// their host's queue.
+    pub newly: usize,
+    /// URLs the host's `[crawl].max_urls` counter rejected.
+    /// Counter-first ordering means these are NOT marked in the
+    /// bloom and remain eligible for a future run (where the
+    /// counter resets to zero).
+    pub rejected_quota: usize,
+}
+
 #[async_trait]
 #[allow(clippy::len_without_is_empty)] // `len` is a queue-depth metric, not a Collection contract
 pub trait Frontier: Send + Sync {
@@ -86,12 +110,17 @@ pub trait Frontier: Send + Sync {
 
     /// Add many URLs at once.
     ///
-    /// Returns the count of entries that were newly enqueued (i.e.
-    /// `SubmitOutcome::Queued`). Implementations should prefer a
-    /// single round-trip to the underlying store over N calls to
-    /// `submit`. Duplicate counts are surfaced via the impl's
-    /// metrics, not in this return.
-    async fn submit_batch(&self, entries: Vec<UrlEntry>) -> Result<usize>;
+    /// Returns a [`SubmitBatchOutcome`] partitioning the batch into
+    /// newly-queued URLs and URLs rejected by their host's quota
+    /// (`[crawl].max_urls`). Bloom-duplicate URLs are not counted
+    /// in either; they're the rest of the batch.
+    ///
+    /// Implementations should prefer a single round-trip to the
+    /// underlying store over N calls to `submit`. Quota enforcement
+    /// is per-URL atomic with the bloom check; the
+    /// [`crawl_scope`](crate::CrawlScope) passed at construction
+    /// resolves the per-host cap.
+    async fn submit_batch(&self, entries: Vec<UrlEntry>) -> Result<SubmitBatchOutcome>;
 
     /// Pop the next URL to fetch on behalf of `identity`, or return
     /// `Empty`/`EmptyHint` if no host is currently claimable.

@@ -9,18 +9,25 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow, bail};
 use bb8_redis::RedisConnectionManager;
-use crawlrs_core::{HostHashShardPolicy, ShardKey, ShardingPolicy};
+use crawlrs_core::{
+    BackoffTracker, Blocklist, CrawlOverride, CrawlScope, HostHashShardPolicy, RateLimiter,
+    RobotsChecker, ShardKey, ShardingPolicy,
+};
 use crawlrs_fetch::{NoProxyResolver, WreqFetcher, WreqFetcherConfig};
 use crawlrs_frontier::{RedisFrontier, validate_pool_size};
 use crawlrs_metadata::PostgresMetadataStore;
 use crawlrs_parse::LolHtmlParser;
-use crawlrs_politeness::{PolitenessConfig as CorePolitenessConfig, RedisPoliteness};
+use crawlrs_politeness::{
+    CompositePoliteness, NoopBackoffTracker, NoopRateLimiter, NoopRobotsChecker,
+    PolitenessConfig as CorePolitenessConfig, RedisPoliteness,
+};
 use crawlrs_runtime::{Crawler, CrawlerConfig};
 use crawlrs_store::{MultiStore, ParquetStore, PathBuilder, RotationPolicy, WarcStore};
 use object_store::ObjectStore;
 use object_store::aws::AmazonS3Builder;
 use object_store::local::LocalFileSystem;
 use sqlx::postgres::PgPoolOptions;
+use tracing::warn;
 
 use crate::config::{CrawlrsConfig, StoreBackend};
 
@@ -56,6 +63,9 @@ pub async fn build(config: &CrawlrsConfig) -> Result<Built> {
         .context("running Postgres migrations")?;
     let metadata = Arc::new(PostgresMetadataStore::with_pool(pg_pool));
 
+    let crawl_scope = build_crawl_scope(config);
+    let blocklist = build_blocklist(config);
+
     let frontier = Arc::new(
         RedisFrontier::new(
             redis_pool.clone(),
@@ -66,24 +76,23 @@ pub async fn build(config: &CrawlrsConfig) -> Result<Built> {
                 capacity: config.frontier.bloom_capacity,
                 fpr: config.frontier.bloom_fpr,
             },
+            crawl_scope.clone(),
         )
         .await
         .context("constructing RedisFrontier")?
         .with_lease_timeout(config.frontier.lease_timeout),
     );
 
-    let politeness = Arc::new(
-        RedisPoliteness::new(
-            redis_pool.clone(),
-            sharding_policy.clone(),
-            owned_shards.clone(),
-            fetcher.clone(),
-            &config.run_id,
-            build_politeness_config(config),
-        )
-        .await
-        .context("constructing RedisPoliteness")?,
-    );
+    let politeness = build_politeness(
+        config,
+        &redis_pool,
+        &sharding_policy,
+        &owned_shards,
+        &fetcher,
+        crawl_scope.clone(),
+        blocklist,
+    )
+    .await?;
 
     let store = build_store(config).await?;
 
@@ -103,6 +112,7 @@ pub async fn build(config: &CrawlrsConfig) -> Result<Built> {
         .outbox(metadata.clone())
         .sharding_policy(sharding_policy)
         .config(runtime_config)
+        .crawl_scope(crawl_scope)
         .run_id(&config.run_id)
         .build()
         .map_err(|e| anyhow!("CrawlerBuilder::build: {e}"))?;
@@ -170,6 +180,7 @@ fn build_politeness_config(config: &CrawlrsConfig) -> CorePolitenessConfig {
         .clone()
         .unwrap_or_else(|| CorePolitenessConfig::default().user_agent);
     CorePolitenessConfig {
+        enabled: config.politeness.enabled,
         host_delay: config.politeness.host_delay,
         obey_robots_txt: config.politeness.obey_robots_txt,
         robots_ttl: config.politeness.robots_ttl,
@@ -180,7 +191,6 @@ fn build_politeness_config(config: &CrawlrsConfig) -> CorePolitenessConfig {
             multiplier: config.politeness.backoff.multiplier,
             failure_threshold: config.politeness.backoff.failure_threshold,
         },
-        blocklist: config.politeness.blocklist.clone(),
         per_domain: config
             .politeness
             .per_domain
@@ -191,15 +201,96 @@ fn build_politeness_config(config: &CrawlrsConfig) -> CorePolitenessConfig {
                     crawlrs_politeness::PolitenessOverride {
                         host_delay: override_.host_delay,
                         obey_robots_txt: override_.obey_robots_txt,
-                        max_depth: override_.max_depth,
-                        max_urls: override_.max_urls,
+                        robots_ttl: override_.robots_ttl,
                     },
                 )
             })
             .collect(),
-        max_depth: config.politeness.max_depth,
-        max_urls: config.politeness.max_urls,
     }
+}
+
+fn build_crawl_scope(config: &CrawlrsConfig) -> CrawlScope {
+    let per_domain = config
+        .crawl
+        .per_domain
+        .iter()
+        .map(|(host, override_)| {
+            (
+                host.clone(),
+                CrawlOverride {
+                    max_depth: override_.max_depth,
+                    max_urls: override_.max_urls,
+                },
+            )
+        })
+        .collect();
+    CrawlScope::new(config.crawl.max_depth, config.crawl.max_urls, per_domain)
+}
+
+fn build_blocklist(config: &CrawlrsConfig) -> Blocklist {
+    Blocklist::new(config.access.blocklist.clone())
+}
+
+/// Choose the politeness wiring based on `[politeness].enabled`.
+///
+/// `true` (default): full Redis-backed `CompositePoliteness` with
+/// the three sub-impls (`RedisRateLimiter`, `RedisRobotsChecker`,
+/// `RedisBackoffTracker`).
+///
+/// `false`: the three sub-traits are swapped for noop impls
+/// (`NoopRateLimiter` / `NoopRobotsChecker` / `NoopBackoffTracker`),
+/// wrapped in the same `CompositePoliteness`. The runtime sees an
+/// `Arc<dyn Politeness>` either way; the blocklist (`[access]`)
+/// and crawl scope (`[crawl]`) are *independent* concerns and
+/// stay active when politeness is disabled.
+///
+/// When disabled, any `[politeness.per_domain]` overrides are
+/// dead config; we log one warning per ignored override so the
+/// operator sees them at boot.
+#[allow(clippy::too_many_arguments)]
+async fn build_politeness(
+    config: &CrawlrsConfig,
+    redis_pool: &bb8::Pool<RedisConnectionManager>,
+    sharding_policy: &Arc<dyn ShardingPolicy>,
+    owned_shards: &[ShardKey],
+    fetcher: &Arc<WreqFetcher>,
+    crawl_scope: CrawlScope,
+    blocklist: Blocklist,
+) -> Result<Arc<RedisPoliteness>> {
+    if config.politeness.enabled {
+        return Ok(Arc::new(
+            RedisPoliteness::new(
+                redis_pool.clone(),
+                sharding_policy.clone(),
+                owned_shards.to_vec(),
+                fetcher.clone(),
+                &config.run_id,
+                build_politeness_config(config),
+                crawl_scope,
+                blocklist,
+            )
+            .await
+            .context("constructing RedisPoliteness")?,
+        ));
+    }
+
+    // Master switch off: no Redis touches from politeness. Per-domain
+    // overrides become dead config; surface them so the operator
+    // doesn't wonder why a per-host override has no effect.
+    for host in config.politeness.per_domain.keys() {
+        warn!("politeness.enabled=false; ignoring per_domain override for {host:?}",);
+    }
+    let rate: Arc<dyn RateLimiter> = Arc::new(NoopRateLimiter);
+    let robots: Arc<dyn RobotsChecker> = Arc::new(NoopRobotsChecker);
+    let backoff: Arc<dyn BackoffTracker> = Arc::new(NoopBackoffTracker);
+    let _ = crawl_scope; // pure-config; the worker reads it via WorkerDeps
+    Ok(Arc::new(CompositePoliteness::from_parts(
+        rate,
+        robots,
+        backoff,
+        blocklist,
+        build_politeness_config(config),
+    )))
 }
 
 fn build_runtime_config(config: &CrawlrsConfig) -> CrawlerConfig {

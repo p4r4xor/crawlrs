@@ -83,6 +83,17 @@ impl KeyPrefix {
         format!("{}:urls", self.shard_tag(shard))
     }
 
+    /// `crawlrs:{run_s<shard>}:host_count:<host>`. Integer counter
+    /// per host: number of URLs successfully accepted into the
+    /// queue for this run. Compared at submit time against the
+    /// effective `[crawl].max_urls` to reject URLs once the host
+    /// is at quota. Per-run scope (no cross-run quota inheritance);
+    /// shares the same Redis Cluster hash tag as the other
+    /// per-shard keys so the atomic submit script touches one slot.
+    pub fn host_count(&self, shard: ShardKey, host: &str) -> String {
+        format!("{}:host_count:{}", self.shard_tag(shard), host)
+    }
+
     /// `crawlrs:{s<shard>}:seen`. RedisBloom filter for submit-time
     /// dedup keyed on `url_id_hex`.
     ///
@@ -156,11 +167,22 @@ mod tests {
             prefix.ready(0),
             prefix.inflight(0),
             prefix.urls(0),
+            prefix.host_count(0, "a.test"),
         ] {
             assert!(
                 key.contains(tag),
                 "key {key:?} missing the shared {tag} hash tag",
             );
         }
+    }
+
+    #[test]
+    fn host_count_is_run_scoped() {
+        // Per-host quota counters reset between runs (the ADR's
+        // "counter is per-run" tradeoff); two run_ids must produce
+        // distinct keys for the same (shard, host).
+        let a = KeyPrefix::new("run-a");
+        let b = KeyPrefix::new("run-b");
+        assert_ne!(a.host_count(0, "x.test"), b.host_count(0, "x.test"));
     }
 }

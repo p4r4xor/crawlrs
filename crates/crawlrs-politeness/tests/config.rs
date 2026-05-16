@@ -9,9 +9,9 @@ use crawlrs_politeness::{BackoffPolicy, PolitenessConfig, PolitenessOverride};
 #[test]
 fn defaults_are_sensible() {
     let c = PolitenessConfig::default();
+    assert!(c.enabled);
     assert_eq!(c.host_delay, Duration::from_secs(1));
     assert!(c.obey_robots_txt);
-    assert!(c.blocklist.is_empty());
     assert!(c.per_domain.is_empty());
 }
 

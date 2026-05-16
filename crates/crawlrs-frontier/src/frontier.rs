@@ -29,14 +29,14 @@ use async_trait::async_trait;
 use bb8::Pool;
 use bb8_redis::RedisConnectionManager;
 use crawlrs_core::{
-    AttemptId, ClaimOutcome, Error, Frontier, Result, ShardKey, ShardingPolicy, SubmitOutcome,
-    UrlEntry, UrlId, WorkerIdentity,
+    AttemptId, ClaimOutcome, CrawlScope, Error, Frontier, Result, ShardKey, ShardingPolicy,
+    SubmitBatchOutcome, SubmitOutcome, UrlEntry, UrlId, WorkerIdentity,
 };
 use thiserror::Error as ThisError;
 use tracing::{debug, warn};
 
 use crate::bloom::{self, BloomConfig};
-use crate::host_queue::{ClaimRaw, HostQueueError, HostQueueOps, Scripts};
+use crate::host_queue::{ClaimRaw, HostQueueError, HostQueueOps, Scripts, SubmitItem};
 use crate::keys::KeyPrefix;
 use crate::metrics as m;
 use crate::promoter;
@@ -93,6 +93,12 @@ pub struct RedisFrontier {
     scripts: Scripts,
     lease_timeout: Duration,
     tick_batch_limit: u64,
+    /// Crawl scope: per-host URL caps used by `submit_batch` to
+    /// thread `[crawl].max_urls` into the Lua script. Depth caps
+    /// are read by the worker (not by the frontier); we hold the
+    /// whole scope so future per-batch scope queries don't need a
+    /// constructor change.
+    crawl_scope: CrawlScope,
     /// Round-robin cursor for `claim` across owned shards.
     claim_cursor: AtomicUsize,
 }
@@ -113,12 +119,14 @@ impl RedisFrontier {
     /// `BF.RESERVE` (idempotent across processes); a missing
     /// RedisBloom module surfaces a clear error here so deployments
     /// fail fast.
+    #[allow(clippy::too_many_arguments)]
     pub async fn new(
         pool: Pool<RedisConnectionManager>,
         sharding_policy: Arc<dyn ShardingPolicy>,
         owned_shards: Vec<ShardKey>,
         run_id: impl Into<String>,
         bloom_config: BloomConfig,
+        crawl_scope: CrawlScope,
     ) -> Result<Self> {
         let keys = KeyPrefix::new(run_id);
         let count = sharding_policy.shard_count();
@@ -140,6 +148,7 @@ impl RedisFrontier {
             scripts: Scripts::new(),
             lease_timeout: DEFAULT_LEASE_TIMEOUT,
             tick_batch_limit: DEFAULT_TICK_BATCH_LIMIT,
+            crawl_scope,
             claim_cursor: AtomicUsize::new(0),
         })
     }
@@ -244,7 +253,7 @@ impl Frontier for RedisFrontier {
     }
 
     #[tracing::instrument(skip(self, entries), fields(n = entries.len()))]
-    async fn submit_batch(&self, entries: Vec<UrlEntry>) -> Result<usize> {
+    async fn submit_batch(&self, entries: Vec<UrlEntry>) -> Result<SubmitBatchOutcome> {
         let started_at = Instant::now();
         metrics::histogram!(m::FRONTIER_SUBMIT_BATCH_SIZE).record(entries.len() as f64);
         if entries.is_empty() {
@@ -253,7 +262,7 @@ impl Frontier for RedisFrontier {
                 "op" => m::OP_SUBMIT_BATCH,
             )
             .record(started_at.elapsed().as_secs_f64());
-            return Ok(0);
+            return Ok(SubmitBatchOutcome::default());
         }
 
         // Group entries by shard. Outbound URLs from a single page can
@@ -274,27 +283,45 @@ impl Frontier for RedisFrontier {
         }
 
         let now = now_ms();
-        let mut total_newly = 0usize;
+        let mut total = SubmitBatchOutcome::default();
         for (shard, indices) in &shard_to_indices {
-            let mut items: Vec<(UrlId, &UrlEntry, &str)> = Vec::with_capacity(indices.len());
+            let mut items: Vec<SubmitItem<'_>> = Vec::with_capacity(indices.len());
             for &i in indices {
-                items.push((shard_url_ids[i], &entries[i], shard_hosts[i].as_str()));
+                let host_str = shard_hosts[i].as_str();
+                let max_urls = self
+                    .crawl_scope
+                    .max_urls_for(host_str)
+                    .and_then(|cap| i64::try_from(cap).ok())
+                    .unwrap_or(-1);
+                items.push(SubmitItem {
+                    url_id: shard_url_ids[i],
+                    entry: &entries[i],
+                    host: host_str,
+                    max_urls,
+                });
             }
-            let newly = self
+            let (newly, rejected_quota) = self
                 .ops()
                 .submit_batch(*shard, &items, now)
                 .await
                 .map_err(RedisFrontierError::from)?;
             // Surface per-URL bloom verdicts so the existing
             // `crawlrs_frontier_bloom_total{verdict=...}` panels stay
-            // accurate after the loop moves into Redis.
+            // accurate. Quota-rejected URLs are not bloom events;
+            // they're a separate operator concern surfaced on the
+            // returned outcome (and metricised by the worker).
             for _ in 0..newly {
                 record_submit_outcome(SubmitOutcome::Queued);
             }
-            for _ in 0..(items.len() - newly) {
+            let bloom_dupes = items
+                .len()
+                .saturating_sub(newly)
+                .saturating_sub(rejected_quota);
+            for _ in 0..bloom_dupes {
                 record_submit_outcome(SubmitOutcome::SkippedDuplicate);
             }
-            total_newly += newly;
+            total.newly += newly;
+            total.rejected_quota += rejected_quota;
         }
 
         metrics::histogram!(
@@ -302,7 +329,7 @@ impl Frontier for RedisFrontier {
             "op" => m::OP_SUBMIT_BATCH,
         )
         .record(started_at.elapsed().as_secs_f64());
-        Ok(total_newly)
+        Ok(total)
     }
 
     #[tracing::instrument(skip(self), fields(identity = %identity))]

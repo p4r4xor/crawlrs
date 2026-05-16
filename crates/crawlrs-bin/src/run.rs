@@ -173,14 +173,15 @@ async fn load_seeds(path: &Path, frontier: &dyn Frontier) -> Result<()> {
         return Ok(());
     }
     let count = entries.len();
-    let submitted = frontier
+    let outcome = frontier
         .submit_batch(entries)
         .await
         .context("frontier.submit_batch (seeds)")?;
     info!(
         path = %path.display(),
         seeds = count,
-        newly_inserted = submitted,
+        newly_inserted = outcome.newly,
+        rejected_quota = outcome.rejected_quota,
         "seeds submitted"
     );
     Ok(())
