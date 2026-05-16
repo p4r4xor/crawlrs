@@ -1,7 +1,7 @@
 //! `Frontier` trait: per-host URL queue with at-least-once delivery
 //! and integrated wake-time scheduling.
 //!
-//! Per ADR-0019 the frontier is the single owner of:
+//! The frontier is the single owner of:
 //!   - per-host URL queues (FIFO by submit order),
 //!   - a wake ZSET that gates which hosts are eligible to claim,
 //!   - a pre-computed ready-host LIST that workers pop from,
@@ -9,11 +9,11 @@
 //!   - submit-time bloom dedup,
 //!   - a small URL HASH so queue entries hold only ID + lease info.
 //!
-//! Per ADR-0020 the politeness layer no longer owns wake-time state;
-//! it returns a `NextWake` plan that the runtime hands to
-//! `advance_wake` here. The trait surface reflects that split: the
-//! frontier publishes `submit`, `claim`, `advance_wake`, and `ack` -
-//! one verb per intent, no overlap.
+//! The politeness layer does NOT own wake-time state; it returns a
+//! `NextWake` plan that the runtime hands to `advance_wake` here. The
+//! trait surface reflects that split: the frontier publishes `submit`,
+//! `claim`, `advance_wake`, and `ack` - one verb per intent, no
+//! overlap.
 //!
 //! Concrete impl: `crawlrs-frontier::RedisFrontier`.
 

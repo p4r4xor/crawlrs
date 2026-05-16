@@ -13,7 +13,6 @@
 //! narrow: a single method on a single shape, sufficient for adapter
 //! impls that need a controllable wall-clock for idle / age decisions.
 
-use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Source of wall-clock milliseconds. Implementations must be
@@ -39,11 +38,4 @@ impl Clock for SystemClock {
             // pathological "user set the clock to 1969" case.
             .unwrap_or(0)
     }
-}
-
-/// Convenience: a default-constructed `Arc<dyn Clock>` that reads the
-/// system clock. Used by adapter constructors that take an optional
-/// clock and fall back to wall-time when one isn't supplied.
-pub fn system_clock() -> Arc<dyn Clock> {
-    Arc::new(SystemClock)
 }

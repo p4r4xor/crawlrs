@@ -6,17 +6,17 @@
 //! wrapper per Lua script) and to [`promoter::tick_once`] (the
 //! `tick` body).
 //!
-//! Per ADR-0019 the data shape is:
+//! The Redis data shape is:
 //!
-//! - `host_queue:<host>` (LIST<url_id>) — per-host FIFO.
-//! - `wake` (ZSET<host>) — hosts not yet ready; score = next-allowed
+//! - `host_queue:<host>` (LIST<url_id>): per-host FIFO.
+//! - `wake` (ZSET<host>): hosts not yet ready; score = next-allowed
 //!   wall-clock ms.
-//! - `ready` (LIST<host>) — hosts whose wake-time has elapsed,
+//! - `ready` (LIST<host>): hosts whose wake-time has elapsed,
 //!   populated by the promoter.
-//! - `inflight` (ZSET<"url_id|host">) — leases; score = lease
+//! - `inflight` (ZSET<"url_id|host">): leases; score = lease
 //!   expiry ms.
-//! - `urls` (HASH<url_id, payload>) — content-addressed payload.
-//! - `seen` (RedisBloom) — submit-time dedup.
+//! - `urls` (HASH<url_id, payload>): content-addressed payload.
+//! - `seen` (RedisBloom): submit-time dedup.
 //!
 //! All per-shard keys share the same Redis Cluster hash tag so the
 //! Lua scripts touch one slot per shard. See [`KeyPrefix`].

@@ -43,12 +43,8 @@ pub mod wake_planner;
 
 pub(crate) mod error;
 
-pub use backoff_tracker::RedisBackoffTracker;
 pub use composite::CompositePoliteness;
 pub use config::{BackoffPolicy, PolitenessConfig, PolitenessOverride};
 pub use failure::compute_backoff;
 pub use keys::KeyPrefix;
 pub use noop::{NoopBackoffTracker, NoopRobotsChecker, NoopWakePlanner};
-pub use robots::RobotsCache;
-pub use robots_checker::RedisRobotsChecker;
-pub use wake_planner::RedisWakePlanner;

@@ -37,12 +37,6 @@ impl ManualClock {
     pub fn advance_ms(&self, delta: u64) {
         self.ms.fetch_add(delta, Ordering::Relaxed);
     }
-
-    /// Set the clock to an absolute value. Used by tests that want to
-    /// jump to a specific epoch-millis rather than accumulate deltas.
-    pub fn set_ms(&self, value: u64) {
-        self.ms.store(value, Ordering::Relaxed);
-    }
 }
 
 impl Clock for ManualClock {

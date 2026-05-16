@@ -16,4 +16,4 @@
 pub mod metrics;
 pub mod store;
 
-pub use store::{PostgresMetadataError, PostgresMetadataStore};
+pub use store::PostgresMetadataStore;

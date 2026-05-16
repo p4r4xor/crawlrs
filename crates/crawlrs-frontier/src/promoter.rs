@@ -24,7 +24,7 @@ use crate::host_queue::HostQueueOps;
 
 /// One pass over the owned shards: promote then reclaim. Returns
 /// `(promoted, reclaimed)` so the caller can report metrics.
-pub async fn tick_once(
+pub(crate) async fn tick_once(
     ops: &HostQueueOps<'_>,
     owned_shards: &[ShardKey],
     now_ms: i64,

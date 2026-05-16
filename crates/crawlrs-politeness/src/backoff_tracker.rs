@@ -27,7 +27,7 @@ const HOSTSTATE_FIELD_FAILURES: &str = "consecutive_failures";
 const HOSTSTATE_FIELD_BACKOFF_UNTIL: &str = "backoff_until_ms";
 const HOSTSTATE_FIELD_LAST_KIND: &str = "last_kind";
 
-pub struct RedisBackoffTracker {
+pub(crate) struct RedisBackoffTracker {
     pool: Pool<RedisConnectionManager>,
     keys: KeyPrefix,
     sharding_policy: Arc<dyn ShardingPolicy>,
@@ -36,7 +36,7 @@ pub struct RedisBackoffTracker {
 }
 
 impl RedisBackoffTracker {
-    pub fn new(
+    pub(crate) fn new(
         pool: Pool<RedisConnectionManager>,
         keys: KeyPrefix,
         sharding_policy: Arc<dyn ShardingPolicy>,

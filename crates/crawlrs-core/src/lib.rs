@@ -30,7 +30,7 @@ pub use crawl_scope::{CrawlOverride, CrawlScope};
 pub use error::{Error, Result};
 pub use hash::{content_hash, fnv1a_64};
 pub use traits::backoff_tracker::BackoffTracker;
-pub use traits::clock::{Clock, SystemClock, system_clock};
+pub use traits::clock::{Clock, SystemClock};
 pub use traits::fetcher::Fetcher;
 pub use traits::frontier::{ClaimOutcome, Frontier, SubmitBatchOutcome, SubmitOutcome};
 pub use traits::metadata::{MetadataStore, SuccessRecord};

@@ -7,10 +7,10 @@
 //! implicit via await-points: a worker that's blocked in `fetch` or
 //! `store` simply isn't claiming new URLs.
 //!
-//! Per ADR-0020 the politeness layer is policy-only: it returns a
-//! [`NextWake`] from `record_fetch` / `record_failure`; the runtime
-//! applies it via [`Frontier::advance_wake`]. This module is the
-//! composition site for that handoff.
+//! The politeness layer is policy-only: it returns a [`NextWake`]
+//! from `record_fetch` / `record_failure`; the runtime applies it
+//! via [`Frontier::advance_wake`]. This module is the composition
+//! site for that handoff.
 //!
 //! The per-URL pipeline is encapsulated in [`UrlPipeline`]: a struct
 //! that owns one URL's working set (deps + entry) and exposes one
@@ -399,10 +399,10 @@ impl UrlPipeline {
     }
 
     /// Apply a politeness-computed `NextWake` plan via the frontier.
-    /// Per ADR-0020 politeness returns the plan and the runtime owns
-    /// the write. Frontier errors are warned and dropped: the lease
-    /// is the safety net (a missed wake-time defaults to the lease
-    /// timeout via the claim-time wake stamp).
+    /// Politeness returns the plan; the runtime owns the write.
+    /// Frontier errors are warned and dropped: the lease is the
+    /// safety net (a missed wake-time defaults to the lease timeout
+    /// via the claim-time wake stamp).
     ///
     /// When `next.until` is at or before now (the rate limiter's
     /// zero-delay signal), the frontier write is skipped: there's

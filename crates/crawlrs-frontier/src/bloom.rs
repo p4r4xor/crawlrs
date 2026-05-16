@@ -47,7 +47,7 @@ impl Default for BloomConfig {
 /// Ensure the bloom filter exists at `key`. Idempotent across
 /// processes: a peer racing the `BF.RESERVE` loses with "ERR item
 /// exists", which we treat as success.
-pub async fn reserve(
+pub(crate) async fn reserve(
     pool: &Pool<RedisConnectionManager>,
     key: &str,
     config: BloomConfig,

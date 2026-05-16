@@ -41,7 +41,7 @@ const EVENT_PERMANENTLY_FAILED: &str = "permanently_failed";
 /// [`Error::Metadata`] at the trait boundary so callers see a single
 /// coarse variant in the public surface.
 #[derive(Debug, ThisError)]
-pub enum PostgresMetadataError {
+pub(crate) enum PostgresMetadataError {
     #[error("postgres error: {0}")]
     Sqlx(#[from] sqlx::Error),
 

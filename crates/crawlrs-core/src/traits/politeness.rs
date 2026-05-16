@@ -1,13 +1,13 @@
 //! Politeness types and trait.
 //!
-//! Per ADR-0020 the politeness layer is policy-only: it answers
-//! "may this URL be fetched?" (`check`) and computes "given this
-//! outcome, when should we next be allowed to touch this host?"
-//! (`record_fetch` / `record_failure`). The *application* of the
-//! plan; writing the wake-time so future claims see it; lives in
-//! the frontier crate. Politeness owns: robots.txt, blocklist,
-//! circuit breaker, exponential-backoff math. Politeness does NOT
-//! own: per-host wake ZSET, ready LIST, lease tracking.
+//! The politeness layer is policy-only: it answers "may this URL be
+//! fetched?" (`check`) and computes "given this outcome, when should
+//! we next be allowed to touch this host?" (`record_fetch` /
+//! `record_failure`). The *application* of the plan; writing the
+//! wake-time so future claims see it; lives in the frontier crate.
+//! Politeness owns: robots.txt, blocklist, circuit breaker,
+//! exponential-backoff math. Politeness does NOT own: per-host wake
+//! ZSET, ready LIST, lease tracking.
 
 use std::time::Duration;
 
@@ -61,7 +61,7 @@ pub enum FailureKind {
     /// dashboards can see how much of the failure tail is dead links.
     NotFound,
     /// Any 4xx that isn't `TooManyRequests` or `NotFound` (400, 401, 403,
-    /// 451, etc.). Usually permanent — auth or policy refusal — and not
+    /// 451, etc.). Usually permanent (auth or policy refusal) and not
     /// something host-level backoff fixes.
     ClientError,
     /// Any 5xx that isn't `ServiceUnavailable` (500, 502, 504, etc.).
@@ -135,7 +135,7 @@ pub trait Politeness: Send + Sync {
     /// host's earliest next-allowed fetch given the configured
     /// host-delay (plus any robots.txt Crawl-Delay or per-domain
     /// override). Politeness does not write the plan itself; the
-    /// frontier owns wake-time storage per ADR-0020.
+    /// frontier owns wake-time storage.
     async fn record_fetch(&self, url: &CanonicalUrl) -> Result<NextWake>;
 
     /// A fetch failed. Returns the wake-time plan after applying

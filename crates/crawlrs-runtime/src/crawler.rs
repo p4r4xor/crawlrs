@@ -20,7 +20,7 @@ use crate::worker::WorkerDeps;
 
 /// Periodic driver for `Frontier::tick`. Combines the promoter
 /// (wake -> ready) and lease-reclaim passes; both run inside the
-/// `tick` implementation per ADR-0019 (one background task, not two).
+/// `tick` implementation (one background task, not two).
 ///
 /// Lives in the runtime per the project's architecture rule: tokio
 /// composition belongs here, not inside the frontier crate.
@@ -65,11 +65,10 @@ pub struct CrawlerConfig {
     /// volume.
     pub maintenance_interval: Duration,
 
-    /// How often the frontier-tick task drives `Frontier::tick` —
+    /// How often the frontier-tick task drives `Frontier::tick`:
     /// the per-shard promoter (wake -> ready) and lease-reclaim
     /// pass. 50ms keeps the latency-tail collapsed under sustained
     /// load while staying out of Redis CPU's way on idle clusters.
-    /// See ADR-0019.
     pub promoter_tick: Duration,
 
     /// Sleep duration when `frontier.claim()` returns `Empty` (queue

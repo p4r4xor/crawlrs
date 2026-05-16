@@ -62,13 +62,6 @@ impl InMemoryMetadataStore {
         self.ledger.lock().unwrap().dlq.len()
     }
 
-    /// Snapshot of the DLQ entries: `(url, reason)` pairs in insert
-    /// order. Useful for tests that want to verify the failure reason
-    /// string the runtime constructed.
-    pub fn dlq_entries(&self) -> Vec<(String, String)> {
-        self.ledger.lock().unwrap().dlq.clone()
-    }
-
     /// Number of distinct `mark_succeeded` history rows recorded.
     /// Counts each unique `(url, attempt_id)` once; redelivery of the
     /// same attempt does NOT increment. Mirrors the Postgres history

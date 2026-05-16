@@ -32,7 +32,7 @@ use http::StatusCode;
 const WARC_DATE_FMT: &str = "%Y-%m-%dT%H:%M:%SZ";
 
 /// One gzipped WARC record, ready to append to a `.warc.gz` file.
-pub fn encode_warcinfo(run_id: &str) -> Vec<u8> {
+pub(crate) fn encode_warcinfo(run_id: &str) -> Vec<u8> {
     let record_id = new_record_id();
     let now = Utc::now();
 
@@ -55,7 +55,7 @@ pub fn encode_warcinfo(run_id: &str) -> Vec<u8> {
     framed(&header, body.as_bytes())
 }
 
-pub fn encode_response(record: &StoreRecord<'_>) -> Vec<u8> {
+pub(crate) fn encode_response(record: &StoreRecord<'_>) -> Vec<u8> {
     let record_id = new_record_id();
     let payload = build_http_response_payload(record);
     let header = format!(

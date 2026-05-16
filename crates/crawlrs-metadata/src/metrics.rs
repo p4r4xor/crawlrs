@@ -36,13 +36,13 @@ pub fn register() {
 /// trait-method body keep using `?` for error propagation while still
 /// covering the failure path in the histogram (the timer fires
 /// regardless of how the body returns).
-pub struct QueryTimer {
+pub(crate) struct QueryTimer {
     op: &'static str,
     started_at: Instant,
 }
 
 impl QueryTimer {
-    pub fn new(op: &'static str) -> Self {
+    pub(crate) fn new(op: &'static str) -> Self {
         Self {
             op,
             started_at: Instant::now(),

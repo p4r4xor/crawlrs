@@ -48,9 +48,9 @@ use thiserror::Error;
 
 /// Maximum accepted URL length, in bytes. Defends against adversarial
 /// inputs that would otherwise inflate the seen-set, the queue body
-/// payload, and per-row metadata storage. 2 KiB matches industry
-/// practice (Heritrix, common search engines) and is comfortably above
-/// the 99.99th percentile of URLs in the wild.
+/// payload, and per-row metadata storage. 2 KiB is comfortably above
+/// the 99.99th percentile of URLs in the wild and matches common
+/// industry practice for crawlers.
 pub const MAX_URL_LEN: usize = 2048;
 
 /// Error type for [`CanonicalUrl::parse`] / [`CanonicalUrl::parse_relative`].

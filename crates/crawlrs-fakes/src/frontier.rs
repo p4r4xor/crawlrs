@@ -1,6 +1,6 @@
 //! `InMemoryFrontier`: a `Frontier` impl that models the per-host
-//! queue + wake ZSET + ready LIST + lease ZSET shape from ADR-0019
-//! entirely in-process.
+//! queue + wake ZSET + ready LIST + lease ZSET shape entirely
+//! in-process.
 //!
 //! Pattern: Test Double as Specification. The job of this module is
 //! NOT to be a stub that returns canned answers; it's to be a
@@ -10,15 +10,14 @@
 //! expiry + reclaim, bloom dedup at submit, ready-host promotion)
 //! are all expressible against this model with no Docker.
 //!
-//! What this models, per ADR-0019:
+//! What this models:
 //!
 //! - **Per-shard state.** Each owned shard has its own host queues,
 //!   URL HASH, seen-set, wake/ready/inflight bookkeeping.
 //! - **Per-host FIFO queue** keyed by `host`. Submitted URLs are
 //!   pushed to the back; claims pop from the front.
 //! - **Wake ZSET** keyed by host, score = next-allowed-fetch wall-
-//!   clock millis. The frontier owns this state outright now (was
-//!   the politeness layer's responsibility pre-ADR-0020).
+//!   clock millis. The frontier owns this state outright.
 //! - **Ready LIST** keyed by shard: hosts whose wake-time has elapsed.
 //!   Populated by `tick` (the promoter analogue) and drained by
 //!   `claim`. Pre-computing readiness keeps claim O(1).
@@ -157,15 +156,6 @@ impl InMemoryFrontier {
     /// clock advance.
     pub fn with_lease_timeout(mut self, t: Duration) -> Self {
         self.lease_timeout_ms = t.as_millis() as u64;
-        self
-    }
-
-    /// Wire a [`CrawlScope`] so `submit_batch` enforces per-host
-    /// `[crawl].max_urls` quotas. Default is empty scope (every
-    /// host uncapped); tests asserting on quota behavior populate
-    /// the scope explicitly.
-    pub fn with_crawl_scope(mut self, scope: CrawlScope) -> Self {
-        self.crawl_scope = scope;
         self
     }
 
@@ -453,7 +443,7 @@ impl Frontier for InMemoryFrontier {
 /// it has more URLs queued: the worker is expected to call
 /// `advance_wake(host, ..)` after the fetch, which writes the host's
 /// next-allowed time into `wake`. Until then, the host is in neither
-/// `ready` nor `wake` — it's owned by the in-flight worker. The lease
+/// `ready` nor `wake`; it's owned by the in-flight worker. The lease
 /// timeout (set on `inflight`) is the safety net if the worker
 /// crashes before calling `advance_wake`.
 fn pop_one_ready(

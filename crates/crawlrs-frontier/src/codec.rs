@@ -21,11 +21,11 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<UrlEntry> {
 #[cfg(test)]
 mod tests {
     // Inline because: visibility-forced. `encode` and `decode` are
-    // `pub(crate)` — the postcard wire format for `UrlEntry` is an
+    // `pub(crate)`; the postcard wire format for `UrlEntry` is an
     // implementation detail of how this crate stores payloads in
     // Redis. Promoting them to `pub` to satisfy a `tests/` integration
     // crate would commit the public API to postcard forever; we want
-    // the option to swap encodings in a future ADR.
+    // the option to swap encodings later.
 
     use super::*;
     use crawlrs_core::CanonicalUrl;

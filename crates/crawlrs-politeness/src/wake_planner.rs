@@ -30,7 +30,7 @@ use crate::error::{LocalResult, PolitenessError};
 /// against the config; the impl holds `sharding_policy` +
 /// `owned_shards` so the shard-ownership guard stays in place,
 /// matching the other Redis-backed sub-impls' invariants.
-pub struct RedisWakePlanner {
+pub(crate) struct RedisWakePlanner {
     sharding_policy: Arc<dyn ShardingPolicy>,
     owned_shards: Vec<ShardKey>,
     config: PolitenessConfig,
@@ -38,7 +38,7 @@ pub struct RedisWakePlanner {
 }
 
 impl RedisWakePlanner {
-    pub fn new(
+    pub(crate) fn new(
         sharding_policy: Arc<dyn ShardingPolicy>,
         owned_shards: Vec<ShardKey>,
         config: PolitenessConfig,

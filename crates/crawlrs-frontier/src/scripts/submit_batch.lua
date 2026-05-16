@@ -53,9 +53,11 @@ for i = 0, n - 1 do
     local cur = tonumber(redis.call('GET', host_count_key)) or 0
     if cur >= cap then
       rejected_quota = rejected_quota + 1
-      -- Skip the bloom check entirely. The downstream "duplicate
-      -- after quota gets counted as rejected_quota" tradeoff is
-      -- documented in ADR-0030.
+      -- Skip the bloom check entirely. Downstream tradeoff: a URL
+      -- that would have been a bloom-duplicate is instead counted as
+      -- rejected_quota. Acceptable because quota and dedup are both
+      -- "drop this URL" outcomes; the metric attribution is the only
+      -- difference.
       goto continue
     end
   end

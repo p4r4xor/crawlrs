@@ -18,7 +18,7 @@ use crawlrs_core::ShardKey;
 /// a thin wrapper around the script source string + SHA1; the
 /// `EVALSHA` cache lives inside the redis-rs client).
 #[derive(Clone)]
-pub struct Scripts {
+pub(crate) struct Scripts {
     submit: Script,
     submit_batch: Script,
     claim: Script,
@@ -34,7 +34,7 @@ impl Default for Scripts {
 }
 
 impl Scripts {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             submit: Script::new(include_str!("scripts/submit.lua")),
             submit_batch: Script::new(include_str!("scripts/submit_batch.lua")),
@@ -52,7 +52,7 @@ impl Scripts {
 /// site is unambiguous: tuples-of-four made the per-URL payload
 /// noisy at every line.
 #[derive(Debug, Clone, Copy)]
-pub struct SubmitItem<'a> {
+pub(crate) struct SubmitItem<'a> {
     pub url_id: UrlId,
     pub entry: &'a UrlEntry,
     pub host: &'a str,
@@ -67,7 +67,7 @@ pub struct SubmitItem<'a> {
 /// `ClaimOutcome` enum in the core trait; the frontier orchestrator
 /// translates this into the public type.
 #[derive(Debug)]
-pub enum ClaimRaw {
+pub(crate) enum ClaimRaw {
     Claimed {
         url_id: UrlId,
         entry: Box<UrlEntry>,
@@ -98,7 +98,7 @@ pub enum HostQueueError {
 }
 
 /// Wrappers in one place so the orchestrator stays thin.
-pub struct HostQueueOps<'a> {
+pub(crate) struct HostQueueOps<'a> {
     pub pool: &'a Pool<RedisConnectionManager>,
     pub keys: &'a KeyPrefix,
     pub scripts: &'a Scripts,
@@ -107,7 +107,7 @@ pub struct HostQueueOps<'a> {
 impl<'a> HostQueueOps<'a> {
     /// Submit one URL on `shard`. Returns the script's two-state
     /// outcome (Queued / SkippedDuplicate).
-    pub async fn submit(
+    pub(crate) async fn submit(
         &self,
         shard: ShardKey,
         url_id: UrlId,
@@ -159,7 +159,7 @@ impl<'a> HostQueueOps<'a> {
     ///
     /// Returns `(newly, rejected_quota)`. Bloom duplicates are the
     /// remainder: `items.len() - newly - rejected_quota`.
-    pub async fn submit_batch(
+    pub(crate) async fn submit_batch(
         &self,
         shard: ShardKey,
         items: &[SubmitItem<'_>],
@@ -209,7 +209,7 @@ impl<'a> HostQueueOps<'a> {
     /// outcome; the orchestrator wraps this into the public
     /// `ClaimOutcome` (adding the `AttemptId` it owns the encoding
     /// of).
-    pub async fn claim(
+    pub(crate) async fn claim(
         &self,
         shard: ShardKey,
         now_ms: i64,
@@ -238,7 +238,7 @@ impl<'a> HostQueueOps<'a> {
     }
 
     /// Set a host's wake-time. Idempotent.
-    pub async fn advance_wake(
+    pub(crate) async fn advance_wake(
         &self,
         shard: ShardKey,
         host: &str,
@@ -265,7 +265,7 @@ impl<'a> HostQueueOps<'a> {
     /// Drain `wake` -> `ready` for hosts whose wake-time has elapsed.
     /// Bounded by `batch_limit` so a single pass can't dominate one
     /// Redis tick under heavy backlog.
-    pub async fn promote(
+    pub(crate) async fn promote(
         &self,
         shard: ShardKey,
         now_ms: i64,
@@ -290,7 +290,7 @@ impl<'a> HostQueueOps<'a> {
 
     /// Re-push URLs whose lease has expired back onto their host
     /// queue. Bounded by `batch_limit`.
-    pub async fn reclaim(
+    pub(crate) async fn reclaim(
         &self,
         shard: ShardKey,
         now_ms: i64,
@@ -318,7 +318,7 @@ impl<'a> HostQueueOps<'a> {
     /// (atomicity between the two ops is not safety-critical: a
     /// crash between ZREM and HDEL leaves an orphan URL HASH entry
     /// that the bloom would still suppress on a future submit).
-    pub async fn ack(
+    pub(crate) async fn ack(
         &self,
         shard: ShardKey,
         url_id: UrlId,

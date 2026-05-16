@@ -12,9 +12,9 @@
 //! Query string and fragment are already excluded by
 //! `url::Url::path()`.
 //!
-//! Lineage: the list mirrors Scrapy's `IGNORED_EXTENSIONS`. We pruned
-//! `tar.gz` because the algorithm matches `gz` independently and a
-//! multi-segment extension never participates in single-suffix lookup.
+//! Single-segment extensions only: `tar.gz` is intentionally absent
+//! because the suffix match runs on the final segment alone, and the
+//! algorithm already catches `gz`.
 
 use std::collections::HashSet;
 use std::sync::LazyLock;
@@ -23,8 +23,8 @@ use crawlrs_core::CanonicalUrl;
 
 /// Extensions for URLs we should not enqueue. Each entry is the
 /// lowercase suffix following the final `.` in the last path
-/// segment. Modelled on Scrapy's `IGNORED_EXTENSIONS`.
-pub const DENY_EXTENSIONS: &[&str] = &[
+/// segment.
+pub(crate) const DENY_EXTENSIONS: &[&str] = &[
     // archives
     "7z", "7zip", "bz2", "gz", "rar", "tar", "xz", "zip", // images
     "ai", "bmp", "cdr", "drw", "dxf", "eps", "gif", "ico", "jpeg", "jpg", "mng", "pct", "png",

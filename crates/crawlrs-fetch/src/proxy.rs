@@ -68,11 +68,11 @@ impl ProxyResolver for EnvProxyResolver {
     }
 }
 
-/// Closure that computes per-request gateway routing headers.
-///
-/// Gets the in-flight [`FetchRequest`] and returns headers to inject. Use
-/// for HMA-style routing (`x-hma-*`) or any custom gateway dialect.
-pub type HeaderFn = Arc<dyn Fn(&FetchRequest) -> HashMap<String, String> + Send + Sync>;
+/// Closure that computes per-request gateway routing headers. The
+/// alias is internal; external callers pass a closure directly to
+/// [`GatewayProxyResolver::with_header_fn`] (which takes a generic
+/// constrained by the same `Fn` bound).
+pub(crate) type HeaderFn = Arc<dyn Fn(&FetchRequest) -> HashMap<String, String> + Send + Sync>;
 
 /// **Gateway pattern**: a single fixed proxy URL plus a per-request
 /// callback that produces routing-hint headers. Optionally trusts a

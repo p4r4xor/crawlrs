@@ -29,11 +29,6 @@ impl InMemoryStore {
             .collect()
     }
 
-    /// Clones of every doc written so far.
-    pub fn documents(&self) -> Vec<ParsedDocument> {
-        self.written.lock().unwrap().clone()
-    }
-
     /// Number of docs written. Cheaper than `urls().len()` when callers
     /// only need a count.
     pub fn len(&self) -> usize {

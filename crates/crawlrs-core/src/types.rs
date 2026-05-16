@@ -168,7 +168,7 @@ impl fmt::Display for UrlId {
 /// by the runtime via `Frontier::advance_wake`. The split lets the
 /// politeness layer stay pure policy (robots + backoff + circuit
 /// breaker) while the frontier owns scheduling state (wake ZSET + ready
-/// LIST). Per ADR-0020.
+/// LIST).
 #[derive(Debug, Clone)]
 pub struct NextWake {
     pub host: String,

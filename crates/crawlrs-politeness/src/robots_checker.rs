@@ -13,21 +13,14 @@ use crawlrs_core::{CanonicalUrl, Error, Result, RobotsChecker};
 
 use crate::robots::RobotsCache;
 
-pub struct RedisRobotsChecker {
+pub(crate) struct RedisRobotsChecker {
     robots: Arc<RobotsCache>,
     user_agent: String,
 }
 
 impl RedisRobotsChecker {
-    pub fn new(robots: Arc<RobotsCache>, user_agent: String) -> Self {
+    pub(crate) fn new(robots: Arc<RobotsCache>, user_agent: String) -> Self {
         Self { robots, user_agent }
-    }
-
-    /// Borrow the underlying cache. Used by `CompositePoliteness`
-    /// for the introspection accessor that the runtime exposes
-    /// for debugging.
-    pub fn cache(&self) -> &RobotsCache {
-        &self.robots
     }
 }
 
