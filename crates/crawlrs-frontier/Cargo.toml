@@ -17,14 +17,12 @@ metrics.workspace     = true
 postcard.workspace    = true
 redis.workspace       = true
 thiserror.workspace   = true
-tokio.workspace       = true
 tracing.workspace     = true
-cuid2.workspace        = true
 
 [dev-dependencies]
-tokio                  = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
-testcontainers.workspace         = true
-testcontainers-modules.workspace = true
+tokio                    = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+cuid2.workspace          = true
+testcontainers.workspace = true
 
 [lints]
 workspace = true
