@@ -67,15 +67,4 @@ impl CrawlScope {
         }
         self.max_urls
     }
-
-    /// `true` if any host has a URL-count quota configured (global
-    /// or any per-domain). Lets callers fast-path the "no quotas
-    /// anywhere" case to zero work.
-    pub fn has_any_quota(&self) -> bool {
-        self.max_urls.is_some()
-            || self
-                .per_domain
-                .values()
-                .any(|override_| override_.max_urls.is_some())
-    }
 }

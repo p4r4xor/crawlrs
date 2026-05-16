@@ -22,7 +22,7 @@ use crawlrs_core::{CanonicalUrl, FetchRequest, Fetcher, ShardingPolicy};
 use redis::AsyncCommands;
 use tracing::{info, warn};
 
-use crate::error::{LocalResult, RedisPolitenessError};
+use crate::error::{LocalResult, PolitenessError};
 use crate::keys::KeyPrefix;
 
 const ROBOTS_FIELD_BODY: &str = "body";
@@ -137,7 +137,7 @@ impl RobotsCache {
     /// and we'd rather over-allow than block crawling on a transient
     /// network blip.
     #[tracing::instrument(skip(self), fields(url = %url, user_agent = %user_agent))]
-    pub async fn allowed(&self, url: &CanonicalUrl, user_agent: &str) -> LocalResult<bool> {
+    pub(crate) async fn allowed(&self, url: &CanonicalUrl, user_agent: &str) -> LocalResult<bool> {
         let host = match url.host() {
             Some(h) => h,
             None => return Ok(true),
@@ -182,19 +182,19 @@ impl RobotsCache {
             .pool
             .get()
             .await
-            .map_err(|e| RedisPolitenessError::Pool(format!("{e:?}")))?;
+            .map_err(|e| PolitenessError::Pool(format!("{e:?}")))?;
 
         let status: Option<String> = conn
             .hget::<_, _, Option<String>>(&key, ROBOTS_FIELD_STATUS)
             .await
-            .map_err(RedisPolitenessError::from)?;
+            .map_err(PolitenessError::from)?;
 
         match status.as_deref() {
             Some(ROBOTS_STATUS_OK) => {
                 let raw: Option<redis::Value> = conn
                     .hget(&key, ROBOTS_FIELD_BODY)
                     .await
-                    .map_err(RedisPolitenessError::from)?;
+                    .map_err(PolitenessError::from)?;
                 Ok(raw.map(value_into_bytes).transpose()?)
             }
             Some(ROBOTS_STATUS_ABSENT) => Ok(Some(Bytes::new())),
@@ -213,7 +213,7 @@ impl RobotsCache {
     async fn fetch_and_cache(&self, host: &str, source_url: &CanonicalUrl) -> LocalResult<Bytes> {
         let robots_url_str = format!("{}://{}/robots.txt", source_url.scheme(), host);
         let robots_url = CanonicalUrl::parse(&robots_url_str).map_err(|e| {
-            RedisPolitenessError::Robots(format!("invalid robots url {robots_url_str}: {e}"))
+            PolitenessError::Robots(format!("invalid robots url {robots_url_str}: {e}"))
         })?;
 
         let mut req = FetchRequest::new(robots_url.clone());
@@ -262,7 +262,7 @@ impl RobotsCache {
             .pool
             .get()
             .await
-            .map_err(|e| RedisPolitenessError::Pool(format!("{e:?}")))?;
+            .map_err(|e| PolitenessError::Pool(format!("{e:?}")))?;
 
         let ttl_secs = jittered_ttl(self.ttl, host).as_secs() as i64;
         match body {
@@ -273,7 +273,7 @@ impl RobotsCache {
                     .expire(&key, ttl_secs)
                     .query_async(&mut *conn)
                     .await
-                    .map_err(RedisPolitenessError::from)?;
+                    .map_err(PolitenessError::from)?;
             }
             None => {
                 let _: () = redis::pipe()
@@ -282,7 +282,7 @@ impl RobotsCache {
                     .expire(&key, ttl_secs)
                     .query_async(&mut *conn)
                     .await
-                    .map_err(RedisPolitenessError::from)?;
+                    .map_err(PolitenessError::from)?;
             }
         }
         Ok(())
@@ -290,19 +290,6 @@ impl RobotsCache {
 
     pub fn user_agent(&self) -> &str {
         &self.user_agent
-    }
-
-    /// For tests: bypass the network and fetch via the wrapped Fetcher
-    /// instance. Useful for asserting the fake fetcher was called.
-    #[doc(hidden)]
-    pub async fn force_fetch(&self, url: &CanonicalUrl) -> LocalResult<Bytes> {
-        let req = FetchRequest::new(url.clone());
-        let resp = self
-            .fetcher
-            .fetch(req)
-            .await
-            .map_err(|e| RedisPolitenessError::Robots(format!("force_fetch: {e}")))?;
-        Ok(resp.body)
     }
 }
 
@@ -327,7 +314,7 @@ fn value_into_bytes(v: redis::Value) -> LocalResult<Bytes> {
         redis::Value::BulkString(b) => Ok(Bytes::from(b)),
         redis::Value::SimpleString(s) => Ok(Bytes::from(s.into_bytes())),
         redis::Value::Nil => Ok(Bytes::new()),
-        other => Err(RedisPolitenessError::Robots(format!(
+        other => Err(PolitenessError::Robots(format!(
             "expected BulkString for robots body, got {other:?}"
         ))),
     }

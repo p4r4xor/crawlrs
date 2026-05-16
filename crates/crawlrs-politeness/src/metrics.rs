@@ -18,7 +18,10 @@ pub const DECISION_ALLOW: &str = "allow";
 pub const DECISION_DISALLOW_ROBOTS: &str = "disallow_robots";
 pub const DECISION_DISALLOW_BLOCKED: &str = "disallow_blocked";
 pub const DECISION_DISALLOW_CIRCUIT: &str = "disallow_circuit";
-pub const DECISION_DISALLOW_QUOTA: &str = "disallow_quota";
+// `disallow_quota` was removed when quota enforcement moved
+// entirely into the frontier's `submit_batch.lua`. The
+// operational replacement is `crawlrs_urls_rejected_total{reason="quota"}`
+// emitted by the worker after `submit_batch` returns.
 
 pub const SOURCE_SERVER_HINT: &str = "server_hint";
 pub const SOURCE_COMPUTED: &str = "computed";

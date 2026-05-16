@@ -1,4 +1,4 @@
-//! Integration tests for `RedisPoliteness`.
+//! Integration tests for `CompositePoliteness` (Redis-backed wiring).
 //!
 //! Each test brings up its own Redis container via `testcontainers-rs`
 //! and uses a unique `run_id` so tests don't collide. The shared
@@ -17,11 +17,13 @@ use std::time::{Duration, Instant};
 use bb8::Pool;
 use bb8_redis::RedisConnectionManager;
 use crawlrs_core::{
-    Blocklist, CanonicalUrl, CrawlScope, FailureKind, Fetcher, PoliteDecision, Politeness,
-    ShardingPolicy, SingleShardPolicy,
+    Blocklist, CanonicalUrl, FailureKind, Fetcher, PoliteDecision, Politeness, ShardingPolicy,
+    SingleShardPolicy,
 };
 use crawlrs_fakes::FakeFetcher;
-use crawlrs_politeness::{BackoffPolicy, PolitenessConfig, PolitenessOverride, RedisPoliteness};
+use crawlrs_politeness::{
+    BackoffPolicy, CompositePoliteness, PolitenessConfig, PolitenessOverride,
+};
 use testcontainers_modules::redis::Redis;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
 use testcontainers_modules::testcontainers::{ContainerAsync, ImageExt};
@@ -73,33 +75,24 @@ async fn build(
     pool: &Pool<RedisConnectionManager>,
     fetcher: Arc<dyn Fetcher>,
     config: PolitenessConfig,
-) -> RedisPoliteness {
-    build_with(
-        pool,
-        fetcher,
-        config,
-        CrawlScope::default(),
-        Blocklist::default(),
-    )
-    .await
+) -> CompositePoliteness {
+    build_with(pool, fetcher, config, Blocklist::default()).await
 }
 
 async fn build_with(
     pool: &Pool<RedisConnectionManager>,
     fetcher: Arc<dyn Fetcher>,
     config: PolitenessConfig,
-    crawl_scope: CrawlScope,
     blocklist: Blocklist,
-) -> RedisPoliteness {
+) -> CompositePoliteness {
     let policy: Arc<dyn ShardingPolicy> = Arc::new(SingleShardPolicy);
-    RedisPoliteness::new(
+    CompositePoliteness::new(
         pool.clone(),
         policy,
         vec![0],
         fetcher,
         run_id(),
         config,
-        crawl_scope,
         blocklist,
     )
     .await
@@ -138,14 +131,7 @@ async fn blocklist_returns_disallow() {
     let config = config_with(Duration::from_millis(1_000), false);
     let blocklist = Blocklist::new(["excluded.test".to_string()].into_iter().collect());
 
-    let p = build_with(
-        &fx.pool,
-        fake.clone(),
-        config,
-        CrawlScope::default(),
-        blocklist,
-    )
-    .await;
+    let p = build_with(&fx.pool, fake.clone(), config, blocklist).await;
     assert_eq!(
         p.check(&url("https://excluded.test/page")).await.unwrap(),
         PoliteDecision::Disallow,

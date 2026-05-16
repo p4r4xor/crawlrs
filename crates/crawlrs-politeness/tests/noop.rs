@@ -1,7 +1,7 @@
 //! Tests for the all-noop politeness wiring (master switch off).
 //!
 //! When `politeness.enabled = false`, the factory composes
-//! `NoopRateLimiter` + `NoopRobotsChecker` + `NoopBackoffTracker`
+//! `NoopWakePlanner` + `NoopRobotsChecker` + `NoopBackoffTracker`
 //! through `CompositePoliteness::from_parts`. The composite is
 //! still the only `Politeness` impl the runtime sees; its
 //! observable contract collapses to "allow everything, no I/O,
@@ -11,11 +11,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crawlrs_core::{
-    BackoffTracker, Blocklist, CanonicalUrl, FailureKind, PoliteDecision, Politeness, RateLimiter,
-    RobotsChecker,
+    BackoffTracker, Blocklist, CanonicalUrl, FailureKind, PoliteDecision, Politeness,
+    RobotsChecker, WakePlanner,
 };
 use crawlrs_politeness::{
-    BackoffPolicy, CompositePoliteness, NoopBackoffTracker, NoopRateLimiter, NoopRobotsChecker,
+    BackoffPolicy, CompositePoliteness, NoopBackoffTracker, NoopRobotsChecker, NoopWakePlanner,
     PolitenessConfig, PolitenessOverride,
 };
 
@@ -25,7 +25,7 @@ fn url(s: &str) -> CanonicalUrl {
 
 fn noop_composite_with_config(config: PolitenessConfig) -> CompositePoliteness {
     CompositePoliteness::from_parts(
-        Arc::new(NoopRateLimiter),
+        Arc::new(NoopWakePlanner),
         Arc::new(NoopRobotsChecker),
         Arc::new(NoopBackoffTracker),
         Blocklist::default(),
@@ -113,7 +113,7 @@ async fn noop_composite_honors_blocklist() {
     // robots / rate, so an `[access].blocklist` hit returns
     // Disallow even with all-noop sub-traits.
     let composite = CompositePoliteness::from_parts(
-        Arc::new(NoopRateLimiter),
+        Arc::new(NoopWakePlanner),
         Arc::new(NoopRobotsChecker),
         Arc::new(NoopBackoffTracker),
         Blocklist::new(["excluded.test".to_string()].into_iter().collect()),
@@ -169,12 +169,14 @@ async fn noop_composite_ignores_per_domain_overrides() {
 // the composite, so they pin the trait-level contract directly.
 
 #[tokio::test]
-async fn noop_rate_limiter_check_is_allow() {
-    let r = NoopRateLimiter;
-    assert_eq!(
-        r.check(&url("https://anywhere.test/")).await.unwrap(),
-        PoliteDecision::Allow,
-    );
+async fn noop_wake_planner_returns_immediate_wake() {
+    let r = NoopWakePlanner;
+    let plan = r.record_fetch("anywhere.test").await.unwrap();
+    assert_eq!(plan.host, "anywhere.test");
+    let delta = plan
+        .until
+        .saturating_duration_since(std::time::Instant::now());
+    assert!(delta <= Duration::from_millis(100));
 }
 
 #[tokio::test]

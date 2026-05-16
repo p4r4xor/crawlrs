@@ -1,10 +1,10 @@
 //! `CompositePoliteness`: orchestrator that satisfies
 //! [`crawlrs_core::Politeness`] by delegating to three sub-traits
-//! ([`RateLimiter`], [`RobotsChecker`], [`BackoffTracker`]) plus
-//! two pure-config services ([`Blocklist`], [`CrawlScope`]).
+//! ([`WakePlanner`], [`RobotsChecker`], [`BackoffTracker`]) plus
+//! the [`Blocklist`] pure-config service.
 //!
 //! Splitting `Politeness` into sub-traits means a deployment can
-//! swap any sub-impl independently: Redis-backed rate limiting
+//! swap any sub-impl independently: Redis-backed wake planning
 //! with no-op robots; in-memory test doubles for unit tests; the
 //! whole layer wired to no-ops when `politeness.enabled = false`.
 //! The composite is the only `Politeness`-implementing type the
@@ -17,31 +17,26 @@ use async_trait::async_trait;
 use bb8::Pool;
 use bb8_redis::RedisConnectionManager;
 use crawlrs_core::{
-    BackoffTracker, Blocklist, CanonicalUrl, CrawlScope, Error, FailureKind, Fetcher, NextWake,
-    PoliteDecision, Politeness, RateLimiter, Result, RobotsChecker, ShardKey, ShardingPolicy,
+    BackoffTracker, Blocklist, CanonicalUrl, Error, FailureKind, Fetcher, NextWake, PoliteDecision,
+    Politeness, Result, RobotsChecker, ShardKey, ShardingPolicy, WakePlanner,
 };
-
-// CrawlScope is held only as a constructor argument that threads
-// into the rate limiter (for `[crawl].max_urls`); the composite
-// itself no longer needs to consult it (depth caps are read
-// directly off CrawlScope by the worker now).
 use tracing::info;
 
 use crate::backoff_tracker::RedisBackoffTracker;
 use crate::config::PolitenessConfig;
-use crate::error::RedisPolitenessError;
+use crate::error::PolitenessError;
 use crate::keys::KeyPrefix;
-use crate::rate_limiter::RedisRateLimiter;
 use crate::robots::RobotsCache;
 use crate::robots_checker::RedisRobotsChecker;
+use crate::wake_planner::RedisWakePlanner;
 
 /// Composed `Politeness` impl. Holds three sub-trait Arcs plus
-/// pure-config sub-services by value. Constructed via [`Self::new`]
+/// the pure-config blocklist by value. Constructed via [`Self::new`]
 /// (Redis-backed sub-impls, the default in production) or via
 /// [`Self::from_parts`] (any sub-impl mix; used by the factory's
 /// noop branch and by tests).
 pub struct CompositePoliteness {
-    rate: Arc<dyn RateLimiter>,
+    wake: Arc<dyn WakePlanner>,
     robots: Arc<dyn RobotsChecker>,
     backoff: Arc<dyn BackoffTracker>,
     blocklist: Blocklist,
@@ -62,8 +57,8 @@ pub struct CompositePoliteness {
     /// Backoff sub-impl handle for the success-path reset. The
     /// `Politeness` trait doesn't expose a "reset on success"
     /// method, but `record_fetch` semantically resets the
-    /// circuit-breaker state in addition to computing the
-    /// rate-limiter's next-wake; this handle lets us call
+    /// circuit-breaker state in addition to computing the next
+    /// wake; this handle lets us call
     /// `RedisBackoffTracker::reset_on_success` directly. `None`
     /// when the backoff sub-impl isn't the Redis one.
     redis_backoff: Option<Arc<RedisBackoffTracker>>,
@@ -82,18 +77,16 @@ impl std::fmt::Debug for CompositePoliteness {
 
 impl CompositePoliteness {
     /// Construct a Redis-backed composite (the production wiring).
-    /// Builds [`RedisRateLimiter`], [`RedisRobotsChecker`], and
+    /// Builds [`RedisWakePlanner`], [`RedisRobotsChecker`], and
     /// [`RedisBackoffTracker`] from the shared pool + config and
-    /// composes them, then attaches the supplied crawl scope
-    /// (`[crawl]` config) and blocklist (`[access]` config) as
-    /// pure-config sub-services.
+    /// composes them, then attaches the supplied blocklist
+    /// (`[access]` config) as a pure-config sub-service.
     ///
-    /// Arity is wide on purpose: the Redis-wiring inputs (pool,
-    /// sharding, owned_shards, fetcher, run_id) and the policy
-    /// inputs (PolitenessConfig + CrawlScope + Blocklist) are
-    /// independent constructor concerns and live cleanly side by
-    /// side. A builder would add ceremony without simplifying
-    /// reading.
+    /// Crawl-scope (`[crawl]`) does not appear here: depth caps
+    /// are read by the worker directly from `WorkerDeps.crawl_scope`,
+    /// and URL-count quotas are enforced atomically at submit
+    /// time by `Frontier::submit_batch` against its own scope
+    /// handle. The politeness layer no longer touches scope at all.
     #[allow(clippy::too_many_arguments)]
     pub async fn new(
         pool: Pool<RedisConnectionManager>,
@@ -102,14 +95,13 @@ impl CompositePoliteness {
         fetcher: Arc<dyn Fetcher>,
         run_id: impl Into<String>,
         config: PolitenessConfig,
-        crawl_scope: CrawlScope,
         blocklist: Blocklist,
     ) -> Result<Self> {
         let keys = KeyPrefix::new(run_id);
         let count = sharding_policy.shard_count();
         for &shard in &owned_shards {
             if shard >= count {
-                return Err(RedisPolitenessError::ShardOutOfRange { got: shard, count }.into());
+                return Err(PolitenessError::ShardOutOfRange { got: shard, count }.into());
             }
         }
 
@@ -122,13 +114,10 @@ impl CompositePoliteness {
             config.robots_ttl,
         ));
 
-        let rate = Arc::new(RedisRateLimiter::new(
-            pool.clone(),
-            keys.clone(),
+        let wake = Arc::new(RedisWakePlanner::new(
             sharding_policy.clone(),
             owned_shards.clone(),
             config.clone(),
-            crawl_scope.clone(),
         ));
         let robots = Arc::new(RedisRobotsChecker::new(
             robots_cache.clone(),
@@ -151,7 +140,7 @@ impl CompositePoliteness {
 
         let backoff_dyn: Arc<dyn BackoffTracker> = redis_backoff.clone();
         Ok(Self {
-            rate,
+            wake,
             robots,
             backoff: backoff_dyn,
             blocklist,
@@ -166,14 +155,14 @@ impl CompositePoliteness {
     /// factory's `politeness.enabled = false` branch (all-noop)
     /// and by tests that mix-and-match fakes.
     pub fn from_parts(
-        rate: Arc<dyn RateLimiter>,
+        wake: Arc<dyn WakePlanner>,
         robots: Arc<dyn RobotsChecker>,
         backoff: Arc<dyn BackoffTracker>,
         blocklist: Blocklist,
         config: PolitenessConfig,
     ) -> Self {
         Self {
-            rate,
+            wake,
             robots,
             backoff,
             blocklist,
@@ -228,7 +217,7 @@ impl Politeness for CompositePoliteness {
     async fn check(&self, url: &CanonicalUrl) -> Result<PoliteDecision> {
         let host = url
             .host()
-            .ok_or_else(|| RedisPolitenessError::NoHost(url.as_str().into()))
+            .ok_or_else(|| PolitenessError::NoHost(url.as_str().into()))
             .map_err(Error::from)?;
 
         if self.blocklist.is_blocked(host) {
@@ -247,27 +236,19 @@ impl Politeness for CompositePoliteness {
             return Ok(PoliteDecision::Disallow);
         }
 
-        match self.rate.check(url).await? {
-            PoliteDecision::Allow => {
-                record_check_decision(crate::metrics::DECISION_ALLOW);
-                Ok(PoliteDecision::Allow)
-            }
-            PoliteDecision::Disallow => {
-                // The Redis rate limiter's only `Disallow` cause
-                // today is the per-host `max_urls` quota; future
-                // sub-impls may add reasons but the label set on
-                // the check-decision counter stays bounded.
-                record_check_decision(crate::metrics::DECISION_DISALLOW_QUOTA);
-                Ok(PoliteDecision::Disallow)
-            }
-        }
+        // Wake-time pacing is enforced by the frontier (the host's
+        // claimable state is gated on the wake ZSET); URL-count
+        // quota is enforced at submit time by `Frontier::submit_batch`.
+        // No further gate fires in this trait.
+        record_check_decision(crate::metrics::DECISION_ALLOW);
+        Ok(PoliteDecision::Allow)
     }
 
     #[tracing::instrument(skip(self), fields(url = %url))]
     async fn record_fetch(&self, url: &CanonicalUrl) -> Result<NextWake> {
         let host = url
             .host()
-            .ok_or_else(|| RedisPolitenessError::NoHost(url.as_str().into()))
+            .ok_or_else(|| PolitenessError::NoHost(url.as_str().into()))
             .map_err(Error::from)?;
 
         // A successful fetch resets the circuit-breaker state.
@@ -278,7 +259,7 @@ impl Politeness for CompositePoliteness {
             redis_backoff.reset_on_success(host).await?;
         }
 
-        self.rate.record_fetch(host).await
+        self.wake.record_fetch(host).await
     }
 
     #[tracing::instrument(skip(self), fields(url = %url, kind = ?kind))]

@@ -38,11 +38,11 @@ pub use traits::outbox::{Outbox, OutboxEntry, OutboxRowId, ShipFn, ShipFuture};
 pub use traits::parser::Parser;
 pub use traits::politeness::{FailureKind, PoliteDecision, Politeness};
 pub use traits::proxy::{ProxyOutcome, ProxyResolver, ProxySelection};
-pub use traits::rate_limiter::RateLimiter;
 pub use traits::robots_checker::RobotsChecker;
 pub use traits::sharding::{HostHashShardPolicy, ShardKey, ShardingPolicy, SingleShardPolicy};
 pub use traits::site_adapter::{SiteAdapter, SiteAdapterRegistry};
 pub use traits::store::Store;
+pub use traits::wake_planner::WakePlanner;
 pub use types::{
     AttemptId, FetchRequest, FetchResponse, LinkDispatch, NextWake, ParsedDocument, RedirectHop,
     StoreRecord, UrlEntry, UrlId, UrlMetadata, UrlStatus, WorkerIdentity,

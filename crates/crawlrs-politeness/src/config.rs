@@ -82,6 +82,27 @@ impl Default for PolitenessConfig {
     }
 }
 
+impl PolitenessConfig {
+    /// `true` when at least one host has a non-zero `host_delay`
+    /// configured (the global default, or any `per_domain`
+    /// override). `false` means every effective delay resolves
+    /// to zero, so callers can skip per-host lookups.
+    ///
+    /// Read once at wake-planner construction; the planner caches
+    /// the verdict and uses it to short-circuit the per-host
+    /// delay lookup on the hot path. See `RedisWakePlanner` and
+    /// the worker's `apply_wake_plan` for the downstream
+    /// `Frontier::advance_wake` skip when this returns `false`.
+    pub fn has_host_delay(&self) -> bool {
+        if !self.host_delay.is_zero() {
+            return true;
+        }
+        self.per_domain
+            .values()
+            .any(|o| o.host_delay.is_some_and(|d| !d.is_zero()))
+    }
+}
+
 /// Per-domain overrides of the global politeness defaults.
 ///
 /// Every field is `Option`; `None` means "inherit the default".

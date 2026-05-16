@@ -21,7 +21,7 @@ use crawlrs_core::{
 use crawlrs_fakes::{FakeFetcher, InMemoryMetadataStore, InMemoryStore};
 use crawlrs_frontier::{BloomConfig, RedisFrontier};
 use crawlrs_parse::LolHtmlParser;
-use crawlrs_politeness::{PolitenessConfig, RedisPoliteness};
+use crawlrs_politeness::{CompositePoliteness, PolitenessConfig};
 use crawlrs_runtime::{Crawler, CrawlerConfig};
 use testcontainers::core::WaitFor;
 use testcontainers::runners::AsyncRunner;
@@ -125,14 +125,13 @@ async fn build_crawler_with_scope(
     );
     let fetcher = Arc::new(FakeFetcher::default());
     let politeness = Arc::new(
-        RedisPoliteness::new(
+        CompositePoliteness::new(
             fx.pool.clone(),
             policy.clone(),
             vec![0],
             fetcher.clone(),
             rid.clone(),
             politeness_config,
-            crawl_scope.clone(),
             blocklist,
         )
         .await

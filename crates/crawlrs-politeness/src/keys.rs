@@ -38,12 +38,4 @@ impl KeyPrefix {
     pub fn robots(&self, shard: ShardKey, host: &str) -> String {
         format!("crawlrs:{}:s{}:robots:{}", self.run_id, shard, host)
     }
-
-    /// `crawlrs:{run_id}:s{shard}:fetch_count:{host}`. Plain integer
-    /// counter incremented once per successful fetch for the host.
-    /// Only written when at least one URL-count quota is configured;
-    /// the key never exists for runs with no quotas in play.
-    pub fn fetch_count(&self, shard: ShardKey, host: &str) -> String {
-        format!("crawlrs:{}:s{}:fetch_count:{}", self.run_id, shard, host)
-    }
 }

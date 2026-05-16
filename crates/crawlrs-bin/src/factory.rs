@@ -10,16 +10,16 @@ use std::sync::Arc;
 use anyhow::{Context, Result, anyhow, bail};
 use bb8_redis::RedisConnectionManager;
 use crawlrs_core::{
-    BackoffTracker, Blocklist, CrawlOverride, CrawlScope, HostHashShardPolicy, RateLimiter,
-    RobotsChecker, ShardKey, ShardingPolicy,
+    BackoffTracker, Blocklist, CrawlOverride, CrawlScope, HostHashShardPolicy, RobotsChecker,
+    ShardKey, ShardingPolicy, WakePlanner,
 };
 use crawlrs_fetch::{NoProxyResolver, WreqFetcher, WreqFetcherConfig};
 use crawlrs_frontier::{RedisFrontier, validate_pool_size};
 use crawlrs_metadata::PostgresMetadataStore;
 use crawlrs_parse::LolHtmlParser;
 use crawlrs_politeness::{
-    CompositePoliteness, NoopBackoffTracker, NoopRateLimiter, NoopRobotsChecker,
-    PolitenessConfig as CorePolitenessConfig, RedisPoliteness,
+    CompositePoliteness, NoopBackoffTracker, NoopRobotsChecker, NoopWakePlanner,
+    PolitenessConfig as CorePolitenessConfig,
 };
 use crawlrs_runtime::{Crawler, CrawlerConfig};
 use crawlrs_store::{MultiStore, ParquetStore, PathBuilder, RotationPolicy, WarcStore};
@@ -35,7 +35,7 @@ use crate::config::{CrawlrsConfig, StoreBackend};
 pub struct Built {
     pub crawler: Crawler,
     pub frontier: Arc<RedisFrontier>,
-    pub politeness: Arc<RedisPoliteness>,
+    pub politeness: Arc<CompositePoliteness>,
     pub metadata: Arc<PostgresMetadataStore>,
 }
 
@@ -89,7 +89,6 @@ pub async fn build(config: &CrawlrsConfig) -> Result<Built> {
         &sharding_policy,
         &owned_shards,
         &fetcher,
-        crawl_scope.clone(),
         blocklist,
     )
     .await?;
@@ -234,11 +233,11 @@ fn build_blocklist(config: &CrawlrsConfig) -> Blocklist {
 /// Choose the politeness wiring based on `[politeness].enabled`.
 ///
 /// `true` (default): full Redis-backed `CompositePoliteness` with
-/// the three sub-impls (`RedisRateLimiter`, `RedisRobotsChecker`,
+/// the three sub-impls (`RedisWakePlanner`, `RedisRobotsChecker`,
 /// `RedisBackoffTracker`).
 ///
 /// `false`: the three sub-traits are swapped for noop impls
-/// (`NoopRateLimiter` / `NoopRobotsChecker` / `NoopBackoffTracker`),
+/// (`NoopWakePlanner` / `NoopRobotsChecker` / `NoopBackoffTracker`),
 /// wrapped in the same `CompositePoliteness`. The runtime sees an
 /// `Arc<dyn Politeness>` either way; the blocklist (`[access]`)
 /// and crawl scope (`[crawl]`) are *independent* concerns and
@@ -247,30 +246,27 @@ fn build_blocklist(config: &CrawlrsConfig) -> Blocklist {
 /// When disabled, any `[politeness.per_domain]` overrides are
 /// dead config; we log one warning per ignored override so the
 /// operator sees them at boot.
-#[allow(clippy::too_many_arguments)]
 async fn build_politeness(
     config: &CrawlrsConfig,
     redis_pool: &bb8::Pool<RedisConnectionManager>,
     sharding_policy: &Arc<dyn ShardingPolicy>,
     owned_shards: &[ShardKey],
     fetcher: &Arc<WreqFetcher>,
-    crawl_scope: CrawlScope,
     blocklist: Blocklist,
-) -> Result<Arc<RedisPoliteness>> {
+) -> Result<Arc<CompositePoliteness>> {
     if config.politeness.enabled {
         return Ok(Arc::new(
-            RedisPoliteness::new(
+            CompositePoliteness::new(
                 redis_pool.clone(),
                 sharding_policy.clone(),
                 owned_shards.to_vec(),
                 fetcher.clone(),
                 &config.run_id,
                 build_politeness_config(config),
-                crawl_scope,
                 blocklist,
             )
             .await
-            .context("constructing RedisPoliteness")?,
+            .context("constructing CompositePoliteness")?,
         ));
     }
 
@@ -280,12 +276,11 @@ async fn build_politeness(
     for host in config.politeness.per_domain.keys() {
         warn!("politeness.enabled=false; ignoring per_domain override for {host:?}",);
     }
-    let rate: Arc<dyn RateLimiter> = Arc::new(NoopRateLimiter);
+    let wake: Arc<dyn WakePlanner> = Arc::new(NoopWakePlanner);
     let robots: Arc<dyn RobotsChecker> = Arc::new(NoopRobotsChecker);
     let backoff: Arc<dyn BackoffTracker> = Arc::new(NoopBackoffTracker);
-    let _ = crawl_scope; // pure-config; the worker reads it via WorkerDeps
     Ok(Arc::new(CompositePoliteness::from_parts(
-        rate,
+        wake,
         robots,
         backoff,
         blocklist,

@@ -22,7 +22,7 @@ use crawlrs_fakes::{FakeFetcher, InMemoryStore};
 use crawlrs_frontier::{BloomConfig, RedisFrontier};
 use crawlrs_metadata::PostgresMetadataStore;
 use crawlrs_parse::LolHtmlParser;
-use crawlrs_politeness::{BackoffPolicy, PolitenessConfig, RedisPoliteness};
+use crawlrs_politeness::{BackoffPolicy, CompositePoliteness, PolitenessConfig};
 use crawlrs_runtime::{Crawler, CrawlerConfig};
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
@@ -125,14 +125,13 @@ async fn end_to_end_against_postgres_metadata_store() {
         ..Default::default()
     };
     let politeness = Arc::new(
-        RedisPoliteness::new(
+        CompositePoliteness::new(
             fx.redis_pool.clone(),
             policy.clone(),
             vec![0],
             fetcher.clone(),
             rid.clone(),
             politeness_cfg,
-            crawlrs_core::CrawlScope::default(),
             crawlrs_core::Blocklist::default(),
         )
         .await

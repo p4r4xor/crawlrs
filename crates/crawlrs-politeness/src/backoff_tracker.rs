@@ -19,7 +19,7 @@ use redis::AsyncCommands;
 use tracing::debug;
 
 use crate::config::BackoffPolicy;
-use crate::error::{LocalResult, RedisPolitenessError};
+use crate::error::{LocalResult, PolitenessError};
 use crate::failure::compute_backoff;
 use crate::keys::KeyPrefix;
 
@@ -71,7 +71,7 @@ impl RedisBackoffTracker {
                 ],
             )
             .await
-            .map_err(RedisPolitenessError::from)
+            .map_err(PolitenessError::from)
             .map_err(Error::from)?;
         Ok(())
     }
@@ -80,12 +80,12 @@ impl RedisBackoffTracker {
         self.pool
             .get()
             .await
-            .map_err(|e| RedisPolitenessError::Pool(format!("{e:?}")))
+            .map_err(|e| PolitenessError::Pool(format!("{e:?}")))
     }
 
     fn assert_owned(&self, shard: ShardKey) -> LocalResult<()> {
         if !self.owned_shards.contains(&shard) {
-            return Err(RedisPolitenessError::ShardNotOwned {
+            return Err(PolitenessError::ShardNotOwned {
                 got: shard,
                 owned: self.owned_shards.clone(),
             });
@@ -105,7 +105,7 @@ impl BackoffTracker for RedisBackoffTracker {
         let failures: Option<u32> = conn
             .hget(&state_key, HOSTSTATE_FIELD_FAILURES)
             .await
-            .map_err(RedisPolitenessError::from)
+            .map_err(PolitenessError::from)
             .map_err(Error::from)?;
         Ok(failures.unwrap_or(0) >= self.backoff.failure_threshold)
     }
@@ -118,7 +118,7 @@ impl BackoffTracker for RedisBackoffTracker {
     ) -> Result<NextWake> {
         let host = url
             .host()
-            .ok_or_else(|| RedisPolitenessError::NoHost(url.as_str().into()))
+            .ok_or_else(|| PolitenessError::NoHost(url.as_str().into()))
             .map_err(Error::from)?;
         let shard = self.sharding_policy.shard_key(url);
         self.assert_owned(shard).map_err(Error::from)?;
@@ -129,7 +129,7 @@ impl BackoffTracker for RedisBackoffTracker {
         let new_failures: u32 = conn
             .hincr(&state_key, HOSTSTATE_FIELD_FAILURES, 1u32)
             .await
-            .map_err(RedisPolitenessError::from)
+            .map_err(PolitenessError::from)
             .map_err(Error::from)?;
 
         let backoff = compute_backoff(new_failures, kind, server_hint, &self.backoff);
@@ -158,7 +158,7 @@ impl BackoffTracker for RedisBackoffTracker {
             .hset(&state_key, HOSTSTATE_FIELD_LAST_KIND, format!("{kind:?}"))
             .query_async(&mut *conn)
             .await
-            .map_err(RedisPolitenessError::from)
+            .map_err(PolitenessError::from)
             .map_err(Error::from)?;
 
         debug!(

@@ -1,28 +1,23 @@
 //! No-op sub-trait implementations.
 //!
 //! Wired by the factory when `politeness.enabled = false`. Each
-//! method returns the permissive answer (Allow / true / false /
-//! immediate next-wake) with no I/O. `CompositePoliteness` wraps
-//! the trio to produce a `Politeness` that disables the politeness
+//! method returns the permissive answer (immediate next-wake /
+//! true / false) with no I/O. `CompositePoliteness` wraps the
+//! trio to produce a `Politeness` that disables the politeness
 //! layer end-to-end without any other code knowing.
 
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use crawlrs_core::{
-    BackoffTracker, CanonicalUrl, FailureKind, NextWake, PoliteDecision, RateLimiter, Result,
-    RobotsChecker,
+    BackoffTracker, CanonicalUrl, FailureKind, NextWake, Result, RobotsChecker, WakePlanner,
 };
 
 #[derive(Debug, Default, Clone, Copy)]
-pub struct NoopRateLimiter;
+pub struct NoopWakePlanner;
 
 #[async_trait]
-impl RateLimiter for NoopRateLimiter {
-    async fn check(&self, _url: &CanonicalUrl) -> Result<PoliteDecision> {
-        Ok(PoliteDecision::Allow)
-    }
-
+impl WakePlanner for NoopWakePlanner {
     async fn record_fetch(&self, host: &str) -> Result<NextWake> {
         Ok(NextWake {
             host: host.to_string(),

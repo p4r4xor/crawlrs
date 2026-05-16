@@ -489,10 +489,11 @@ impl UrlPipeline {
         let _phase = PhaseTimer::start(crate::metrics::PHASE_COMMIT);
 
         // Outbound dispatch strategy. DurableOutbox commits outbound
-        // URLs atomically with metadata so the publisher can replay
-        // them at-least-once; Direct skips the outbox and lets the
-        // worker fire-and-forget into the Frontier after the metadata
-        // commit, accepting bounded loss on transient errors.
+        // URLs atomically with the metadata write into a Postgres
+        // outbox table (drained by a separate publisher task);
+        // Direct enqueues them via `Frontier::submit_batch` after
+        // the metadata commit, accepting bounded loss on transient
+        // errors.
         let outbound_for_metadata: &[UrlEntry] = match self.deps.config.link_dispatch {
             LinkDispatch::DurableOutbox => &outbound,
             LinkDispatch::Direct => &[],

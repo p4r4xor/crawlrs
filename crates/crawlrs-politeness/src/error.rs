@@ -1,14 +1,17 @@
-//! Shared error type for the Redis-backed politeness sub-impls.
+//! Internal error type for the politeness crate.
 //!
-//! Each sub-impl (rate limiter, robots checker, backoff tracker)
-//! produces this internal error and converts to
-//! [`crawlrs_core::Error::Politeness`] at the trait boundary.
+//! Each sub-impl (wake planner, robots checker, backoff tracker,
+//! robots cache) produces this error from its Redis paths and
+//! converts to [`crawlrs_core::Error::Politeness`] at the trait
+//! boundary. The type stays `pub(crate)` because nothing outside
+//! the crate constructs or matches on it; the domain `Error` is
+//! the public surface.
 
 use crawlrs_core::{Error, ShardKey};
 use thiserror::Error as ThisError;
 
 #[derive(Debug, ThisError)]
-pub enum RedisPolitenessError {
+pub(crate) enum PolitenessError {
     #[error("redis error: {0}")]
     Redis(#[from] redis::RedisError),
 
@@ -28,10 +31,10 @@ pub enum RedisPolitenessError {
     NoHost(String),
 }
 
-impl From<RedisPolitenessError> for Error {
-    fn from(e: RedisPolitenessError) -> Self {
+impl From<PolitenessError> for Error {
+    fn from(e: PolitenessError) -> Self {
         Error::Politeness(e.to_string())
     }
 }
 
-pub type LocalResult<T> = std::result::Result<T, RedisPolitenessError>;
+pub(crate) type LocalResult<T> = std::result::Result<T, PolitenessError>;

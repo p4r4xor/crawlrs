@@ -20,7 +20,7 @@ use std::time::Duration;
 
 use crawlrs_frontier::RedisFrontier;
 use crawlrs_metadata::PostgresMetadataStore;
-use crawlrs_politeness::RedisPoliteness;
+use crawlrs_politeness::CompositePoliteness;
 use tokio::sync::watch;
 use tracing::{debug, warn};
 
@@ -28,7 +28,7 @@ const DEFAULT_INTERVAL: Duration = Duration::from_secs(15);
 
 pub async fn run(
     frontier: Arc<RedisFrontier>,
-    politeness: Arc<RedisPoliteness>,
+    politeness: Arc<CompositePoliteness>,
     metadata: Arc<PostgresMetadataStore>,
     mut shutdown: watch::Receiver<bool>,
 ) {
