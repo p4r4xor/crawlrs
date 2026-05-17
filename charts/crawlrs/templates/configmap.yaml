@@ -143,9 +143,10 @@ data:
     [sharding]
     num_shards = {{ .Values.sharding.numShards | int64 }}
   {{- if .Values.seeds.content }}
-  # Optional seed list. Mounted at /etc/crawlrs/seeds.txt and passed
-  # to the binary as `--seeds /etc/crawlrs/seeds.txt` via the
-  # StatefulSet args.
+  # Optional seed list. Mounted at /etc/crawlrs/seeds.txt. Consumed
+  # by the post-install `<release>-crawlrs-seed` Job which runs
+  # `crawlrs seed --path /etc/crawlrs/seeds.txt` once and exits.
+  # The StatefulSet never reads this key.
   seeds.txt: |
     {{- .Values.seeds.content | nindent 4 }}
   {{- end }}

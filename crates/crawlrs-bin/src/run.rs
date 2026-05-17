@@ -2,14 +2,12 @@
 //! maintenance loop, shutdown signal, and the runtime worker pool
 //! into a single tokio process.
 
-use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use crawlrs_core::{CanonicalUrl, Frontier, UrlEntry};
 use metrics_exporter_prometheus::{Matcher, PrometheusBuilder};
 use tokio::sync::watch;
-use tracing::{info, warn};
+use tracing::info;
 
 use crate::cli::CrawlArgs;
 use crate::config::CrawlrsConfig;
@@ -90,10 +88,6 @@ pub async fn crawl(args: CrawlArgs) -> Result<()> {
 
     let built = factory::build(&config).await.context("factory::build")?;
 
-    if let Some(seeds_path) = &args.seeds {
-        load_seeds(seeds_path, built.frontier.as_ref()).await?;
-    }
-
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
     // HTTP host (axum) - separate task. Stops cleanly on shutdown.
@@ -146,49 +140,8 @@ pub async fn crawl(args: CrawlArgs) -> Result<()> {
     Ok(())
 }
 
-/// Read a seeds file (one URL per line; blank and `#`-prefixed lines
-/// ignored) and submit all URLs to the frontier in one batch.
-async fn load_seeds(path: &Path, frontier: &dyn Frontier) -> Result<()> {
-    let contents = tokio::fs::read_to_string(path)
-        .await
-        .with_context(|| format!("reading seeds file {}", path.display()))?;
-    let mut entries = Vec::new();
-    for (line_no, raw_line) in contents.lines().enumerate() {
-        let line = raw_line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        match CanonicalUrl::parse(line) {
-            Ok(url) => entries.push(UrlEntry::seed(url)),
-            Err(e) => warn!(
-                line = line_no + 1,
-                value = line,
-                error = %e,
-                "skipping malformed seed URL"
-            ),
-        }
-    }
-    if entries.is_empty() {
-        info!(path = %path.display(), "seeds file is empty; nothing to submit");
-        return Ok(());
-    }
-    let count = entries.len();
-    let outcome = frontier
-        .submit_batch(entries)
-        .await
-        .context("frontier.submit_batch (seeds)")?;
-    info!(
-        path = %path.display(),
-        seeds = count,
-        newly_inserted = outcome.newly,
-        rejected_quota = outcome.rejected_quota,
-        "seeds submitted"
-    );
-    Ok(())
-}
-
 /// Attach Prometheus help text + units to every metric in the
-/// 29-metric contract. Idempotent; safe to call multiple times.
+/// metric contract. Idempotent; safe to call multiple times.
 fn install_metrics_descriptions() {
     crawlrs_runtime::metrics::register();
     crawlrs_frontier::metrics::register();

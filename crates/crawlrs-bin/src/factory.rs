@@ -124,6 +124,39 @@ pub async fn build(config: &CrawlrsConfig) -> Result<Built> {
     })
 }
 
+/// Construct only the RedisFrontier (no Postgres, no store, no parser,
+/// no politeness). Used by the `crawlrs seed` subcommand which only
+/// needs to push URLs into the Frontier and exit.
+///
+/// Owns every shard for the seed pass; sharding is a runtime concern
+/// (which pod claims which URL), not a load-time one.
+pub async fn build_frontier(config: &CrawlrsConfig) -> Result<Arc<RedisFrontier>> {
+    let sharding_policy: Arc<dyn ShardingPolicy> =
+        Arc::new(HostHashShardPolicy::new(config.sharding.num_shards));
+    let owned_shards: Vec<ShardKey> = (0..config.sharding.num_shards).collect();
+
+    let redis_pool = build_redis_pool(config).await?;
+    let crawl_scope = build_crawl_scope(config);
+
+    let frontier = Arc::new(
+        RedisFrontier::new(
+            redis_pool,
+            sharding_policy,
+            owned_shards,
+            &config.run_id,
+            crawlrs_frontier::BloomConfig {
+                capacity: config.frontier.bloom_capacity,
+                fpr: config.frontier.bloom_fpr,
+            },
+            crawl_scope,
+        )
+        .await
+        .context("constructing RedisFrontier")?
+        .with_lease_timeout(config.frontier.lease_timeout),
+    );
+    Ok(frontier)
+}
+
 async fn build_redis_pool(config: &CrawlrsConfig) -> Result<bb8::Pool<RedisConnectionManager>> {
     // For v1 we accept the URL as-is; bb8-redis's RedisConnectionManager
     // parses redis:// URLs natively. Sentinel mode (redis-sentinel://)

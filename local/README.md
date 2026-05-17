@@ -96,8 +96,14 @@ make local-pf
 ```
 
 The `--set-file crawlrs.seeds.content=local/seeds.txt` reads the seed
-list from disk and renders it into the chart's ConfigMap so the
-crawler picks them up at startup via `--seeds /etc/crawlrs/seeds.txt`.
+list from disk and renders it into the chart's ConfigMap. A
+post-install Helm Job (`<release>-crawlrs-seed`) then runs
+`crawlrs seed --path /etc/crawlrs/seeds.txt` once to load them into
+the Frontier. The crawler StatefulSet itself never touches seeds,
+so pod restarts do NOT re-trigger seed-loading. To re-run the seed
+Job after the initial install (e.g. after wiping Redis), use
+`helm install --replace` or
+`kubectl create job --from=job/<release>-crawlrs-seed reseed-$(date +%s)`.
 
 ## Tear down
 

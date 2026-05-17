@@ -149,14 +149,24 @@ frontier:
   # Redis RAM.
   bloomFpr: 0.001
 
-# Optional initial seed URLs loaded into the frontier at startup.
-# When `content` is non-empty, the chart renders it into the same
-# ConfigMap as crawl.toml (mounted at /etc/crawlrs/seeds.txt) and
-# appends `--seeds /etc/crawlrs/seeds.txt` to the StatefulSet args.
+# Optional initial seed URLs loaded into the Frontier at chart-install
+# time. When `content` is non-empty:
+#
+#   1. The chart renders it into the main ConfigMap as `seeds.txt`
+#      (alongside `crawl.toml`), mounted at /etc/crawlrs/seeds.txt.
+#   2. A one-shot `crawlrs seed` Job is created via the
+#      `helm.sh/hook: post-install` annotation. It loads the URLs
+#      into the Frontier and exits.
+#
+# The StatefulSet itself NEVER reads seeds; pod restarts do not
+# re-trigger seed-loading. To force a reseed after the initial
+# install, run `helm install --replace ...` or
+# `kubectl create job --from=job/<release>-seed reseed-...`.
+#
 # Production deployments typically leave this empty and load the
-# frontier externally (kubectl exec, redis-cli, a one-shot Job).
-# Local sandboxes set `content` to a multi-line string of URLs
-# (one per line; blank lines and `#`-prefixed lines are skipped).
+# Frontier externally (their own bootstrap job, Postgres-backed
+# populator, etc.). Local sandboxes set `content` to a multi-line
+# string of URLs (one per line; blanks + `#`-prefixed lines skipped).
 seeds:
   content: ""
 

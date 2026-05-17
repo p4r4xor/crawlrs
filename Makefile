@@ -41,9 +41,13 @@ clean: ## cargo clean + remove helm-resolved tarballs
 
 # ---- Binary helpers -------------------------------------------------
 
+.PHONY: seed
+seed: ## Bootstrap the Frontier with URLs from ./seeds.txt (one-shot)
+	cargo run -p crawlrs-bin -- seed --config ./crawl.toml --path ./seeds.txt
+
 .PHONY: run
-run: ## Run the crawler against ./crawl.toml + ./seeds.txt
-	cargo run -p crawlrs-bin -- crawl --config ./crawl.toml --seeds ./seeds.txt
+run: ## Run the crawler against ./crawl.toml (seed separately via `make seed`)
+	cargo run -p crawlrs-bin -- crawl --config ./crawl.toml
 
 .PHONY: validate
 validate: ## Validate the example config

@@ -1,42 +1,73 @@
 {
-  "uid": "crawlrs-resources",
-  "title": "Container Resources",
-  "tags": [
-    "crawlrs",
-    "resources"
-  ],
-  "timezone": "browser",
-  "schemaVersion": 39,
-  "refresh": "10s",
-  "time": {
-    "from": "now-30m",
-    "to": "now"
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
   },
-  "templating": {
-    "list": []
-  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": 3,
+  "links": [],
   "panels": [
     {
-      "id": 1,
-      "type": "timeseries",
-      "title": "Memory % of limit (cAdvisor working set / limit)",
-      "description": "container_memory_working_set_bytes / container_spec_memory_limit_bytes. cAdvisor's working set is what the kernel OOM killer compares against the limit, so this is the ratio that actually triggers OOMKill at 100%.",
       "datasource": {
         "type": "prometheus",
         "uid": "crawlrs-vm"
       },
-      "targets": [
-        {
-          "expr": "100 * container_memory_working_set_bytes{namespace=\"crawlrs\", container=\"crawlrs\"} / on(pod, container) container_spec_memory_limit_bytes{namespace=\"crawlrs\", container=\"crawlrs\"}",
-          "legendFormat": "{{pod}}",
-          "refId": "A"
-        }
-      ],
+      "description": "container_memory_working_set_bytes / container_spec_memory_limit_bytes, expressed as percent. The working set is what the kernel OOM killer compares against the limit, so this IS the curve that triggers OOMKill at 100%. Threshold-shaded: green <70%, yellow 70-85%, red >85%. If this line spends time in the red zone, raise the limit or shrink the worker pool.",
       "fieldConfig": {
         "defaults": {
-          "unit": "percent",
-          "min": 0,
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "% of memory limit",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 20,
+            "gradientMode": "scheme",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "dashed"
+            }
+          },
+          "mappings": [],
           "max": 100,
+          "min": 0,
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -49,439 +80,69 @@
                 "value": 70
               },
               {
-                "color": "red",
+                "color": "orange",
                 "value": 85
+              },
+              {
+                "color": "red",
+                "value": 95
               }
             ]
           },
-          "custom": {
-            "thresholdsStyle": {
-              "mode": "line"
-            },
-            "lineWidth": 2,
-            "gradientMode": "opacity",
-            "fillOpacity": 15,
-            "showPoints": "never"
-          },
-          "color": {
-            "mode": "palette-classic"
-          }
-        }
+          "unit": "percent"
+        },
+        "overrides": []
       },
       "gridPos": {
-        "h": 7,
-        "w": 12,
+        "h": 10,
+        "w": 18,
         "x": 0,
         "y": 0
       },
+      "id": 1,
       "options": {
         "legend": {
-          "displayMode": "table",
           "calcs": [
             "mean",
-            "lastNotNull",
-            "max"
+            "max",
+            "last"
           ],
-          "placement": "bottom"
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
         },
         "tooltip": {
           "mode": "multi",
           "sort": "desc"
         }
-      }
-    },
-    {
-      "id": 2,
-      "type": "timeseries",
-      "title": "Container RSS (cAdvisor)",
-      "description": "container_memory_rss: anonymous + file pages mapped into the container. Diverges from process /proc rss when the container runs sidecars.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "crawlrs-vm"
       },
+      "pluginVersion": "11.4.0",
       "targets": [
         {
-          "expr": "container_memory_rss{namespace=\"crawlrs\", container=\"crawlrs\"}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "crawlrs-vm"
+          },
+          "expr": "100 * container_memory_working_set_bytes{namespace=\"crawlrs\", container=\"crawlrs\"} / on(pod, container) container_spec_memory_limit_bytes{namespace=\"crawlrs\", container=\"crawlrs\"}",
           "legendFormat": "{{pod}}",
           "refId": "A"
         }
       ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "bytes",
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "lineWidth": 2,
-            "gradientMode": "opacity",
-            "fillOpacity": 15,
-            "showPoints": "never"
-          }
-        }
-      },
-      "gridPos": {
-        "h": 7,
-        "w": 12,
-        "x": 12,
-        "y": 0
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "calcs": [
-            "mean",
-            "lastNotNull",
-            "max"
-          ],
-          "placement": "bottom"
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      }
+      "title": "Memory % of container limit",
+      "type": "timeseries"
     },
     {
-      "id": 3,
-      "type": "timeseries",
-      "title": "Process RSS (heartbeat /proc/self/status)",
-      "description": "VmRSS from /proc/self/status, scraped via the crawler's own /metrics. Should track cAdvisor RSS closely; a steady gap means the process is allocating but not touching the pages.",
       "datasource": {
         "type": "prometheus",
         "uid": "crawlrs-vm"
       },
-      "targets": [
-        {
-          "expr": "crawlrs_process_rss_bytes",
-          "legendFormat": "{{instance}}",
-          "refId": "A"
-        },
-        {
-          "expr": "crawlrs_process_hwm_bytes",
-          "legendFormat": "{{instance}} hwm",
-          "refId": "B"
-        }
-      ],
+      "description": "container_oom_events_total: kernel-recorded OOM kills against the cgroup. Wrapped in max_over_time(...[1h]) so OOM events that fired in a previous container generation (which get reset to 0 on container restart) still show up here. Non-zero means a pod was killed for memory pressure in the last hour. Correlate with the working-set chart on the left. Source: max_over_time(container_oom_events_total[1h]).",
       "fieldConfig": {
         "defaults": {
-          "unit": "bytes",
           "color": {
-            "mode": "palette-classic"
+            "mode": "thresholds"
           },
-          "custom": {
-            "lineWidth": 2,
-            "gradientMode": "opacity",
-            "fillOpacity": 15,
-            "showPoints": "never"
-          }
-        }
-      },
-      "gridPos": {
-        "h": 7,
-        "w": 12,
-        "x": 0,
-        "y": 7
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "calcs": [
-            "mean",
-            "lastNotNull",
-            "max"
-          ],
-          "placement": "bottom"
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      }
-    },
-    {
-      "id": 4,
-      "type": "timeseries",
-      "title": "Allocator fragmentation: VmData - RSS",
-      "description": "Gap between what the program owns (data+stack+heap) and what's resident. A widening gap suggests the allocator is reserving address space it never returns to the OS; a narrowing gap with rising RSS suggests genuine retained allocation.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "crawlrs-vm"
-      },
-      "targets": [
-        {
-          "expr": "crawlrs_process_data_bytes - crawlrs_process_rss_bytes",
-          "legendFormat": "{{instance}} data-rss",
-          "refId": "A"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "bytes",
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "lineWidth": 2,
-            "gradientMode": "opacity",
-            "fillOpacity": 15,
-            "showPoints": "never"
-          }
-        }
-      },
-      "gridPos": {
-        "h": 7,
-        "w": 12,
-        "x": 12,
-        "y": 7
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "calcs": [
-            "mean",
-            "lastNotNull",
-            "max"
-          ],
-          "placement": "bottom"
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      }
-    },
-    {
-      "id": 5,
-      "type": "timeseries",
-      "title": "Tokio alive tasks",
-      "description": "Total tasks the tokio runtime is tracking. Should plateau at workers + a few maintenance / supervisor tasks. Linear climb is the canonical signal of a leaked spawn.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "crawlrs-vm"
-      },
-      "targets": [
-        {
-          "expr": "crawlrs_tokio_alive_tasks",
-          "legendFormat": "{{instance}}",
-          "refId": "A"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "lineWidth": 2,
-            "gradientMode": "opacity",
-            "fillOpacity": 15,
-            "showPoints": "never"
-          }
-        }
-      },
-      "gridPos": {
-        "h": 7,
-        "w": 12,
-        "x": 0,
-        "y": 14
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "calcs": [
-            "mean",
-            "lastNotNull",
-            "max"
-          ],
-          "placement": "bottom"
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      }
-    },
-    {
-      "id": 6,
-      "type": "timeseries",
-      "title": "CPU usage (cores)",
-      "description": "rate(container_cpu_usage_seconds_total[1m]). At the 2-core limit this maxes at 2.0; sustained at-limit CPU is a saturation signal worth correlating with pipeline latency.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "crawlrs-vm"
-      },
-      "targets": [
-        {
-          "expr": "rate(container_cpu_usage_seconds_total{namespace=\"crawlrs\", container=\"crawlrs\"}[1m])",
-          "legendFormat": "{{pod}}",
-          "refId": "A"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "lineWidth": 2,
-            "gradientMode": "opacity",
-            "fillOpacity": 15,
-            "showPoints": "never"
-          }
-        }
-      },
-      "gridPos": {
-        "h": 7,
-        "w": 12,
-        "x": 12,
-        "y": 14
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "calcs": [
-            "mean",
-            "lastNotNull",
-            "max"
-          ],
-          "placement": "bottom"
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      }
-    },
-    {
-      "id": 7,
-      "type": "timeseries",
-      "title": "Process threads",
-      "description": "Thread count from /proc/self/status. tokio_workers is the configured pool size; this is the OS-level total. A growing gap usually means a blocking-pool task spawned and held a thread.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "crawlrs-vm"
-      },
-      "targets": [
-        {
-          "expr": "crawlrs_process_threads",
-          "legendFormat": "{{instance}} threads",
-          "refId": "A"
-        },
-        {
-          "expr": "crawlrs_tokio_workers",
-          "legendFormat": "{{instance}} tokio_workers",
-          "refId": "B"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "lineWidth": 2,
-            "gradientMode": "opacity",
-            "fillOpacity": 15,
-            "showPoints": "never"
-          }
-        }
-      },
-      "gridPos": {
-        "h": 7,
-        "w": 8,
-        "x": 0,
-        "y": 21
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "calcs": [
-            "mean",
-            "lastNotNull",
-            "max"
-          ],
-          "placement": "bottom"
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      }
-    },
-    {
-      "id": 8,
-      "type": "timeseries",
-      "title": "Open file descriptors",
-      "description": "/proc/self/fd entries: sockets, files, pipes, anon-inode fds. Sustained climb past steady state means a connection or file isn't being closed.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "crawlrs-vm"
-      },
-      "targets": [
-        {
-          "expr": "crawlrs_process_fds",
-          "legendFormat": "{{instance}}",
-          "refId": "A"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "lineWidth": 2,
-            "gradientMode": "opacity",
-            "fillOpacity": 15,
-            "showPoints": "never"
-          }
-        }
-      },
-      "gridPos": {
-        "h": 7,
-        "w": 8,
-        "x": 8,
-        "y": 21
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "calcs": [
-            "mean",
-            "lastNotNull",
-            "max"
-          ],
-          "placement": "bottom"
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      }
-    },
-    {
-      "id": 9,
-      "type": "stat",
-      "title": "OOM events (cumulative)",
-      "description": "container_oom_events_total: kernel-recorded OOM kills against the cgroup. Non-zero means a pod was killed for memory; correlate with the working-set trace above.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "crawlrs-vm"
-      },
-      "targets": [
-        {
-          "expr": "sum(container_oom_events_total{namespace=\"crawlrs\", container=\"crawlrs\"})",
-          "refId": "A"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
+          "mappings": [],
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -494,190 +155,1370 @@
                 "value": 1
               }
             ]
-          }
-        }
+          },
+          "unit": "short"
+        },
+        "overrides": []
       },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 18,
+        "y": 0
+      },
+      "id": 2,
       "options": {
         "colorMode": "background",
-        "graphMode": "none"
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
       },
-      "gridPos": {
-        "h": 7,
-        "w": 8,
-        "x": 16,
-        "y": 21
-      }
+      "pluginVersion": "11.4.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "crawlrs-vm"
+          },
+          "expr": "max(max_over_time(container_oom_events_total{namespace=\"crawlrs\", container=\"crawlrs\"}[1h]))",
+          "refId": "A"
+        }
+      ],
+      "title": "OOM events (cumulative)",
+      "type": "stat"
     },
     {
-      "id": 10,
-      "type": "timeseries",
-      "title": "Virtual address space (VmSize, VmPeak)",
-      "description": "VmSize is the current virtual-memory footprint; VmPeak is the high-water mark since process start. A flat VmPeak with rising RSS means the allocator isn't requesting more address space, just touching pages it already owns. A climbing VmPeak that never settles is the address-space-leak signature.",
       "datasource": {
         "type": "prometheus",
         "uid": "crawlrs-vm"
       },
-      "targets": [
-        {
-          "expr": "crawlrs_process_vsize_bytes",
-          "legendFormat": "{{instance}} vsize",
-          "refId": "A"
-        },
-        {
-          "expr": "crawlrs_process_peak_bytes",
-          "legendFormat": "{{instance}} peak",
-          "refId": "B"
-        }
-      ],
+      "description": "Current container_memory_rss (resident, anonymous + file-backed pages). The number that grows when workers hold body buffers + Parquet rows in memory. Source: container_memory_rss.",
       "fieldConfig": {
         "defaults": {
-          "unit": "bytes",
           "color": {
-            "mode": "palette-classic"
+            "fixedColor": "blue",
+            "mode": "fixed"
           },
-          "custom": {
-            "lineWidth": 2,
-            "gradientMode": "opacity",
-            "fillOpacity": 15,
-            "showPoints": "never"
-          }
-        }
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "transparent",
+                "value": null
+              }
+            ]
+          },
+          "unit": "decbytes"
+        },
+        "overrides": []
       },
       "gridPos": {
-        "h": 7,
-        "w": 24,
-        "x": 0,
-        "y": 28
+        "h": 5,
+        "w": 6,
+        "x": 18,
+        "y": 5
       },
+      "id": 3,
       "options": {
-        "legend": {
-          "displayMode": "table",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
           "calcs": [
-            "mean",
-            "lastNotNull",
-            "max"
+            "lastNotNull"
           ],
-          "placement": "bottom"
+          "fields": "",
+          "values": false
         },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "11.4.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "crawlrs-vm"
+          },
+          "expr": "max(container_memory_rss{namespace=\"crawlrs\", container=\"crawlrs\"})",
+          "refId": "A"
         }
-      }
+      ],
+      "title": "RSS now",
+      "type": "stat"
     },
     {
-      "id": 11,
-      "type": "timeseries",
-      "title": "Disk IO (bytes/sec)",
-      "description": "rate(container_fs_writes_bytes_total) and rate(container_fs_reads_bytes_total). Spikes on write track Parquet/WARC rotation; sustained read activity is unusual for a write-only crawler workload.",
       "datasource": {
         "type": "prometheus",
         "uid": "crawlrs-vm"
       },
-      "targets": [
-        {
-          "expr": "sum by (pod) (rate(container_fs_writes_bytes_total{namespace=\"crawlrs\", container=\"crawlrs\"}[1m]))",
-          "legendFormat": "{{pod}} write",
-          "refId": "A"
-        },
-        {
-          "expr": "sum by (pod) (rate(container_fs_reads_bytes_total{namespace=\"crawlrs\", container=\"crawlrs\"}[1m]))",
-          "legendFormat": "{{pod}} read",
-          "refId": "B"
-        }
-      ],
+      "description": "Total tasks the tokio runtime is tracking. Should plateau roughly at `workers + supervisor + maintenance`. A linear climb is the canonical signal of a leaked spawn (a task being created but never completed or cancelled). Source: crawlrs_tokio_alive_tasks.",
       "fieldConfig": {
         "defaults": {
-          "unit": "Bps",
           "color": {
             "mode": "palette-classic"
           },
           "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "tasks",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 20,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
             "lineWidth": 2,
-            "gradientMode": "opacity",
-            "fillOpacity": 15,
-            "showPoints": "never"
-          }
-        }
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "calcs": [
-            "mean",
-            "lastNotNull",
-            "max"
-          ],
-          "placement": "bottom"
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "transparent",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
         },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "green",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
-        "h": 7,
+        "h": 9,
         "w": 12,
         "x": 0,
-        "y": 35
-      }
-    },
-    {
-      "id": 12,
-      "type": "timeseries",
-      "title": "Network Traffic (bytes/sec)",
-      "description": "rate(container_network_receive_bytes_total) is what the crawler pulls from the open internet; rate(container_network_transmit_bytes_total) is mostly DNS + outbound headers. A growing receive line that doesn't translate into more crawled URLs suggests either large body sizes or response amplification.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "crawlrs-vm"
+        "y": 10
       },
-      "targets": [
-        {
-          "expr": "sum by (pod) (rate(container_network_receive_bytes_total{namespace=\"crawlrs\"}[1m]))",
-          "legendFormat": "{{pod}} rx",
-          "refId": "A"
-        },
-        {
-          "expr": "sum by (pod) (rate(container_network_transmit_bytes_total{namespace=\"crawlrs\"}[1m]))",
-          "legendFormat": "{{pod}} tx",
-          "refId": "B"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "Bps",
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "lineWidth": 2,
-            "gradientMode": "opacity",
-            "fillOpacity": 15,
-            "showPoints": "never"
-          }
-        }
-      },
+      "id": 8,
       "options": {
         "legend": {
-          "displayMode": "table",
           "calcs": [
             "mean",
-            "lastNotNull",
-            "max"
+            "max",
+            "last"
           ],
-          "placement": "bottom"
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
         },
         "tooltip": {
           "mode": "multi",
           "sort": "desc"
         }
       },
+      "pluginVersion": "11.4.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "crawlrs-vm"
+          },
+          "expr": "max(crawlrs_tokio_alive_tasks)",
+          "legendFormat": "alive tasks",
+          "refId": "A"
+        }
+      ],
+      "title": "Tokio alive tasks",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "crawlrs-vm"
+      },
+      "description": "Pod-level network throughput. rx = bytes received from the open internet (HTML bodies + DNS responses). tx = bytes transmitted (HTTP requests + DNS queries). rx growing without translation into more crawled URLs suggests large body sizes or response amplification; check the body-size percentile panel on Crawler Health. Source: rate(container_network_*_bytes_total[1m]).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "bytes/sec",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 20,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "transparent",
+                "value": null
+              }
+            ]
+          },
+          "unit": "Bps"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "green",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              },
+              {
+                "id": "displayName",
+                "value": "rx (in)"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "B"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "blue",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "displayName",
+                "value": "tx (out)"
+              }
+            ]
+          }
+        ]
+      },
       "gridPos": {
-        "h": 7,
+        "h": 9,
         "w": 12,
         "x": 12,
+        "y": 10
+      },
+      "id": 12,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max",
+            "last"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "11.4.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "crawlrs-vm"
+          },
+          "expr": "sum by (pod) (rate(container_network_receive_bytes_total{namespace=\"crawlrs\"}[1m]))",
+          "legendFormat": "rx",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "crawlrs-vm"
+          },
+          "expr": "sum by (pod) (rate(container_network_transmit_bytes_total{namespace=\"crawlrs\"}[1m]))",
+          "legendFormat": "tx",
+          "refId": "B"
+        }
+      ],
+      "title": "Network traffic (rx / tx)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "crawlrs-vm"
+      },
+      "description": "Three views of what's resident: cAdvisor's container_memory_rss (blue, what K8s sees), our heartbeat-scraped /proc/self/status VmRSS (light-blue, what the process self-reports), and VmData (orange, total committed data including stack + heap). Container RSS and process RSS should track each other closely. VmData growing while RSS stays flat means address space committed but pages aren't touched.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "bytes resident",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "transparent",
+                "value": null
+              }
+            ]
+          },
+          "unit": "decbytes"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "blue",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              },
+              {
+                "id": "displayName",
+                "value": "container RSS (cAdvisor)"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "B"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "super-light-blue",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "displayName",
+                "value": "process RSS (/proc)"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "C"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "orange",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "displayName",
+                "value": "VmData (committed)"
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 19
+      },
+      "id": 4,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max",
+            "last"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "11.4.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "crawlrs-vm"
+          },
+          "expr": "max(container_memory_rss{namespace=\"crawlrs\", container=\"crawlrs\"})",
+          "legendFormat": "container RSS (cAdvisor)",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "crawlrs-vm"
+          },
+          "expr": "max(crawlrs_process_rss_bytes)",
+          "legendFormat": "process RSS (/proc)",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "crawlrs-vm"
+          },
+          "expr": "max(crawlrs_process_data_bytes)",
+          "legendFormat": "VmData (committed)",
+          "refId": "C"
+        }
+      ],
+      "title": "Memory residency (container vs process)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "crawlrs-vm"
+      },
+      "description": "Bytes the process has committed to address space but the OS hasn't kept resident. A widening gap means the allocator is holding pages it never returns to the kernel; a narrowing gap with rising RSS means genuine allocation growth. Watch this when you suspect a fragmentation problem rather than a leak.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "bytes (non-resident, committed)",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 30,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "transparent",
+                "value": null
+              }
+            ]
+          },
+          "unit": "decbytes"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "yellow",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 27
+      },
+      "id": 5,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max",
+            "last"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "11.4.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "crawlrs-vm"
+          },
+          "expr": "max(crawlrs_process_data_bytes - crawlrs_process_rss_bytes)",
+          "legendFormat": "VmData - RSS",
+          "refId": "A"
+        }
+      ],
+      "title": "Allocator fragmentation (VmData - RSS)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "crawlrs-vm"
+      },
+      "description": "rate(container_cpu_usage_seconds_total[1m]). At the local-deploy 2-core limit this maxes at 2.0; sustained at-limit CPU is the saturation signal worth correlating with pipeline latency. Threshold lines mark common limits.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "cores",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 20,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "dashed"
+            }
+          },
+          "decimals": 2,
+          "mappings": [],
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "orange",
+                "value": 1.5
+              },
+              {
+                "color": "red",
+                "value": 1.9
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "blue",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
         "y": 35
-      }
+      },
+      "id": 7,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max",
+            "last"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "11.4.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "crawlrs-vm"
+          },
+          "expr": "sum by (pod) (rate(container_cpu_usage_seconds_total{namespace=\"crawlrs\", container=\"crawlrs\"}[1m]))",
+          "legendFormat": "{{pod}}",
+          "refId": "A"
+        }
+      ],
+      "title": "CPU usage (cores)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "crawlrs-vm"
+      },
+      "description": "process_threads (from /proc/self/status) is the OS-level total. tokio_workers is the configured async runtime pool size. The natural gap is `tokio_workers + supervisor + a few blocking-pool threads`. A widening gap means a blocking-pool task spawned and held a thread (or there's a leak in spawn_blocking calls). Source: crawlrs_process_threads, crawlrs_tokio_workers.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "threads",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "transparent",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "blue",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              },
+              {
+                "id": "displayName",
+                "value": "OS threads"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "B"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "purple",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "displayName",
+                "value": "tokio workers"
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 43
+      },
+      "id": 9,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max",
+            "last"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "11.4.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "crawlrs-vm"
+          },
+          "expr": "max(crawlrs_process_threads)",
+          "legendFormat": "OS threads",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "crawlrs-vm"
+          },
+          "expr": "max(crawlrs_tokio_workers)",
+          "legendFormat": "tokio workers",
+          "refId": "B"
+        }
+      ],
+      "title": "OS threads vs tokio workers",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "crawlrs-vm"
+      },
+      "description": "Container-level filesystem read + write throughput. Write spikes coincide with Parquet/WARC rotations; sustained read is unusual for a write-only crawler workload (would indicate something is paging from disk). Source: rate(container_fs_writes_bytes_total[1m]) and rate(container_fs_reads_bytes_total[1m]).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "bytes/sec",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 20,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "transparent",
+                "value": null
+              }
+            ]
+          },
+          "unit": "Bps"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "orange",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              },
+              {
+                "id": "displayName",
+                "value": "write"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "B"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "green",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "displayName",
+                "value": "read"
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 52
+      },
+      "id": 11,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max",
+            "last"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "11.4.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "crawlrs-vm"
+          },
+          "expr": "sum by (pod) (rate(container_fs_writes_bytes_total{namespace=\"crawlrs\", container=\"crawlrs\"}[1m]))",
+          "legendFormat": "write",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "crawlrs-vm"
+          },
+          "expr": "sum by (pod) (rate(container_fs_reads_bytes_total{namespace=\"crawlrs\", container=\"crawlrs\"}[1m]))",
+          "legendFormat": "read",
+          "refId": "B"
+        }
+      ],
+      "title": "Disk IO (read / write)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "crawlrs-vm"
+      },
+      "description": "/proc/self/fd entries: sockets, files, pipes, anon-inodes. Sustained climb past steady state means a connection or file isn't being closed (typically TCP sockets piling up because keep-alive pooling is wrong, or a file handle leak in a writer). Source: crawlrs_process_fds.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "FDs open",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 20,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "transparent",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "purple",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 52
+      },
+      "id": 10,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max",
+            "last"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "11.4.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "crawlrs-vm"
+          },
+          "expr": "max(crawlrs_process_fds)",
+          "legendFormat": "open FDs",
+          "refId": "A"
+        }
+      ],
+      "title": "Open file descriptors",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "crawlrs-vm"
+      },
+      "description": "VmSize = current virtual-memory footprint (everything the process has reserved, resident or not). VmPeak = high-water mark since process start. A flat VmPeak with rising RSS means the allocator isn't requesting more address space, just touching what it owns. A climbing VmPeak that never settles is the classic address-space leak signature.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "bytes (virtual)",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "transparent",
+                "value": null
+              }
+            ]
+          },
+          "unit": "decbytes"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "blue",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "displayName",
+                "value": "VmSize (current)"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "B"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "purple",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              },
+              {
+                "id": "displayName",
+                "value": "VmPeak (high-water mark)"
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 61
+      },
+      "id": 6,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max",
+            "last"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "11.4.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "crawlrs-vm"
+          },
+          "expr": "max(crawlrs_process_vsize_bytes)",
+          "legendFormat": "VmSize",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "crawlrs-vm"
+          },
+          "expr": "max(crawlrs_process_peak_bytes)",
+          "legendFormat": "VmPeak",
+          "refId": "B"
+        }
+      ],
+      "title": "Virtual address space (VmSize / VmPeak)",
+      "type": "timeseries"
     }
-  ]
+  ],
+  "preload": false,
+  "refresh": "10s",
+  "schemaVersion": 40,
+  "tags": [
+    "crawlrs",
+    "resources"
+  ],
+  "templating": {
+    "list": []
+  },
+  "time": {
+    "from": "now-30m",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Container Resources",
+  "uid": "crawlrs-resources",
+  "version": 1,
+  "weekStart": ""
 }

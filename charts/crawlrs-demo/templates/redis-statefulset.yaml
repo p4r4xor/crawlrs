@@ -96,6 +96,35 @@ spec:
           env:
             - name: REDIS_ADDR
               value: "redis://localhost:6379"
+          # Per-namespace + per-key visibility. Two flags:
+          #
+          # 1. --check-key-groups: a *Lua pattern* (not a standard
+          #    regex - oliver006/redis_exporter v1.83 takes Lua); first
+          #    capture is the group name. Groups every
+          #    `crawlrs:{<tag>}:<op>...` key by its <op> segment
+          #    (host_queue, wake, urls, inflight, ready, seen,
+          #    host_count). Emits per-group memory + count so the
+          #    dashboard can answer "which namespace is growing?".
+          #    Lua-pattern caveats: `{` and `}` are literals (no
+          #    escaping); `[^}]+` works the same as in PCRE.
+          #
+          # 2. --check-keys: comma-separated SCAN patterns; runs
+          #    MEMORY USAGE + length-check per matched key and emits
+          #    one series per key. Limited to the bounded-cardinality
+          #    keys (8 per pattern = ~40 series). NOT applied to
+          #    host_queue / host_count which would explode cardinality
+          #    at any nontrivial host count - use redis-cli --bigkeys
+          #    for ad-hoc per-host inspection.
+          #
+          # --check-keys-batch-size governs SCAN batching for both
+          # flags (the exporter uses one batch knob for all check-*
+          # commands). Default is 1000; bumping to 10000 cuts the
+          # number of SCAN round-trips per scrape on large keyspaces.
+          args:
+            - --check-key-groups=^crawlrs:{[^}]+}:([a-z_]+)
+            - --max-distinct-key-groups=20
+            - --check-keys-batch-size=10000
+            - --check-keys=crawlrs:*:urls,crawlrs:*:wake,crawlrs:*:ready,crawlrs:*:inflight,crawlrs:*:seen
           ports:
             - name: metrics
               containerPort: 9121

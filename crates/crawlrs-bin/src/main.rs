@@ -20,7 +20,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use crawlrs_bin::cli::{Cli, Command};
 use crawlrs_bin::config::CrawlrsConfig;
-use crawlrs_bin::run;
+use crawlrs_bin::{run, seed};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -29,6 +29,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Crawl(args) => run::crawl(args).await,
+        Command::Seed(args) => seed::seed(args).await,
         Command::Validate(args) => {
             let config = CrawlrsConfig::load(&args.config)
                 .with_context(|| format!("loading config {}", args.config.display()))?;

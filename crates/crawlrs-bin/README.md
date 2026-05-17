@@ -17,9 +17,12 @@ $EDITOR crawl.toml
 # Validate the config without starting workers
 cargo run -p crawlrs-bin -- validate --config crawl.toml
 
-# Start the crawler with a seeds file
+# Bootstrap the Frontier with seeds (one-shot; idempotent via bloom)
 echo "https://example.com" > seeds.txt
-cargo run -p crawlrs-bin -- crawl --config crawl.toml --seeds seeds.txt
+cargo run -p crawlrs-bin -- seed --config crawl.toml --path seeds.txt
+
+# Start the crawler (pure runtime; never touches seeds again)
+cargo run -p crawlrs-bin -- crawl --config crawl.toml
 ```
 
 The binary mounts an HTTP server at `0.0.0.0:9090` (configurable in
@@ -39,8 +42,12 @@ The binary mounts an HTTP server at `0.0.0.0:9090` (configurable in
 crawlrs <COMMAND>
 
 Commands:
-  crawl     Start the crawler. Loads the config, builds the runtime,
-            mounts the HTTP host, and runs until SIGTERM.
+  crawl     Start the worker pool. Loads the config, builds the
+            runtime, mounts the HTTP host, and runs until SIGTERM.
+            Does not touch seeds.
+  seed      One-shot: load URLs from a file into the Frontier and
+            exit. Tolerant of per-batch failures. Intended to run
+            once via a Helm post-install Job.
   validate  Parse the config file and print a one-line summary.
             Exits non-zero on parse / structural errors.
   version   Print the binary version.
@@ -54,7 +61,7 @@ ergonomics in Kubernetes:
 | Var                  | Overrides              |
 |----------------------|------------------------|
 | `CRAWLRS_CONFIG`     | `--config` path |
-| `CRAWLRS_SEEDS`      | `--seeds` path |
+| `CRAWLRS_SEEDS`      | `crawlrs seed --path` |
 | `CRAWLRS_RUN_ID`     | top-level `run_id` |
 | `CRAWLRS_REDIS_URL`  | `[redis].url` |
 | `CRAWLRS_POSTGRES_URL` | `[postgres].url` |

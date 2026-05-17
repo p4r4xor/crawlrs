@@ -1,0 +1,133 @@
+{{- if .Values.seeds.content }}
+# One-shot bootstrap Job. Loads `crawl.seeds.content` (mounted at
+# /etc/crawlrs/seeds.txt via the same ConfigMap as crawl.toml) into
+# the Frontier, then exits.
+#
+# Lifecycle:
+#   helm install         -> Job runs once. Pods start fresh, seeds loaded.
+#   helm upgrade         -> Job is SKIPPED (post-install only). Pods
+#                           rolling-restart without touching seeds.
+#   pod crash + restart  -> Job NOT triggered; runtime stays pure-runtime.
+#
+# To force a reseed (e.g. after wiping Redis): `helm install --replace`
+# OR `kubectl create job --from=job/<name> reseed-$(date +%s)`.
+#
+# The loader is tolerant: per-batch failures (Redis OOM, transient
+# errors) are logged and the next batch is attempted. Job exits
+# non-zero only if every batch fails.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "crawlrs.fullname" . }}-seed
+  labels:
+    {{- include "crawlrs.labels" . | nindent 4 }}
+    app.kubernetes.io/component: seed-bootstrap
+  annotations:
+    # `post-install` only: never re-fires on `helm upgrade`. Weight -5
+    # runs before NOTES.txt; `before-hook-creation` clears a prior Job
+    # if the user re-runs `helm install --replace`.
+    "helm.sh/hook": post-install
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  # Limit retries to avoid wedging on a permanently-broken state
+  # (e.g. seeds file is empty / malformed).
+  backoffLimit: 3
+  # Clean up the Job + Pod 1h after success. Failed Jobs stay so
+  # the operator can inspect logs.
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        {{- include "crawlrs.labels" . | nindent 8 }}
+        app.kubernetes.io/component: seed-bootstrap
+    spec:
+      serviceAccountName: {{ include "crawlrs.serviceAccountName" . }}
+      restartPolicy: OnFailure
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- if .Values.initContainers.enabled }}
+      # Only wait for Redis; the seed Job never touches Postgres.
+      initContainers:
+        - name: wait-for-redis
+          image: {{ .Values.initContainers.redis.image | quote }}
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: CRAWLRS_REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "crawlrs.secretName" . }}
+                  key: redisUrl
+          command: ["sh", "-c"]
+          args:
+            - |
+              deadline=$(( $(date +%s) + {{ .Values.initContainers.deadlineSeconds }} ))
+              until redis-cli -u "$CRAWLRS_REDIS_URL" ping 2>/dev/null | grep -q PONG; do
+                if [ $(date +%s) -ge $deadline ]; then
+                  echo "redis still not ready after {{ .Values.initContainers.deadlineSeconds }}s; giving up"
+                  exit 1
+                fi
+                echo "waiting for redis..."
+                sleep 2
+              done
+              echo "redis ready"
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+      {{- end }}
+      containers:
+        - name: seed
+          image: {{ include "crawlrs.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - seed
+            - --config
+            - /etc/crawlrs/crawl.toml
+            - --path
+            - /etc/crawlrs/seeds.txt
+          env:
+            - name: CRAWLRS_LOG_FORMAT
+              value: {{ .Values.logFormat | quote }}
+            - name: CRAWLRS_REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "crawlrs.secretName" . }}
+                  key: redisUrl
+            # Required by config loader even though the seed path
+            # never opens a Postgres connection.
+            - name: CRAWLRS_POSTGRES_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "crawlrs.secretName" . }}
+                  key: postgresUrl
+          volumeMounts:
+            - name: config
+              mountPath: /etc/crawlrs
+              readOnly: true
+            - name: scratch
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "crawlrs.configMapName" . }}
+        - name: scratch
+          emptyDir:
+            sizeLimit: 64Mi
+{{- end }}

@@ -173,10 +173,15 @@ $EDITOR crawl.toml
 make validate
 # Or directly: cargo run -p crawlrs-bin -- validate --config ./crawl.toml
 
-# 4. Drop a few seed URLs and start the crawler
+# 4. Drop a few seed URLs into the Frontier (one-shot, idempotent)
 echo "https://example.com" > seeds.txt
+make seed
+# Or directly: cargo run -p crawlrs-bin -- seed --config ./crawl.toml --path ./seeds.txt
+
+# 5. Start the crawler. It never re-reads seeds; restarts are
+#    pure-runtime. Re-run `make seed` if you add new URLs.
 make run
-# Or directly: cargo run -p crawlrs-bin -- crawl --config ./crawl.toml --seeds ./seeds.txt
+# Or directly: cargo run -p crawlrs-bin -- crawl --config ./crawl.toml
 ```
 
 The binary serves `/metrics`, `/healthz`, `/readyz`, `/livez` on

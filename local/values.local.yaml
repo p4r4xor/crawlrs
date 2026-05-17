@@ -25,29 +25,62 @@ crawlrs:
 
   replicaCount: 1
 
+  # Distinct run identifier per local-dev cycle. The Frontier prefixes
+  # every shard-scoped key with `crawlrs:{<runId>_s<shard>}:<op>`, so
+  # bumping this rolls the keyspace without `FLUSHALL`. The `seen` bloom
+  # is deployment-wide and not affected.
+  runId: "local"
+
+  # Local dev: text logs are easier to eyeball than JSON.
+  logFormat: text
+
   resources:
     requests:
       cpu: 200m
       memory: 256Mi
     limits:
-      cpu: 2000m
+      cpu: 8000m
       memory: 2Gi
 
   runtime:
-    workers: 32
+    workers: 320
     maxRetries: 5
+    # Outbound URL dispatch strategy. "direct" = worker submits the
+    # discovered URLs to the Frontier itself (loses URLs on transient
+    # Frontier error). "durable_outbox" = URLs commit through a
+    # Postgres outbox + publisher daemon (at-least-once). Local dev
+    # uses "direct" - higher throughput, no publisher pod needed.
+    linkDispatch: "direct"
 
   redis:
-    poolSize: 64
+    poolSize: 384
 
   postgres:
-    poolSize: 64
+    poolSize: 384
+
+  # Operator-imposed crawl scope. Both `null` (= unbounded) by default;
+  # local runs leave them unbounded so any seed list is fully expanded.
+  # Per-host overrides via `crawl.perDomain.<host>.maxDepth/maxUrls`.
+  crawl:
+    maxDepth: null
+    maxUrls: null
+    perDomain: {}
+
+  # Hosts the crawler refuses to visit. Checked first, before robots /
+  # rate / backoff. Exact host strings; no eTLD+1 rollup.
+  access:
+    blocklist: []
 
   # Local sandbox won't see anywhere near the chart default of 10M
   # unique URLs per shard. Shrink the bloom 10x to reclaim ~84 MiB of
   # Redis memory (8 shards * ~10 MiB savings each).
   frontier:
     bloomCapacity: 1000000
+    # Defaults from the chart - listed here so the tunable surface is
+    # visible without having to flip between values files.
+    bloomFpr: 0.001
+    leaseTimeout: "60s"
+    promoterTick: "50ms"
 
   # Demo chart redis sub-config: bump the pod memory limit and pair
   # with --maxmemory inside Redis (set in the redis statefulset).
@@ -62,7 +95,7 @@ crawlrs:
     defaultTimeout: "30s"
 
   politeness:
-    enabled: true
+    enabled: false
     hostDelay: "1s"
     obeyRobotsTxt: false
     robotsTtl: "24h"
@@ -75,8 +108,9 @@ crawlrs:
   store:
     parquet: true
     warc: false
+    basePrefix: "crawlrs"
     rotation:
-      maxBytes: 16777216  # 16 MiB
+      maxBytes: 16777216 # 16 MiB
       maxRows: 8000
       maxDuration: "5m"
     backend:
@@ -89,11 +123,17 @@ crawlrs:
       #   enabled: true
       #   size: 50Gi
 
-  # Optional seed list rendered into the same ConfigMap as crawl.toml
-  # and passed to the binary as `--seeds /etc/crawlrs/seeds.txt`. The
-  # `make local-up` target populates this via `--set-file` from
-  # local/seeds.txt; production deployments load the frontier
-  # externally and leave this empty.
+  # Optional seed list. When `content` is non-empty, the chart renders
+  # it into the same ConfigMap as crawl.toml (mounted at
+  # /etc/crawlrs/seeds.txt) and spawns a one-shot `crawlrs seed` Job
+  # via the `post-install` Helm hook. The Job loads the URLs into the
+  # Frontier and exits; the StatefulSet itself never reads seeds, so
+  # pod restarts do NOT re-trigger seed-loading.
+  #
+  # `make local-up` populates `content` via `--set-file` from
+  # local/seeds.txt. To force a reseed after the initial install:
+  #   helm install --replace crawlrs-demo ...
+  # or `kubectl create job --from=job/<release>-crawlrs-seed reseed-...`.
   seeds:
     content: ""
 

@@ -47,7 +47,19 @@ pub fn classify_status(status: u16) -> Option<FailureKind> {
 /// whose Display string also contains "timeout" (rare but possible)
 /// lands in `TlsError` and not `Timeout`.
 pub fn classify_transport_error(err: &Error) -> FailureKind {
-    let text = err.to_string().to_ascii_lowercase();
+    // Hyper / wreq wrap connection-establishment failures in opaque
+    // `client error (Connect)`-style strings that hide the actual
+    // syscall failure. Walk the source chain via `Error::source()` and
+    // concatenate every layer's Display string so the substring matchers
+    // below can catch the inner cause (e.g. "connection refused"
+    // sitting two layers below a "client error (Connect)" wrapper).
+    let mut text = err.to_string().to_ascii_lowercase();
+    let mut current: &dyn std::error::Error = err;
+    while let Some(source) = current.source() {
+        text.push(' ');
+        text.push_str(&source.to_string().to_ascii_lowercase());
+        current = source;
+    }
 
     // Local resource exhaustion is "our fault" and very specific.
     if text.contains("too many open files") || text.contains("emfile") {
@@ -70,18 +82,36 @@ pub fn classify_transport_error(err: &Error) -> FailureKind {
     {
         return FailureKind::DnsFailure;
     }
-    // Routable-but-no-route shapes (ENETUNREACH / EHOSTUNREACH).
-    if text.contains("network is unreachable") || text.contains("no route to host") {
+    // Routable-but-no-route shapes (ENETUNREACH / EHOSTUNREACH). Multiple
+    // Display variants exist depending on whether the error came from
+    // an io::ErrorKind variant ("network unreachable") or libc strerror
+    // ("network is unreachable"); cover both, plus the host-level forms.
+    if text.contains("network is unreachable")
+        || text.contains("network unreachable")
+        || text.contains("no route to host")
+        || text.contains("host is unreachable")
+        || text.contains("host unreachable")
+    {
         return FailureKind::Unreachable;
     }
     if text.contains("timeout") || text.contains("timed out") {
         return FailureKind::Timeout;
     }
     if text.contains("connection reset")
+        || text.contains("connection aborted")
         || text.contains("broken pipe")
         || text.contains("connection refused")
     {
         return FailureKind::ConnectReset;
+    }
+    // Local source-port pool exhausted. Common at high concurrency with
+    // `pool_max_idle_per_host = 0` against many hosts: the kernel runs
+    // out of ephemeral ports for new outbound sockets.
+    if text.contains("address not available")
+        || text.contains("cannot assign requested address")
+        || text.contains("eaddrnotavail")
+    {
+        return FailureKind::ResourceExhausted;
     }
     FailureKind::Other
 }

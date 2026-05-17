@@ -13,4 +13,5 @@ pub mod factory;
 pub mod http;
 pub mod maintenance;
 pub mod run;
+pub mod seed;
 pub mod shutdown;
