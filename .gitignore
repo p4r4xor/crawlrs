@@ -1,9 +1,8 @@
 /target
 Cargo.lock
 
-# Internal docs and AI tooling. Tracked locally only.
+# Internal docs and AI tooling.
 docs/
 CLAUDE.md
-ARCHITECTURE.md
 .claude/
 .playwright-mcp/

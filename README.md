@@ -1,145 +1,126 @@
-# crawlrs
+<h1 align="center">crawlrs</h1>
 
-A distributed web crawler. Written in Rust. Deployed as a Kubernetes
-StatefulSet with Redis for queue coordination, Postgres for the
-metadata ledger, and S3-compatible object storage for crawled blobs.
+<p align="center">
+  <a href="./ARCHITECTURE.md">Architecture</a> |
+  <a href="./charts/crawlrs/">Helm chart</a> |
+  <a href="./local/DEPLOYMENT.md">Local sandbox</a> |
+  <a href="./crates/crawlrs-bin/examples/crawl.toml">Example config</a>
+</p>
 
-## Components
+<p align="center">
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-informational" alt="License"></a>
+  <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/built%20with-Rust-orange" alt="Built with Rust"></a>
+  <a href="https://kubernetes.io/"><img src="https://img.shields.io/badge/runs%20on-Kubernetes-blue" alt="Runs on Kubernetes"></a>
+</p>
 
-**Frontier.** Per-shard per-host URL queue on Redis Stack. URLs flow
-through atomic Lua scripts: submit dedups via RedisBloom and pushes
-to the host queue (or per-shard overflow if the backlog cap is hit);
-claim pops the next ready host, then its next queued URL, and stamps
-a lease ZSET entry. A background promoter loop drains the wake ZSET
-into the ready list at a configurable tick (50 ms default), so claim
-is O(1) under any host count. Stranded URLs whose worker crashed are
-re-pushed onto their host queue once the lease expires; the operator
-sees this via `crawlrs_frontier_lease_reclaim_total`. Sharding via
-`HostHashShardPolicy` (default 8 shards); swappable for
-`SingleShardPolicy` in tests or a custom policy in production.
+<p align="center">An extremely fast distributed web crawler. Deploy anywhere. Monitor like production.</p>
 
-**Politeness.** Policy layer that gates fetches without owning
-scheduling state. `check` returns Allow / Disallow on the basis of
-robots.txt, the blocklist, and a per-host circuit breaker;
-`record_fetch` / `record_failure` return a `NextWake` plan that the
-runtime applies via `Frontier::advance_wake`. Three-tier robots.txt
-cache (in-process LRU -> Redis hash -> network fetch). Per-domain
-overrides, exponential backoff on 429 / 503 / transport errors with
-`Retry-After` honored as a floor, circuit breaker after N
-consecutive failures.
+- **Extremely fast.** Hundreds of async workers per pod, one round trip per URL batch, 50 ms scheduling tick. Scales horizontally; throughput grows with cluster size.
+- **Built to survive.** Fault tolerance is built in at every layer of the pipeline. Failed fetches retry; crashed workers recover; the queue and the metadata ledger both survive backend restarts; exhausted retries land in a dead-letter queue. Nothing is silently dropped.
+- **Built for stealth.** Randomised TLS / HTTP-2 fingerprints on every HTTP request, plus a patched Chrome binary with source-level Audio / Canvas / WebGL / WebRTC spoofing for JS-heavy targets. No flaky JS injection; the patches live in the binary.
+- **Deploy anywhere.** Standalone binary, container image, or a one-command Helm install with bundled Redis + Postgres + Grafana. The same chart runs on a laptop kind cluster and in production.
+- **Monitor like production.** Prometheus contract across every stage. Three provisioned Grafana dashboards out of the box. Liveness / readiness / startup probes wired to the actual pipeline.
+- **Plug in your own crawl logic.** Per-domain `SiteAdapter` hooks for sites that need bespoke extraction, login flows, or custom pagination. URL-pattern routing picks the right adapter; everything else falls through to the generic pipeline.
 
-**Storage.** Two output paths shipped in parallel:
+---
 
-- **ParquetStore**: analytical primary. Arrow + zstd column
-  compression. LanceDB ingests it directly; DuckDB / Polars / Spark
-  read it natively.
-- **WarcStore**: archival mirror. ISO 28500 records, per-record gzip,
-  byte-exact HTTP wire framing preserved. Native `WARC-Type: revisit`
-  for body deduplication on recrawl.
+## Quick start
 
-A `MultiStore` composite fans out writes to both; the metadata ledger
-records the Parquet path as the canonical pointer. Both stores share
-the same path layout
-(`<bucket>/crawlrs/run=<id>/shard=<n>/worker=<id>/{parquet,warc}/...`)
-and rotation policy (128 MB / 100k rows / 30 minutes).
+Get the whole stack running on your laptop with one command. You need four tools on PATH:
 
-**Metadata ledger.** Postgres-backed (`crawlrs-metadata`). Two-table
-shape: `url_metadata` (current state per URL) and `url_history`
-(append-only event log). Drives cross-run dedup, retry budgeting, and
-the dead-letter queue.
-
-**Observability.** 33-metric Prometheus contract. The Helm chart
-bundles a single-node VictoriaMetrics for storage and Grafana with
-three provisioned dashboards (crawler health overview, fetch
-pipeline, frontier + storage). Operators with their own Prometheus or
-VM fleet disable the bundled stack with one flag.
-
-**Operability.** `crawlrs-bin` exposes `/metrics` + `/healthz` +
-`/livez` + `/readyz` on a single port. SIGTERM-driven graceful
-shutdown: mark `/readyz` unhealthy -> 5s drain -> frontier shutdown ->
-worker drain -> store flush -> exit. Per-pod ordinal extraction from
-the Kubernetes Downward API for stable shard ownership.
-
-## Prerequisites
-
-Pick the path you want first; install only what that path needs.
-
-### For the sandbox path (full K8s-shape stack on your laptop)
-
-| Tool | Version | Purpose | Install |
-|---|---|---|---|
-| **Docker** | Engine 24+ | Container runtime; kind nodes are Docker containers | [docs.docker.com/engine/install](https://docs.docker.com/engine/install/) |
-| **kubectl** | v1.30+ | Talks to the cluster | [kubernetes.io/docs/tasks/tools/](https://kubernetes.io/docs/tasks/tools/) |
-| **helm** | v3.16+ | Renders + installs the chart | [helm.sh/docs/intro/install](https://helm.sh/docs/intro/install/) |
-| **kind** | v0.27+ | Local single-node Kubernetes | `go install sigs.k8s.io/kind@v0.27.0` or [release binaries](https://kind.sigs.k8s.io/docs/user/quick-start/#installation) |
-
-Verify everything's on PATH:
-
-```bash
-make local-deps-check
-# expected: ok: docker, kind, helm, kubectl all present
-```
-
-### For the bare-metal cargo path (no Kubernetes)
-
-| Tool | Purpose | Install |
+| Tool | Version | Install |
 |---|---|---|
-| **Rust toolchain** | rustup auto-installs the 1.94.1 pin from `rust-toolchain.toml` | [rustup.rs](https://rustup.rs/) |
-| **Redis Stack** | Frontier + politeness backend (RedisBloom is required) | `docker run --rm -d -p 6379:6379 redis/redis-stack-server:7.4.0-v0` |
-| **Postgres** | Metadata ledger | `docker run --rm -d -p 5432:5432 -e POSTGRES_PASSWORD=crawlrs -e POSTGRES_DB=crawlrs postgres:17-alpine` |
-
-System libs the Rust build needs (Debian/Ubuntu names; equivalents on
-macOS via Homebrew, Fedora via dnf):
+| **Docker** | Engine 24+ | [docs.docker.com/engine/install](https://docs.docker.com/engine/install/) |
+| **kubectl** | v1.30+ | [kubernetes.io/docs/tasks/tools/](https://kubernetes.io/docs/tasks/tools/) |
+| **helm** | v3.16+ | [helm.sh/docs/intro/install](https://helm.sh/docs/intro/install/) |
+| **kind** | v0.27+ | `go install sigs.k8s.io/kind@v0.27.0` or [release binaries](https://kind.sigs.k8s.io/docs/user/quick-start/#installation) |
 
 ```bash
-sudo apt-get install -y pkg-config libssl-dev cmake clang build-essential
-```
-
-## Quickstart
-
-### Sandbox: full K8s stack on your laptop, one command
-
-```bash
-make local-up
+git clone https://github.com/p4r4xor/crawlrs && cd crawlrs
+make local-deps-check     # sanity-check the four tools above
+make local-up             # bring up the stack
 ```
 
 That target idempotently:
 
-1. Creates a `kind` cluster (`crawlrs-local`)
-2. Builds the `crawlrs:local` container image (multi-stage `cargo-chef`; first build ~10 min, subsequent rebuilds ~30 s)
-3. Loads the image into the kind cluster (no external registry needed)
-4. Resolves the demo chart's deps + `helm install` with sandbox values
-5. Waits for all 5 pods (`crawlrs`, `redis`, `postgres`, `vmsingle`, `grafana`) to reach Ready
-
-Once it returns, useful follow-up commands:
+1. Creates a `kind` cluster (`crawlrs-local`).
+2. Builds the `crawlrs:local` container image (multi-stage `cargo-chef`; first build ~3 minutes, subsequent rebuilds ~30 s).
+3. Loads the image into the kind cluster (no external registry needed).
+4. Resolves the demo chart's deps and runs `helm install` with sandbox values.
+5. Waits for all five pods (`crawlrs`, `redis`, `postgres`, `vmsingle`, `grafana`) to reach Ready.
+6. Runs a post-install `crawlrs-seed` Job that loads `local/seeds.txt` into the Frontier and exits.
 
 ```bash
-make local-status     # pods + helm release state
-make local-logs       # tail crawler logs (Ctrl-C to stop)
-make local-pf         # port-forward Grafana :3000 and crawler /metrics :9090
-make local-down       # helm uninstall (keeps cluster + PVCs)
+make local-status         # pods + helm release state
+make local-pf             # open Grafana at :3000, /metrics at :9090
+make local-logs           # tail crawler logs
+make local-down           # helm uninstall (keeps cluster + PVCs)
 make local-cluster-down   # destroy the kind cluster (full reset)
 ```
 
-Browse the Grafana dashboards (`crawler-health`, `fetch-pipeline`,
-`frontier-storage`) at <http://localhost:3000> after `make local-pf`
-(`admin` / `admin`).
+Iterate by editing `local/seeds.txt` or `local/values.local.yaml` and re-running `make local-up`; it's idempotent.
 
-The sandbox bundles Redis + Postgres + the observability stack via
-raw manifests with official upstream images. Blob storage is
-pod-local FS (`store.backend.kind = local`); production deploys
-flip to `kind = s3` against real S3 / R2 / GCS. Single replicas
-everywhere, fixed credentials, sandbox-sized PVCs; for evaluation,
-dev loops, and CI smoke tests only.
+---
 
-See [`local/README.md`](local/README.md) for the laptop-deployment
-walkthrough and [`charts/crawlrs-demo/README.md`](charts/crawlrs-demo/README.md)
-for what the chart deploys + the migration path to production.
+## What you can build
 
-### Production
+- **A continuously-fresh search corpus.** Re-crawl a known domain set on a cadence; downstream readers see Parquet they can query immediately.
+- **An ML training dataset that's actually yours.** Your bucket, your schema, no third-party pipeline in between.
+- **A vector-store ingest pipeline.** Crawl → Parquet → LanceDB / pgvector / Qdrant. Same blob layout works for all three.
+- **A competitive-intelligence feed.** Cross-run dedup means each run only emits URLs that are new or changed.
+- **An archival mirror.** WARC output is byte-exact wire format; the same crawl feeds both analytical and archival paths.
 
-Deploy the bare crawlrs chart against your own Redis, Postgres, and
-S3-compatible object store:
+---
+
+## What crawlrs does well
+
+**Atomic, reasonable frontier.** Per-host queues with atomic admission, dedup, and per-host quota checks (`max_urls`, `max_depth`). Each host's queue is independent so hot domains don't starve cold ones.
+
+**Fault-tolerant by construction.** Every layer in the pipeline (worker, queue, metadata, outbound dispatch) has its own recovery story. The runtime never silently drops a URL: it gets retried, recovered after a backend restart, or routed to the dead-letter queue.
+
+**Adaptive politeness across millions of domains.** Per-host scheduling, robots.txt cache, backoff on failure, per-domain overrides. Comfortable rates are learned per-host from observed responses instead of a static delay. Hosts that ask for slowdowns get them; hosts that don't get full throughput. State is sharded so politeness scales with the cluster.
+
+**Anti-bot by default.** Randomised TLS / HTTP-2 fingerprints on every HTTP request slip past common detection. For JS-heavy targets, a patched Chrome binary (closed source today) handles rendering with source-level Audio / Canvas / WebGL / WebRTC spoofing.
+
+**Smart scheduling.** Wake-time ordering with atomic per-host quotas. Workers never race for the same URL. Priority weighting (depth, freshness, host-importance) is on the roadmap.
+
+**Output your warehouse already understands.** Parquet (analytical; LanceDB-ready) and WARC (archival; byte-exact wire) write in parallel under the same path layout. Plug into LanceDB, DuckDB, Polars, or Spark with no transform step.
+
+**Trait-boundary separation.** `crawlrs-core` defines `Frontier`, `Politeness`, `Fetcher`, `Parser`, `Store`, `MetadataStore`, `SiteAdapter`, `ShardingPolicy`. Every concrete impl is one crate. Swapping the metadata store from Postgres to something else is a one-crate change, not a refactor.
+
+---
+
+## Custom crawl logic
+
+Two ways to attach per-domain extraction. Rust impls of `SiteAdapter` for compile-time-checked logic; hot-loadable Lua / WASM scripts for adapters you want to change without rebuilding. Both live behind the same trait and dispatch via first-match URL routing.
+
+```rust
+use async_trait::async_trait;
+use crawlrs_core::{CanonicalUrl, FetchResponse, ParsedDocument, Result, SiteAdapter};
+
+struct GitHubAdapter;
+
+#[async_trait]
+impl SiteAdapter for GitHubAdapter {
+    fn matches(&self, url: &CanonicalUrl) -> bool {
+        url.host() == Some("github.com")
+    }
+
+    async fn extract(&self, resp: &FetchResponse) -> Result<Option<ParsedDocument>> {
+        // Custom shape: README, repo metadata, file listings, etc.
+        // Return Ok(Some(doc)) to handle, Ok(None) to fall through.
+        todo!()
+    }
+}
+```
+
+Register in priority order via `SiteAdapterRegistry::register`; first match wins.
+
+---
+
+## Deploy
+
+Helm install against your own Redis, Postgres, and S3-compatible object store:
 
 ```bash
 helm install my-crawlrs ./charts/crawlrs \
@@ -149,167 +130,57 @@ helm install my-crawlrs ./charts/crawlrs \
   --set store.backend.kind=s3 \
   --set store.backend.s3.bucket=my-crawlrs-data \
   --set store.backend.s3.region=us-east-1 \
-  --set secrets.existingSecret=my-crawlrs-creds
+  --set secrets.existingSecret=my-crawlrs-creds \
+  --set-file seeds.content=./seeds.txt
 ```
 
-See [`charts/crawlrs/README.md`](charts/crawlrs/README.md) for the
-full values reference, sharding math, and security context defaults.
+The chart runs a one-shot `crawlrs seed` Job on `helm install` to load the seeds. `helm upgrade` does not re-seed; to reload seeds after the initial install, run `helm install --replace` or `kubectl create job --from=job/<release>-crawlrs-seed reseed-$(date +%s)`. 
 
-### Local: no Kubernetes, just `cargo run`
+See [`charts/crawlrs/README.md`](./charts/crawlrs/README.md) for the full values reference and security context.
 
-```bash
-# 1. Start Redis + Postgres locally (docker is the easiest way; skip
-#    if you already have these running)
-docker run --rm -d --name crawlrs-redis -p 6379:6379 redis:7-alpine
-docker run --rm -d --name crawlrs-postgres -p 5432:5432 \
-  -e POSTGRES_USER=crawlrs -e POSTGRES_PASSWORD=crawlrs \
-  -e POSTGRES_DB=crawlrs postgres:17-alpine
+### Other ways to run
 
-# 2. Copy the sample config and edit endpoints / credentials
-cp crates/crawlrs-bin/examples/crawl.toml ./crawl.toml
-$EDITOR crawl.toml
+For when you want crawlrs without Kubernetes:
 
-# 3. (Optional) pre-flight: parse + validate the config
-make validate
-# Or directly: cargo run -p crawlrs-bin -- validate --config ./crawl.toml
-
-# 4. Drop a few seed URLs into the Frontier (one-shot, idempotent)
-echo "https://example.com" > seeds.txt
-make seed
-# Or directly: cargo run -p crawlrs-bin -- seed --config ./crawl.toml --path ./seeds.txt
-
-# 5. Start the crawler. It never re-reads seeds; restarts are
-#    pure-runtime. Re-run `make seed` if you add new URLs.
-make run
-# Or directly: cargo run -p crawlrs-bin -- crawl --config ./crawl.toml
-```
-
-The binary serves `/metrics`, `/healthz`, `/readyz`, `/livez` on
-`0.0.0.0:9090` (configurable in `crawl.toml`).
-
-```bash
-curl -s localhost:9090/metrics | grep crawlrs_urls_fetched_total
-```
-
-Tear down:
-
-```bash
-docker stop crawlrs-redis crawlrs-postgres
-```
-
-## Architecture
-
-The system is a hexagonal / ports-and-adapters Rust workspace. The
-domain crate (`crawlrs-core`) defines traits for `Frontier`,
-`Politeness`, `Fetcher`, `Parser`, `Store`, `MetadataStore`,
-`SiteAdapter`, and `ShardingPolicy`; concrete impls live in sibling
-adapter crates. The runtime crate composes adapters into a tokio
-worker pool. A binary crate wires CLI + config + HTTP host. No domain
-type touches a backend type at any boundary.
-
-The diagram below shows a canonical 3-pod deployment. Each box
-carries a short list of what it does and a `does not:` line marking
-the boundary of its responsibility.
-
-```mermaid
-flowchart TB
-    subgraph statefulset ["crawlrs StatefulSet (3 replicas shown; scales horizontally)"]
-        direction LR
-        Pod0["crawlrs-0\n- 4 tokio worker tasks\n- owns shards 0, 3, 6 (of 8)\n- per-task Redis consumer name\n  (UUID-suffixed)\ndoes not: coordinate directly\nwith peer pods"]
-        Pod1["crawlrs-1\n- 4 tokio worker tasks\n- owns shards 1, 4, 7\nsame shape as Pod-0"]
-        Pod2["crawlrs-2\n- 4 tokio worker tasks\n- owns shards 2, 5\nsame shape as Pod-0"]
-    end
-
-    Redis["Redis Stack (RedisBloom module required; Sentinel-backed; Redis Cluster is a v2 promotion trigger)\n- 8 logical shards via hash-tagged key prefixes\n- per-shard host_queue LISTs + wake/ready/inflight ZSETs\n- per-shard URL HASH (content-addressed UrlId -> payload)\n- per-shard RedisBloom 'seen' (deployment-wide; cross-run dedup)\n- RDB-only durability (save 60 10000 / 300 10 / 900 1)\ndoes not: execute application logic; just\ncoordinates queues + scheduling state"]
-
-    Postgres["Postgres (single primary; HA is your own replicas)\n- url_metadata: 1 row/URL, mutable; drives cross-run dedup\n- url_history: append-only event log; audit trail\n- schema migrations applied automatically by the binary\ndoes not: shard. Single source of truth\nacross every pod in the StatefulSet."]
-
-    S3["S3-compatible object store\n- path: bucket/crawlrs/run=R/shard=S/worker=W/{parquet,warc}/...\n- per-pod prefixes; no write contention across workers\n- Parquet (analytical, LanceDB-friendly) + WARC (archival, byte-exact wire)\n- rotation: 128 MB / 100k rows / 30 min, whichever fires first\ndoes not: index. URL-to-blob reverse lookup\ngoes through Postgres url_metadata.blob_path"]
-
-    subgraph o11y ["Bundled observability (chart-included; toggle off to BYO Prometheus)"]
-        direction TB
-        Vm["vmsingle (1 replica, 10 GB PVC)\n- Prometheus-format scrape every 15s\n- per-pod targets via headless-service DNS:\n  crawlrs-N.crawlrs-headless:9090/metrics\n- 1-month retention default\ndoes not: cluster. Promote to vmagent +\nvmstorage at over 1M data points/sec."]
-        Gf["Grafana (1 replica)\n- queries vmsingle via Prometheus protocol\n- 3 provisioned dashboards (file-based provider):\n  crawler-health, fetch-pipeline, frontier-storage\ndoes not: persist user state; sandbox-shape"]
-        Vm --> Gf
-    end
-
-    statefulset -- "URL queue +\npoliteness state" --> Redis
-    statefulset -- "metadata reads/writes" --> Postgres
-    statefulset -- "Parquet + WARC blobs" --> S3
-    Vm -. "per-pod scrape" .-> statefulset
-
-    classDef pod fill:#f8f8ff,stroke:#446,stroke-width:1px
-    classDef backend fill:#f4f4f4,stroke:#666,stroke-width:1px
-    classDef o11ystyle fill:#fafaf2,stroke:#888,stroke-dasharray:4 2
-    class Pod0,Pod1,Pod2 pod
-    class Redis,Postgres,S3 backend
-    class o11y,Vm,Gf o11ystyle
-```
-
-The cardinal architectural property the diagram makes visible: every
-adapter lives behind a trait in `crawlrs-core`, so swapping Redis
-for an in-memory frontier (in tests) or Postgres for DynamoDB (in
-v2) is bounded to the matching adapter crate. Pods don't talk to
-each other directly. Coordination is entirely through Redis (queue
-distribution + per-host backoff) and Postgres (per-URL state).
-Failure recovery is built into the queue protocol via the lease
-ZSET and the reclaim pass, not into a separate control plane.
-
-## Workspace layout
-
-| Crate | Purpose |
+| Mode | Command |
 |---|---|
-| `crawlrs-core` | Domain types + traits + errors. Zero I/O. |
-| `crawlrs-fetch` | `Fetcher` impl backed by `wreq`. |
-| `crawlrs-frontier` | `Frontier` impl: per-host queues + atomic-Lua claim + lease ZSET + RedisBloom dedup. |
-| `crawlrs-parse` | `Parser` impl backed by `lol_html`. |
-| `crawlrs-politeness` | `Politeness` impl: per-host scheduling, robots cache, backoff. |
-| `crawlrs-metadata` | `MetadataStore` impl: Postgres + sqlx. |
-| `crawlrs-store` | `Store` impls: `ParquetStore`, `WarcStore`, `MultiStore`. |
-| `crawlrs-runtime` | Composition: tokio worker pool + maintenance task. |
-| `crawlrs-bin` | The `crawlrs` CLI binary. |
-| `crawlrs-fakes` | Test doubles (in-memory impls of the traits). |
+| Standalone binary | `cargo build --release && ./target/release/crawlrs --help` |
+| Container image | `docker build -t crawlrs:local .` |
 
-## Building & testing
+Both still need Redis Stack and Postgres reachable. See [`local/DEPLOYMENT.md`](./local/DEPLOYMENT.md) for one-line Docker commands to bring them up.
 
-Workspace toolchain pinned in `rust-toolchain.toml` (Rust 1.94.1).
-Test suite uses `cargo nextest` with slow-test thresholds configured
-in `.config/nextest.toml`.
+---
 
-```bash
-make build         # cargo build --workspace
-make test          # cargo test --workspace (fast tests + testcontainer integration)
-make nextest       # cargo nextest run --workspace (faster CI runner; same suite)
-make lint          # fmt-check + clippy with -D warnings
-make fmt           # cargo fmt --all
-make clippy        # cargo clippy --workspace --all-targets -- -D warnings
-make help          # full target list
-```
+## Roadmap
 
-Helm chart targets:
+- **Coverage-driven scheduling.** Spread the crawl budget across the target so a finite number of requests reaches as much of it as possible.
+- **Priority scheduling.** Pick the next URL by expected value (depth bias, freshness, host importance) instead of pure queue order.
+- **Published benchmarks.** Repeatable throughput numbers in `BENCHMARKS.md`.
+- **Open-source patched Chrome binary.** Possible future release of the rendering extension.
 
-```bash
-make chart-lint        # helm lint both charts
-make chart-template    # render both charts to /tmp; useful for diffing
-make chart-deps        # helm dep build (resolves the file:// crawlrs subchart)
-```
+---
 
-Local container deployment targets (require kind + kubectl + helm; see
-prerequisites above):
+## Documentation
+
+- **Architecture**: [`ARCHITECTURE.md`](./ARCHITECTURE.md)
+- **Local sandbox walkthrough**: [`local/DEPLOYMENT.md`](./local/DEPLOYMENT.md)
+- **Helm chart values reference**: [`charts/crawlrs/README.md`](./charts/crawlrs/README.md)
+- **Example crawl.toml**: [`crates/crawlrs-bin/examples/crawl.toml`](./crates/crawlrs-bin/examples/crawl.toml)
+- **CLI reference**: `crawlrs --help`
+
+---
+
+## Contributing
+
+Issues and PRs welcome.
 
 ```bash
-make image                # docker build -t crawlrs:local .
-make local-cluster-up     # kind create cluster (idempotent)
-make local-cluster-down   # kind delete cluster
-make local-up             # full pipeline: cluster + image + load + helm install
-make local-down           # helm uninstall (keeps cluster + PVCs)
-make local-logs           # kubectl logs -f sts/crawlrs-demo
-make local-pf             # port-forward Grafana :3000 + metrics :9090
-make local-status         # pods + helm release status
+make help        # full target list
+make test        # cargo test --workspace (incl. testcontainer integration)
+make lint        # fmt-check + clippy -D warnings
 ```
 
-Pre-commit hooks (`.pre-commit-config.yaml`) enforce fmt, clippy, an
-ASCII-only-punctuation rule, and typo detection. One-time setup:
+Pre-commit hooks enforce fmt, clippy, ASCII-only punctuation, and typo detection. One-time setup installs the hooks plus the CLI tools they call:
 
 ```bash
 pre-commit install
@@ -317,10 +188,8 @@ pre-commit install --hook-type pre-push
 cargo install --locked cargo-deny cargo-machete cargo-nextest typos-cli
 ```
 
-## Contributing
-
-Issues and PRs welcome. Run `make lint` before submitting.
+---
 
 ## License
 
-GNU General Public License v3.0 only. See [`LICENSE`](LICENSE).
+[GPL-3.0-only](./LICENSE).

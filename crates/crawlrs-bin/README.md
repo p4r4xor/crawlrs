@@ -28,7 +28,7 @@ cargo run -p crawlrs-bin -- crawl --config crawl.toml
 The binary mounts an HTTP server at `0.0.0.0:9090` (configurable in
 `crawl.toml`) exposing four endpoints:
 
-- `/metrics` - Prometheus exposition format (29 metrics).
+- `/metrics` - Prometheus exposition format spanning fetch, parse, store, frontier, politeness, and metadata.
 - `/healthz` - process is up. Always 200 if the binary is running.
 - `/livez` - internal liveness. 200 unless the worker pool has
   deadlocked.
@@ -93,14 +93,13 @@ section has sensible defaults; the only required keys are `run_id`,
 
 This crate is the composition root. It owns no business logic; it:
 
-- Parses CLI args via `cli::Cli` (clap-derive).
+- Parses CLI args via `cli::Cli` (clap-derive). Four subcommands dispatch to four entry points.
 - Loads + validates `crawl.toml` via `config::CrawlrsConfig`.
-- Builds every adapter via `factory::build` (one place that knows
-  about every adapter crate).
-- Hosts the HTTP server via `http::serve` (axum at the configured
-  port).
-- Runs the maintenance loop via `maintenance::run` (15s cadence).
+- Builds adapters via `factory::build` (full adapter graph for `crawl`) or `factory::build_frontier` (Redis-only for `seed`, no Postgres or store).
+- Hosts the HTTP server via `http::serve` (axum at the configured port). Only `crawl` mounts the server; `seed` / `validate` / `version` exit without it.
+- Runs the maintenance loop via `maintenance::run` (periodic gauge refresh + heartbeat).
+- Composes the outbox publisher in the runtime layer when `runtime.linkDispatch = "durable_outbox"`.
 - Listens for SIGTERM via `shutdown::wait_for_signal`.
-- Orchestrates the lifecycle via `run::crawl`.
+- Orchestrates the long-running lifecycle via `run::crawl` and the one-shot bootstrap via `seed::seed`.
 
 Anything that's a domain rule lives elsewhere.

@@ -84,7 +84,7 @@ chart-deps: ## helm dep build crawlrs-demo + unpack the file:// crawlrs subchart
 # End-to-end local stack: kind cluster + locally-built image + the
 # crawlrs-demo Helm chart (Redis + Postgres via official upstream
 # images, bundled observability, kind=local store backend). See
-# local/README.md for the full walkthrough.
+# local/DEPLOYMENT.md for the full walkthrough.
 
 KIND               ?= kind
 KUBECTL            ?= kubectl
