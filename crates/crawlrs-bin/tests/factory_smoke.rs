@@ -107,8 +107,8 @@ async fn factory_builds_against_real_backends() {
         .submit_batch(vec![UrlEntry::seed(url.clone())])
         .await
         .expect("submit_batch");
-    assert_eq!(outcome.newly, 1, "exactly one URL should be newly inserted",);
-    assert_eq!(outcome.rejected_quota, 0, "no quota configured");
+    assert_eq!(outcome.queued, 1, "exactly one URL should be queued");
+    assert_eq!(outcome.rejected, 0, "no quota configured");
 
     built.frontier.tick().await.expect("tick promotes the host");
 

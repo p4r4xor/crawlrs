@@ -303,7 +303,7 @@ impl Frontier for RedisFrontier {
                     max_urls,
                 });
             }
-            let (newly, rejected_quota) = self
+            let (queued, rejected) = self
                 .ops()
                 .submit_batch(*shard, &items, now)
                 .await
@@ -313,18 +313,18 @@ impl Frontier for RedisFrontier {
             // accurate. Quota-rejected URLs are not bloom events;
             // they're a separate operator concern surfaced on the
             // returned outcome (and metricised by the worker).
-            for _ in 0..newly {
+            for _ in 0..queued {
                 record_submit_outcome(SubmitOutcome::Queued);
             }
             let bloom_dupes = items
                 .len()
-                .saturating_sub(newly)
-                .saturating_sub(rejected_quota);
+                .saturating_sub(queued)
+                .saturating_sub(rejected);
             for _ in 0..bloom_dupes {
                 record_submit_outcome(SubmitOutcome::SkippedDuplicate);
             }
-            total.newly += newly;
-            total.rejected_quota += rejected_quota;
+            total.queued += queued;
+            total.rejected += rejected;
         }
 
         metrics::histogram!(

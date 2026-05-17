@@ -76,8 +76,8 @@ async fn submit_in_batches(
     seeds_path: &Path,
 ) -> Result<()> {
     let total = entries.len();
-    let mut newly_inserted: u64 = 0;
-    let mut rejected_quota: u64 = 0;
+    let mut queued: u64 = 0;
+    let mut rejected: u64 = 0;
     let mut failed: u64 = 0;
     let mut batches_attempted: u64 = 0;
     let mut batches_succeeded: u64 = 0;
@@ -88,13 +88,13 @@ async fn submit_in_batches(
         match frontier.submit_batch(chunk.to_vec()).await {
             Ok(outcome) => {
                 batches_succeeded += 1;
-                newly_inserted += outcome.newly as u64;
-                rejected_quota += outcome.rejected_quota as u64;
+                queued += outcome.queued as u64;
+                rejected += outcome.rejected as u64;
                 info!(
                     batch = batch_num,
                     size = chunk.len(),
-                    newly = outcome.newly,
-                    rejected_quota = outcome.rejected_quota,
+                    queued = outcome.queued,
+                    rejected = outcome.rejected,
                     "batch submitted"
                 );
             }
@@ -110,14 +110,14 @@ async fn submit_in_batches(
         }
     }
 
-    let bloom_duplicates = (total as u64).saturating_sub(newly_inserted + rejected_quota + failed);
+    let bloom_duplicates = (total as u64).saturating_sub(queued + rejected + failed);
     info!(
         path = %seeds_path.display(),
         total,
         batches_attempted,
         batches_succeeded,
-        newly_inserted,
-        rejected_quota,
+        queued,
+        rejected,
         bloom_duplicates,
         failed,
         "seed bootstrap complete"

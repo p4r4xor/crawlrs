@@ -22,4 +22,6 @@ extend-exclude = [
     "target/",
     "Cargo.lock",
     ".git/",
+    "crates/*/benches/fixtures/",
+    "local/seeds.txt",
 ]

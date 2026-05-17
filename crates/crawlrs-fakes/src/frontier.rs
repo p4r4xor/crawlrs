@@ -270,7 +270,7 @@ impl Frontier for InMemoryFrontier {
             if let Some(cap) = cap
                 && shard_state.host_count.get(&host).copied().unwrap_or(0) >= cap
             {
-                outcome.rejected_quota += 1;
+                outcome.rejected += 1;
                 continue;
             }
 
@@ -287,7 +287,7 @@ impl Frontier for InMemoryFrontier {
                 .or_default()
                 .push_back(url_id);
             shard_state.wake.entry(host).or_insert(now_ms);
-            outcome.newly += 1;
+            outcome.queued += 1;
         }
         Ok(outcome)
     }

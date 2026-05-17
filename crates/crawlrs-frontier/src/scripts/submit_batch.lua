@@ -23,18 +23,18 @@
 --                                            packed per URL. max_urls = -1
 --                                            means "no cap for this host."
 --
--- Returns: a Redis array {newly, rejected_quota}. The rest of the
--- batch (N - newly - rejected_quota) was a bloom duplicate.
+-- Returns: a Redis array {queued, rejected}. The rest of the
+-- batch (N - queued - rejected) was a bloom duplicate.
 --
 -- All KEYS share the per-shard hash tag so Redis Cluster routes the
 -- script to one slot. Cross-shard batching is the caller's job;
 -- mixing shards in one call would split the keyspace and break the
 -- single-slot guarantee.
 
-local n               = tonumber(ARGV[1])
-local now_ms          = tonumber(ARGV[2])
-local newly           = 0
-local rejected_quota  = 0
+local n         = tonumber(ARGV[1])
+local now_ms    = tonumber(ARGV[2])
+local queued    = 0
+local rejected  = 0
 
 for i = 0, n - 1 do
   local base    = 3 + i * 4
@@ -50,9 +50,8 @@ for i = 0, n - 1 do
   -- rejected before we mark the bloom, so they're still eligible
   -- for a future run when the counter resets. Downstream tradeoff:
   -- a URL that would have been a bloom-duplicate is instead counted
-  -- as rejected_quota. Acceptable because quota and dedup are both
-  -- "drop this URL" outcomes; the metric attribution is the only
-  -- difference.
+  -- as rejected. Acceptable because quota and dedup are both "drop
+  -- this URL" outcomes; the metric attribution is the only difference.
   --
   -- The flag-then-branch shape (rather than `goto`) is required
   -- because Redis EVAL embeds Lua 5.1, which predates `goto`/labels.
@@ -60,7 +59,7 @@ for i = 0, n - 1 do
   if cap >= 0 then
     local cur = tonumber(redis.call('GET', host_count_key)) or 0
     if cur >= cap then
-      rejected_quota = rejected_quota + 1
+      rejected = rejected + 1
       quota_exceeded = true
     end
   end
@@ -78,9 +77,9 @@ for i = 0, n - 1 do
       -- NX so we don't stomp a wake-time already set by a prior claim
       -- or advance_wake against the same host.
       redis.call('ZADD',  KEYS[3], 'NX', now_ms, host)
-      newly = newly + 1
+      queued = queued + 1
     end
   end
 end
 
-return {newly, rejected_quota}
+return {queued, rejected}

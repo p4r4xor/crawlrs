@@ -56,8 +56,14 @@ thiserror   = "2"
 tokio       = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
 tracing     = "0.1"
 url         = { version = "2", features = ["serde"] }
-wreq        = { git = "https://github.com/0x676e67/wreq.git", default-features = false, features = ["gzip", "brotli", "zstd", "deflate", "socks", "stream", "hickory-dns"] }
-wreq-util   = { git = "https://github.com/0x676e67/wreq-util.git", default-features = false, features = ["emulation"] }
+
+# Explicit prerelease-aware version ranges on git deps so cargo-deny's
+# `wildcards` lint doesn't flag them as unbounded. A bare `*` excludes
+# prereleases by cargo's semver rules; `>=X.0.0-rc.0, <X+1` is the
+# canonical opt-in. Bump the upper bound when upstream ships a stable
+# major release.
+wreq        = { git = "https://github.com/0x676e67/wreq.git", version = ">=6.0.0-rc.0, <7", default-features = false, features = ["gzip", "brotli", "zstd", "deflate", "socks", "stream", "hickory-dns"] }
+wreq-util   = { git = "https://github.com/0x676e67/wreq-util.git", version = ">=3.0.0-rc.0, <4", default-features = false, features = ["emulation"] }
 
 # Test-only.
 testcontainers         = "0.27"

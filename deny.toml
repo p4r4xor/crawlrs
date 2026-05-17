@@ -119,15 +119,6 @@ allow = ["GPL-3.0-only"]
 name = "tiny-keccak"
 allow = ["CC0-1.0"]
 
-# wreq-util: declares LGPL-3.0 (deprecated SPDX identifier; the
-# modern form is LGPL-3.0-only). LGPL is compatible with our
-# GPL-3.0 project. We allow the deprecated spelling because that's
-# what the crate's Cargo.toml currently uses; if it migrates to the
-# modern form, this entry will need to update.
-[[licenses.exceptions]]
-name = "wreq-util"
-allow = ["LGPL-3.0"]
-
 # ---------------------------------------------------------------------------
 # Crate bans / duplicates
 # ---------------------------------------------------------------------------
@@ -136,7 +127,57 @@ multiple-versions  = "warn"
 wildcards          = "deny"
 highlight          = "all"
 deny               = []
-skip               = []
+
+# Duplicate-version allowlist. Every entry below comes from an
+# upstream transitive split we do not control directly. Most are
+# either platform-specific (windows-*, wasi*, redox_*) or driven by
+# major-version splits inside a few core crate families that
+# upstream has not yet collapsed:
+#
+#   - sqlx 0.8 pulls older revisions of crypto / windows-sys / hashbrown
+#     via the sqlx-postgres -> etcetera -> hkdf chain.
+#   - parquet + arrow pull newer crypto / hashbrown / thiserror.
+#   - ring + rustls pull a separate windows-sys / wasi axis.
+#   - wreq + hickory pull rand 0.10 alongside getrandom 0.4 / wasip3.
+#   - testcontainers + bollard pull rand 0.9 alongside getrandom 0.3.
+#   - moka + uuid pull yet another rand axis.
+#
+# None of these touch our runtime decisions; they exist purely
+# because the upstream crates haven't aligned. Listed by name
+# without a version pin so a future upstream bump (which collapses
+# the dupe) silently disappears from this list rather than needing
+# a manual edit. A NEW crate that gets duplicated (not on this list)
+# still surfaces as a warning so we notice.
+skip = [
+    { name = "block-buffer" },
+    { name = "core-foundation" },
+    { name = "cpufeatures" },
+    { name = "crypto-common" },
+    { name = "digest" },
+    { name = "foldhash" },
+    { name = "getrandom" },
+    { name = "hashbrown" },
+    { name = "itertools" },
+    { name = "ordered-float" },
+    { name = "rand" },
+    { name = "rand_chacha" },
+    { name = "rand_core" },
+    { name = "redox_syscall" },
+    { name = "r-efi" },
+    { name = "regex-automata" },
+    { name = "thiserror" },
+    { name = "thiserror-impl" },
+    { name = "windows-sys" },
+    { name = "windows-targets" },
+    { name = "windows_aarch64_gnullvm" },
+    { name = "windows_aarch64_msvc" },
+    { name = "windows_i686_gnu" },
+    { name = "windows_i686_msvc" },
+    { name = "windows_x86_64_gnu" },
+    { name = "windows_x86_64_gnullvm" },
+    { name = "windows_x86_64_msvc" },
+    { name = "wit-bindgen" },
+]
 skip-tree          = []
 
 # ---------------------------------------------------------------------------

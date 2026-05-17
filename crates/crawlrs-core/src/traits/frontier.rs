@@ -74,11 +74,13 @@ pub enum SubmitOutcome {
 
 /// Aggregated outcome of one `Frontier::submit_batch` call.
 ///
-/// `newly` and `rejected_quota` partition the batch alongside the
+/// `queued` and `rejected` partition the batch alongside the
 /// implicit "bloom-duplicate" count (which equals
-/// `batch_size - newly - rejected_quota`). Two named fields rather
+/// `batch_size - queued - rejected`). Two named fields rather
 /// than three because the duplicate count is derivable and rarely
-/// the operator-facing number.
+/// the operator-facing number. Bloom-duplicates are NOT counted
+/// under `rejected`; today `rejected` is exclusively the per-host
+/// quota signal, and the comment on the field documents that.
 ///
 /// Pattern: Parameter Object on the return side. Keeps the trait
 /// method's return monomorphic so adding a future per-batch field
@@ -87,13 +89,16 @@ pub enum SubmitOutcome {
 pub struct SubmitBatchOutcome {
     /// URLs that the bloom filter accepted as new AND that the
     /// per-host counter accepted as within quota; now waiting on
-    /// their host's queue.
-    pub newly: usize,
-    /// URLs the host's `[crawl].max_urls` counter rejected.
-    /// Counter-first ordering means these are NOT marked in the
-    /// bloom and remain eligible for a future run (where the
-    /// counter resets to zero).
-    pub rejected_quota: usize,
+    /// their host's queue. Symmetric with `SubmitOutcome::Queued`
+    /// at the single-URL level (each `Queued` contributes +1).
+    pub queued: usize,
+    /// URLs the host's `[crawl].max_urls` counter rejected. Counter-first
+    /// ordering means these are NOT marked in the bloom and remain
+    /// eligible for a future run (where the counter resets to zero).
+    /// The only rejection reason at submit time today; if more are
+    /// introduced (e.g. submit-time scope checks), break this into
+    /// a `RejectionReason` enum rather than overloading the field.
+    pub rejected: usize,
 }
 
 #[async_trait]

@@ -192,10 +192,10 @@ async fn submit_batch_collapses_round_trips_per_shard() {
     let after = redis_eval_calls(&fx.pool).await;
 
     assert_eq!(
-        outcome.newly, 100,
+        outcome.queued, 100,
         "every URL is unique so all 100 are Queued",
     );
-    assert_eq!(outcome.rejected_quota, 0, "no quota configured");
+    assert_eq!(outcome.rejected, 0, "no quota configured");
 
     // Expected exactly `distinct_shards` calls. We allow 2x headroom
     // because a fresh script may need one SCRIPT LOAD followed by an
@@ -502,9 +502,9 @@ async fn submit_batch_enforces_per_host_quota() {
         .map(|i| entry(&format!("https://capped.test/p{i}")))
         .collect();
     let outcome = frontier.submit_batch(entries).await.unwrap();
-    assert_eq!(outcome.newly, 50, "counter caps acceptances at 50");
+    assert_eq!(outcome.queued, 50, "counter caps acceptances at 50");
     assert_eq!(
-        outcome.rejected_quota, 50,
+        outcome.rejected, 50,
         "the other 50 must be quota-rejected, not bloom-dropped",
     );
 }
@@ -535,8 +535,8 @@ async fn quota_rejected_urls_remain_eligible_after_run_reset() {
         .map(|i| entry(&format!("https://capped.test/p{i}")))
         .collect();
     let outcome_a = frontier_a.submit_batch(entries.clone()).await.unwrap();
-    assert_eq!(outcome_a.newly, 5);
-    assert_eq!(outcome_a.rejected_quota, 5);
+    assert_eq!(outcome_a.queued, 5);
+    assert_eq!(outcome_a.rejected, 5);
 
     // Fresh run: counter resets. Bloom resets too (different
     // container per fixture, but in any case `seen` is per-shard
@@ -554,13 +554,13 @@ async fn quota_rejected_urls_remain_eligible_after_run_reset() {
     .await
     .unwrap();
     let outcome_b = frontier_b.submit_batch(entries).await.unwrap();
-    assert_eq!(outcome_b.newly, 5, "fresh run accepts up to the cap again");
-    assert_eq!(outcome_b.rejected_quota, 5);
+    assert_eq!(outcome_b.queued, 5, "fresh run accepts up to the cap again");
+    assert_eq!(outcome_b.rejected, 5);
 }
 
 #[tokio::test]
 async fn submit_batch_without_quota_accepts_all_unique() {
-    // Uncapped host: every unique URL goes through; rejected_quota
+    // Uncapped host: every unique URL goes through; rejected
     // stays zero regardless of batch size.
     let fx = fixture().await;
     let policy: Arc<dyn ShardingPolicy> = Arc::new(SingleShardPolicy);
@@ -578,6 +578,6 @@ async fn submit_batch_without_quota_accepts_all_unique() {
         .map(|i| entry(&format!("https://free.test/p{i}")))
         .collect();
     let outcome = frontier.submit_batch(entries).await.unwrap();
-    assert_eq!(outcome.newly, 50);
-    assert_eq!(outcome.rejected_quota, 0);
+    assert_eq!(outcome.queued, 50);
+    assert_eq!(outcome.rejected, 0);
 }

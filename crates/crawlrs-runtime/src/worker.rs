@@ -546,12 +546,12 @@ impl UrlPipeline {
             let n = outbound.len();
             match self.deps.frontier.submit_batch(outbound).await {
                 Ok(outcome) => {
-                    if outcome.rejected_quota > 0 {
+                    if outcome.rejected > 0 {
                         metrics::counter!(
                             crate::metrics::URLS_REJECTED_TOTAL,
                             "reason" => crate::metrics::REJECTED_REASON_QUOTA,
                         )
-                        .increment(outcome.rejected_quota as u64);
+                        .increment(outcome.rejected as u64);
                     }
                 }
                 Err(e) => {

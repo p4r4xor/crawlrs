@@ -157,8 +157,8 @@ impl<'a> HostQueueOps<'a> {
     /// batching is the caller's responsibility (a single Lua script
     /// touches a single cluster slot).
     ///
-    /// Returns `(newly, rejected_quota)`. Bloom duplicates are the
-    /// remainder: `items.len() - newly - rejected_quota`.
+    /// Returns `(queued, rejected)`. Bloom duplicates are the
+    /// remainder: `items.len() - queued - rejected`.
     pub(crate) async fn submit_batch(
         &self,
         shard: ShardKey,
@@ -345,18 +345,18 @@ impl<'a> HostQueueOps<'a> {
 }
 
 fn parse_submit_batch_value(value: Value) -> Result<(usize, usize), HostQueueError> {
-    // submit_batch.lua returns a two-element array {newly, rejected_quota}.
+    // submit_batch.lua returns a two-element array {queued, rejected}.
     let parts = <Vec<Value> as FromRedisValue>::from_redis_value(value)?;
     let mut iter = parts.into_iter();
-    let newly_v = iter
+    let queued_v = iter
         .next()
         .ok_or_else(|| HostQueueError::BadTag("submit_batch.lua returned empty array".into()))?;
     let rejected_v = iter
         .next()
-        .ok_or_else(|| HostQueueError::BadTag("submit_batch.lua missing rejected_quota".into()))?;
-    let newly = <i64 as FromRedisValue>::from_redis_value(newly_v)?;
+        .ok_or_else(|| HostQueueError::BadTag("submit_batch.lua missing rejected".into()))?;
+    let queued = <i64 as FromRedisValue>::from_redis_value(queued_v)?;
     let rejected = <i64 as FromRedisValue>::from_redis_value(rejected_v)?;
-    Ok((newly as usize, rejected as usize))
+    Ok((queued as usize, rejected as usize))
 }
 
 fn parse_claim_value(value: Value) -> Result<ClaimRaw, HostQueueError> {
