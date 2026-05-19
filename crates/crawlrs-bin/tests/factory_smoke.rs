@@ -63,7 +63,8 @@ async fn factory_builds_against_real_backends() {
         fetch: FetchConfig {
             max_body_bytes: 10 * 1024 * 1024,
             user_agent: Some("crawlrs-test/0.0.1".to_string()),
-            default_timeout: Duration::from_secs(30),
+            default_timeout: Duration::from_secs(60),
+            read_timeout: Duration::from_secs(30),
         },
         crawl: CrawlConfig::default(),
         access: AccessConfig::default(),

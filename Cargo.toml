@@ -32,6 +32,7 @@ cuid2       = "0.1"
 http        = "1"
 humantime-serde = "1"
 lol_html    = "2.8"
+simdutf8    = "0.1"
 moka        = { version = "0.12", features = ["sync"] }
 arrow       = { version = "58", default-features = false }
 parquet     = { version = "58", default-features = false, features = ["arrow", "zstd"] }

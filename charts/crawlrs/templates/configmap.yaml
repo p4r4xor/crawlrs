@@ -49,6 +49,7 @@ data:
     user_agent      = {{ . | quote }}
     {{- end }}
     default_timeout = {{ .Values.fetch.defaultTimeout | quote }}
+    read_timeout    = {{ .Values.fetch.readTimeout | quote }}
 
     [crawl]
     {{- if .Values.crawl.maxDepth }}

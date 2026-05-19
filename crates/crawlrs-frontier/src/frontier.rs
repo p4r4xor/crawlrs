@@ -316,10 +316,7 @@ impl Frontier for RedisFrontier {
             for _ in 0..queued {
                 record_submit_outcome(SubmitOutcome::Queued);
             }
-            let bloom_dupes = items
-                .len()
-                .saturating_sub(queued)
-                .saturating_sub(rejected);
+            let bloom_dupes = items.len().saturating_sub(queued).saturating_sub(rejected);
             for _ in 0..bloom_dupes {
                 record_submit_outcome(SubmitOutcome::SkippedDuplicate);
             }

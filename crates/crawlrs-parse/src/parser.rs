@@ -45,6 +45,25 @@ impl LolHtmlParser {
 impl Parser for LolHtmlParser {
     async fn parse(&self, response: &FetchResponse) -> Result<ParsedDocument> {
         let started_at = std::time::Instant::now();
+
+        if let Some(reason) = skip_reason(response) {
+            metrics::counter!(
+                crate::metrics::PARSE_SKIPPED_TOTAL,
+                "reason" => reason,
+            )
+            .increment(1);
+            metrics::histogram!(crate::metrics::PARSE_SECONDS)
+                .record(started_at.elapsed().as_secs_f64());
+            return Ok(ParsedDocument {
+                url: response.url.clone(),
+                status: response.status,
+                title: None,
+                text: None,
+                outbound_links: Box::new(Vec::new()),
+                fetched_at: response.fetched_at,
+            });
+        }
+
         let extracted = extract_html(&response.body)?;
 
         let effective_base = match &extracted.base_href {
@@ -255,4 +274,63 @@ fn collapse_whitespace(input: &str) -> String {
         out.pop();
     }
     out
+}
+
+/// Two-gate filter before lol_html. Returns `Some(label)` if the response
+/// should bypass parsing entirely; `None` if the body is parseable HTML.
+///
+/// Gate 1 (cheap): `Content-Type` header check. Catches polite servers
+/// that label their binary content honestly. The non-HTML set covers
+/// images, fonts, archives, PDFs, audio, video, and generic
+/// `application/octet-stream`.
+///
+/// Gate 2 (slightly more expensive): SIMD UTF-8 validation on the body.
+/// Catches binary content served with a `Content-Type: text/html` lie.
+/// Falls through to lol_html only when the body is valid UTF-8.
+fn skip_reason(response: &FetchResponse) -> Option<&'static str> {
+    let content_type = response
+        .headers
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+        .map(|(_, value)| value.as_str())
+        .unwrap_or("");
+    if is_binary_content_type(content_type) {
+        return Some("binary_content_type");
+    }
+    if !response.body.is_empty() && simdutf8::basic::from_utf8(&response.body).is_err() {
+        return Some("invalid_utf8");
+    }
+    None
+}
+
+fn is_binary_content_type(ct: &str) -> bool {
+    let trimmed = ct
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    if trimmed.is_empty() {
+        return false;
+    }
+    matches!(
+        trimmed.as_str(),
+        "application/pdf"
+            | "application/zip"
+            | "application/gzip"
+            | "application/x-gzip"
+            | "application/x-tar"
+            | "application/x-7z-compressed"
+            | "application/x-rar-compressed"
+            | "application/x-bzip2"
+            | "application/octet-stream"
+            | "application/msword"
+            | "application/vnd.ms-excel"
+            | "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            | "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            | "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+    ) || trimmed.starts_with("image/")
+        || trimmed.starts_with("audio/")
+        || trimmed.starts_with("video/")
+        || trimmed.starts_with("font/")
 }

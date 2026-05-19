@@ -126,8 +126,14 @@ pub struct FetchConfig {
     /// crawler identity (e.g. for politeness signalling on a
     /// site-specific allowlist).
     pub user_agent: Option<String>,
+    /// Overall per-request wall-clock budget. Caps the full
+    /// request including connect + headers + body.
     #[serde(with = "humantime_serde")]
     pub default_timeout: Duration,
+    /// Max time between received body chunks. Independent
+    /// of `default_timeout`; this is the slowloris guard.
+    #[serde(with = "humantime_serde")]
+    pub read_timeout: Duration,
 }
 
 impl Default for FetchConfig {
@@ -135,7 +141,8 @@ impl Default for FetchConfig {
         Self {
             max_body_bytes: 10 * 1024 * 1024,
             user_agent: None,
-            default_timeout: Duration::from_secs(30),
+            default_timeout: Duration::from_secs(60),
+            read_timeout: Duration::from_secs(30),
         }
     }
 }

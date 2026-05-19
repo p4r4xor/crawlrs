@@ -92,7 +92,8 @@ crawlrs:
     # profile drives the wire User-Agent. obeyRobotsTxt must be false
     # for this to validate (a random per-request UA can't coherently
     # match a robots.txt rule group).
-    defaultTimeout: "30s"
+    defaultTimeout: "60s"
+    readTimeout: "30s"
 
   politeness:
     enabled: false

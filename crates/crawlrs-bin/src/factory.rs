@@ -49,7 +49,7 @@ pub async fn build(config: &CrawlrsConfig) -> Result<Built> {
 
     // Defense-in-depth: an under-sized Redis pool wouldn't fail the
     // build outright, it would just produce connection-acquisition
-    // latency at runtime. Fail-fast here instead — diagnosing pool
+    // latency at runtime. Fail-fast here instead; diagnosing pool
     // starvation in prod is dramatically more expensive than an
     // honest startup error.
     validate_pool_size(&redis_pool, config.runtime.workers as u32)
@@ -193,6 +193,7 @@ fn build_fetcher(config: &CrawlrsConfig) -> Result<Arc<WreqFetcher>> {
         max_body_bytes: config.fetch.max_body_bytes,
         user_agent: config.fetch.user_agent.clone(),
         default_timeout: config.fetch.default_timeout,
+        read_timeout: config.fetch.read_timeout,
         proxy: Arc::new(NoProxyResolver),
         ..WreqFetcherConfig::default()
     };

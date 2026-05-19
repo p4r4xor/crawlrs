@@ -28,11 +28,18 @@ pub struct WreqFetcherConfig {
     pub user_agent: Option<String>,
 
     /// Per-request total timeout (used when [`FetchRequest::timeout`] is
-    /// not overridden).
+    /// not overridden). This is the overall wall-clock budget; it caps
+    /// the entire request including connect + headers + body.
     pub default_timeout: Duration,
 
     /// TCP connect timeout.
     pub connect_timeout: Duration,
+
+    /// Read timeout: maximum time between received byte chunks. Fires
+    /// if the server opens the connection but stalls mid-response
+    /// (slowloris-style). Bounded below `default_timeout`. wreq treats
+    /// this as orthogonal to the overall timeout; both clocks tick.
+    pub read_timeout: Duration,
 
     /// Maximum redirect hops to follow before giving up.
     pub max_redirects: usize,
@@ -66,8 +73,9 @@ impl Default for WreqFetcherConfig {
         Self {
             emulation: None,
             user_agent: None,
-            default_timeout: Duration::from_secs(30),
+            default_timeout: Duration::from_secs(60),
             connect_timeout: Duration::from_secs(10),
+            read_timeout: Duration::from_secs(30),
             max_redirects: 5,
             pool_max_idle_per_host: 0,
             max_body_bytes: 32 * 1024 * 1024,

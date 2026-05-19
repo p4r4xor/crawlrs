@@ -1,7 +1,7 @@
 //! [`Fetcher`] impl backed by `wreq`.
 
 use std::collections::HashMap;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
@@ -42,7 +42,10 @@ impl WreqFetcher {
     pub fn new(config: WreqFetcherConfig) -> Result<Self> {
         let mut client_builder = Client::builder()
             .connect_timeout(config.connect_timeout)
+            .read_timeout(config.read_timeout)
             .timeout(config.default_timeout)
+            .tcp_keepalive(Duration::from_secs(30))
+            .tcp_nodelay(true)
             .pool_max_idle_per_host(config.pool_max_idle_per_host)
             .redirect(redirect::Policy::limited(config.max_redirects))
             .tls_session_cache(NoopTlsSessionCache);

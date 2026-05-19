@@ -13,6 +13,7 @@ crawlrs-core.workspace = true
 async-trait.workspace = true
 lol_html.workspace    = true
 metrics.workspace     = true
+simdutf8.workspace    = true
 
 [dev-dependencies]
 bytes.workspace     = true

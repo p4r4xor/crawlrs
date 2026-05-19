@@ -4,5 +4,7 @@ Cargo.lock
 # Internal docs and AI tooling.
 docs/
 CLAUDE.md
+CONVENTIONS.md
+AUDIT.md
 .claude/
 .playwright-mcp/

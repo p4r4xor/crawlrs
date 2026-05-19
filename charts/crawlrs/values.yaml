@@ -50,7 +50,10 @@ fetch:
   # to advertise a specific crawler identity (e.g. for a site-by-site
   # politeness allowlist that gates on UA).
   userAgent: ""
-  defaultTimeout: "30s"
+  defaultTimeout: "60s"
+  # Stalls between body chunks fail after this. Independent of
+  # defaultTimeout (which caps the whole request). Slowloris guard.
+  readTimeout: "30s"
 
 crawl:
   # Operator-mandated crawl scope: per-host depth and URL caps.
