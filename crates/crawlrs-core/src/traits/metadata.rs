@@ -6,7 +6,7 @@ use async_trait::async_trait;
 
 use crate::error::Result;
 use crate::traits::politeness::FailureKind;
-use crate::types::{AttemptId, UrlEntry, UrlMetadata};
+use crate::types::{AttemptId, SkipReason, UrlEntry, UrlMetadata};
 use crate::url::CanonicalUrl;
 
 /// Parameter object for [`MetadataStore::mark_succeeded`].
@@ -96,4 +96,26 @@ pub trait MetadataStore: Send + Sync {
     /// carrying `reason` is appended to `url_history` so operators can
     /// inspect "what broke?" via SQL.
     async fn mark_permanently_failed(&self, url: &CanonicalUrl, reason: &str) -> Result<()>;
+
+    /// Record a URL that was discovered but will not be attempted.
+    /// `status -> Skipped` with the corresponding `SkipReason`
+    /// embedded in the wire form (`skipped_blocklist`,
+    /// `skipped_robots`, `skipped_depth`, `skipped_max_urls`).
+    ///
+    /// Idempotent: if a row already exists for this URL the call is a
+    /// no-op (implementations use `INSERT ... ON CONFLICT DO NOTHING`).
+    /// In particular, an existing `Succeeded` row is NOT overwritten;
+    /// the skip is recorded only for first-encountered URLs that have
+    /// no prior ledger state.
+    ///
+    /// No `url_history` row is written: skipped URLs never transition
+    /// (the row enters in its terminal state).
+    async fn mark_discovered_skipped(
+        &self,
+        url: &CanonicalUrl,
+        run_id: &str,
+        depth: u32,
+        discovered_from: Option<&CanonicalUrl>,
+        reason: SkipReason,
+    ) -> Result<()>;
 }

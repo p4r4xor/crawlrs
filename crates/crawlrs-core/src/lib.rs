@@ -45,6 +45,6 @@ pub use traits::store::Store;
 pub use traits::wake_planner::WakePlanner;
 pub use types::{
     AttemptId, FetchRequest, FetchResponse, LinkDispatch, NextWake, ParsedDocument, RedirectHop,
-    StoreRecord, UrlEntry, UrlId, UrlMetadata, UrlStatus, WorkerIdentity,
+    SkipReason, StoreRecord, UrlEntry, UrlId, UrlMetadata, UrlStatus, WorkerIdentity,
 };
 pub use url::CanonicalUrl;

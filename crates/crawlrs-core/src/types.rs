@@ -322,9 +322,32 @@ pub enum UrlStatus {
     /// 'permanently_failed'` are the DLQ; ops queries against
     /// `url_metadata` and `url_history` answer "what broke?".
     PermanentlyFailed,
-    /// Skipped without an attempt (e.g. robots.txt disallowed,
-    /// manual exclude, depth limit, content-hash dupe).
+    /// Skipped without an attempt. The wire form always carries a
+    /// specific reason (`skipped_blocklist`, `skipped_robots`,
+    /// `skipped_depth`, `skipped_max_urls`); the Rust API surfaces
+    /// the reason separately as [`SkipReason`] so the lifecycle enum
+    /// stays orthogonal to the rejection cause.
     Skipped,
+}
+
+/// Reason a URL was recorded as `Skipped` in the metadata ledger.
+/// Always pairs with [`UrlStatus::Skipped`]; the storage layer joins
+/// the two into a single status string at the SQL boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SkipReason {
+    /// `[access].blocklist` host match. Refused at claim time
+    /// (after the URL was already submitted) or at discovery time
+    /// (before it ever enters the queue).
+    Blocklist,
+    /// robots.txt `Disallow` for our user agent on this path.
+    Robots,
+    /// Outbound URL exceeds the host's `max_depth` cap. Filtered at
+    /// discovery time; the URL never enters the queue.
+    Depth,
+    /// Per-host `max_urls` quota exhausted. Rejected atomically in
+    /// the Frontier's submit script.
+    MaxUrls,
 }
 
 /// Per-URL ledger entry. The `MetadataStore` trait stores one of
@@ -350,6 +373,8 @@ pub struct UrlMetadata {
     pub depth: u32,
     /// `run_id` of the run that most recently touched this row.
     pub last_run_id: String,
+    /// Parent URL that introduced this one. `None` for seed URLs.
+    pub discovered_from: Option<CanonicalUrl>,
     /// When this URL was first added to the metadata ledger.
     pub discovered_at: SystemTime,
     /// Last modification of any field. On a fresh insert this equals

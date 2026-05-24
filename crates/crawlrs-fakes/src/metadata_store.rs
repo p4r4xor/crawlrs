@@ -20,7 +20,7 @@ use std::time::SystemTime;
 use async_trait::async_trait;
 use crawlrs_core::{
     CanonicalUrl, Error, FailureKind, MetadataStore, Outbox, OutboxRowId, Result, ShipFn,
-    SuccessRecord, UrlMetadata, UrlStatus,
+    SkipReason, SuccessRecord, UrlMetadata, UrlStatus,
 };
 
 use crate::outbox::{self, OutboxState};
@@ -120,6 +120,7 @@ impl MetadataStore for InMemoryMetadataStore {
                 content_hash: None,
                 depth,
                 last_run_id: run_id.to_string(),
+                discovered_from: None,
                 discovered_at: now,
                 updated_at: now,
             });
@@ -182,6 +183,36 @@ impl MetadataStore for InMemoryMetadataStore {
         ledger
             .dlq
             .push((url.as_str().to_string(), reason.to_string()));
+        Ok(())
+    }
+
+    async fn mark_discovered_skipped(
+        &self,
+        url: &CanonicalUrl,
+        run_id: &str,
+        depth: u32,
+        discovered_from: Option<&CanonicalUrl>,
+        _reason: SkipReason,
+    ) -> Result<()> {
+        let mut ledger = self.ledger.lock().unwrap();
+        let now = SystemTime::now();
+        // Mirror Postgres `ON CONFLICT DO NOTHING`: only seed a row if
+        // none exists. A prior Succeeded / Pending state is preserved.
+        ledger
+            .rows
+            .entry(url.as_str().to_string())
+            .or_insert_with(|| UrlMetadata {
+                url: url.clone(),
+                status: UrlStatus::Skipped,
+                retry_count: 0,
+                blob_path: None,
+                content_hash: None,
+                depth,
+                last_run_id: run_id.to_string(),
+                discovered_from: discovered_from.cloned(),
+                discovered_at: now,
+                updated_at: now,
+            });
         Ok(())
     }
 }

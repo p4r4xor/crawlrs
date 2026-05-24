@@ -23,8 +23,8 @@ use std::sync::Arc;
 use crawlrs_core::{
     AttemptId, Blocklist, CanonicalUrl, ClaimOutcome, Clock, CrawlScope, FailureKind, FetchRequest,
     FetchResponse, Fetcher, Frontier, LinkDispatch, MetadataStore, NextWake, ParsedDocument,
-    Parser, PoliteDecision, Politeness, ShardingPolicy, SiteAdapterRegistry, Store, StoreRecord,
-    SuccessRecord, UrlEntry, UrlId, WorkerIdentity, content_hash,
+    Parser, PoliteDecision, Politeness, ShardingPolicy, SiteAdapterRegistry, SkipReason, Store,
+    StoreRecord, SuccessRecord, UrlEntry, UrlId, WorkerIdentity, content_hash,
 };
 use tokio::sync::watch;
 use tokio::time::Instant as TokioInstant;
@@ -263,10 +263,10 @@ impl UrlPipeline {
         // (drained by a separate publisher task); Direct enqueues
         // them via `Frontier::submit_batch` after the metadata
         // commit, accepting bounded loss on transient errors.
-        let outbound = compute_outbound(&self.entry, &doc, |host| {
+        let partition = compute_outbound(&self.entry, &doc, |host| {
             self.deps.crawl_scope.depth_cap(host)
         });
-        Box::pin(self.finalize(&resp, &doc, outbound)).await;
+        Box::pin(self.finalize(&resp, &doc, partition)).await;
     }
 
     /// Returns `true` iff the worker may proceed to fetch. `false`
@@ -283,9 +283,11 @@ impl UrlPipeline {
     ///    via `Politeness::check`. Returns `Disallow` for
     ///    open-circuit or robots-blocked URLs.
     ///
-    /// No metadata write on either rejection: both are per-run
-    /// policy, not URL-level failures worth recording in the
-    /// ledger.
+    /// Blocklist rejections write a `Skipped` ledger row (insert-only;
+    /// any prior row is preserved) so the URL has a discovery record
+    /// for replay if the blocklist is later relaxed. Politeness
+    /// disallows are not recorded: they're per-attempt policy, not a
+    /// terminal verdict on the URL itself.
     async fn politeness_allows(&self) -> bool {
         let _phase = PhaseTimer::start(crate::metrics::PHASE_POLITENESS);
 
@@ -298,6 +300,13 @@ impl UrlPipeline {
                 "reason" => crate::metrics::SKIP_BLOCKLISTED,
             )
             .increment(1);
+            self.record_discovered_skip(
+                self.url(),
+                self.entry.depth,
+                self.entry.discovered_from.as_ref(),
+                SkipReason::Blocklist,
+            )
+            .await;
             let _ = self.deps.frontier.ack(self.attempt()).await;
             return false;
         }
@@ -321,6 +330,29 @@ impl UrlPipeline {
                 // re-pushes it to its host_queue for re-delivery.
                 false
             }
+        }
+    }
+
+    /// Best-effort discovery-skip ledger write. Insert-only: if the
+    /// URL already has a row (from a prior run that succeeded, or a
+    /// later promotion to InProgress) the call is a no-op. Used for
+    /// blocklist and depth-cap rejections so the URL has a trail for
+    /// later replay; the runtime keeps going on error because losing
+    /// one skip record is preferable to stalling the pipeline.
+    async fn record_discovered_skip(
+        &self,
+        url: &CanonicalUrl,
+        depth: u32,
+        discovered_from: Option<&CanonicalUrl>,
+        reason: SkipReason,
+    ) {
+        let result = self
+            .deps
+            .metadata
+            .mark_discovered_skipped(url, &self.deps.run_id, depth, discovered_from, reason)
+            .await;
+        if let Err(e) = result {
+            warn!(url = %url, ?reason, error = %e, "metadata.mark_discovered_skipped failed");
         }
     }
 
@@ -486,7 +518,16 @@ impl UrlPipeline {
     /// the frontier. Each step's failure path acks anyway to avoid
     /// hot-looping; the URL stays `InProgress` in the ledger so a
     /// future run can pick it up.
-    async fn finalize(&self, resp: &FetchResponse, doc: &ParsedDocument, outbound: Vec<UrlEntry>) {
+    async fn finalize(
+        &self,
+        resp: &FetchResponse,
+        doc: &ParsedDocument,
+        partition: OutboundPartition,
+    ) {
+        let OutboundPartition {
+            kept: outbound,
+            depth_skipped,
+        } = partition;
         let body_hash = content_hash(&resp.body);
         let record = StoreRecord {
             doc,
@@ -534,6 +575,21 @@ impl UrlPipeline {
         };
         if let Err(e) = self.deps.metadata.mark_succeeded(&success).await {
             warn!(url = %self.url(), error = %e, "metadata.mark_succeeded failed; acking anyway");
+        }
+
+        // Record discovery-skipped children one row at a time. Done
+        // after `mark_succeeded` so a successful parent has its
+        // history row in place before its children's `Skipped` rows
+        // reference it via `discovered_from`. Each call is best-effort
+        // and idempotent on the metadata side.
+        for child in &depth_skipped {
+            self.record_discovered_skip(
+                &child.url,
+                child.depth,
+                child.discovered_from.as_ref(),
+                SkipReason::Depth,
+            )
+            .await;
         }
 
         if matches!(self.deps.config.link_dispatch, LinkDispatch::Direct) && !outbound.is_empty() {
@@ -615,10 +671,21 @@ impl UrlPipeline {
     }
 }
 
-/// Filter outbound links by scheme + max-depth and return them as
-/// `UrlEntry`s ready to ride along on the `mark_succeeded`
-/// transaction. Pure: no I/O. The actual enqueue into the Frontier
-/// happens via the outbox publisher (see
+/// Result of partitioning a parent's outbound links by the depth gate.
+///
+/// `kept` rides along on the `mark_succeeded` transaction and is
+/// eventually enqueued into the Frontier. `depth_skipped` is the set
+/// dropped by the per-host cap; the runtime records each one via
+/// `MetadataStore::mark_discovered_skipped` so the URL has a trail
+/// for later replay if the cap is lifted.
+struct OutboundPartition {
+    kept: Vec<UrlEntry>,
+    depth_skipped: Vec<UrlEntry>,
+}
+
+/// Filter outbound links by scheme + max-depth and partition them
+/// into kept-for-enqueue vs depth-dropped. Pure: no I/O. The actual
+/// enqueue into the Frontier happens via the outbox publisher (see
 /// [`crate::outbox::outbox_publisher`]) so that the Postgres commit
 /// and the queue write are atomic from the worker's perspective.
 ///
@@ -632,27 +699,24 @@ fn compute_outbound(
     parent: &UrlEntry,
     doc: &ParsedDocument,
     depth_cap: impl Fn(&str) -> Option<u32>,
-) -> Vec<UrlEntry> {
+) -> OutboundPartition {
     let new_depth = parent.depth + 1;
-    let mut dropped = 0u64;
+    let mut kept = Vec::with_capacity(doc.outbound_links.len());
+    let mut depth_skipped = Vec::new();
 
-    let kept: Vec<UrlEntry> = doc
-        .outbound_links
-        .iter()
-        .filter(|u| u.is_http())
-        .filter_map(|u| {
-            let cap = u.host().and_then(&depth_cap);
-            if cap.is_some_and(|limit| new_depth > limit) {
-                dropped += 1;
-                return None;
-            }
-            Some(UrlEntry {
-                url: u.clone(),
-                depth: new_depth,
-                discovered_from: Some(parent.url.clone()),
-            })
-        })
-        .collect();
+    for url in doc.outbound_links.iter().filter(|u| u.is_http()) {
+        let entry = UrlEntry {
+            url: url.clone(),
+            depth: new_depth,
+            discovered_from: Some(parent.url.clone()),
+        };
+        let cap = url.host().and_then(&depth_cap);
+        if cap.is_some_and(|limit| new_depth > limit) {
+            depth_skipped.push(entry);
+        } else {
+            kept.push(entry);
+        }
+    }
 
     // Non-HTTP links (mailto:, tel:, javascript:) are silently dropped
     // without a metric because they're scheme-mismatch, not a crawler
@@ -661,15 +725,18 @@ fn compute_outbound(
     // default or a per-host override; operators can correlate with
     // politeness::check disallows (decision=disallow_quota) when
     // they need to tell the two mechanisms apart.
-    if dropped > 0 {
+    if !depth_skipped.is_empty() {
         metrics::counter!(
             crate::metrics::URLS_SKIPPED_TOTAL,
             "reason" => crate::metrics::SKIP_DEPTH_LIMIT,
         )
-        .increment(dropped);
+        .increment(depth_skipped.len() as u64);
     }
 
-    kept
+    OutboundPartition {
+        kept,
+        depth_skipped,
+    }
 }
 
 #[cfg(test)]
@@ -747,9 +814,10 @@ mod tests {
     fn compute_outbound_with_no_cap_keeps_all_http_links() {
         let parent = parent_at(0);
         let doc = doc_with_links(&["https://a.test/", "https://b.test/"]);
-        let outbound = compute_outbound(&parent, &doc, uncapped);
-        assert_eq!(outbound.len(), 2);
-        assert!(outbound.iter().all(|e| e.depth == 1));
+        let partition = compute_outbound(&parent, &doc, uncapped);
+        assert_eq!(partition.kept.len(), 2);
+        assert!(partition.depth_skipped.is_empty());
+        assert!(partition.kept.iter().all(|e| e.depth == 1));
     }
 
     #[test]
@@ -758,8 +826,10 @@ mod tests {
         let doc = doc_with_links(&["https://a.test/", "https://b.test/"]);
         // Cap=2 means a parent at depth 2 produces children at depth
         // 3, which exceeds the cap; everything is filtered out.
-        let outbound = compute_outbound(&parent, &doc, capped(2));
-        assert!(outbound.is_empty());
+        let partition = compute_outbound(&parent, &doc, capped(2));
+        assert!(partition.kept.is_empty());
+        assert_eq!(partition.depth_skipped.len(), 2);
+        assert!(partition.depth_skipped.iter().all(|e| e.depth == 3));
     }
 
     #[test]
@@ -769,18 +839,37 @@ mod tests {
         // Cap=3 means a parent at depth 2 produces children at depth
         // 3 (exactly the cap); they must be kept, not treated as
         // past-cap.
-        let outbound = compute_outbound(&parent, &doc, capped(3));
-        assert_eq!(outbound.len(), 1);
-        assert_eq!(outbound[0].depth, 3);
+        let partition = compute_outbound(&parent, &doc, capped(3));
+        assert_eq!(partition.kept.len(), 1);
+        assert!(partition.depth_skipped.is_empty());
+        assert_eq!(partition.kept[0].depth, 3);
     }
 
     #[test]
     fn compute_outbound_threads_parent_url_as_discovered_from() {
         let parent = parent_at(0);
         let doc = doc_with_links(&["https://a.test/"]);
-        let outbound = compute_outbound(&parent, &doc, uncapped);
+        let partition = compute_outbound(&parent, &doc, uncapped);
         assert_eq!(
-            outbound[0].discovered_from.as_ref().map(|u| u.as_str()),
+            partition.kept[0]
+                .discovered_from
+                .as_ref()
+                .map(|u| u.as_str()),
+            Some("https://parent.test/"),
+        );
+    }
+
+    #[test]
+    fn compute_outbound_depth_skipped_carries_parent_as_discovered_from() {
+        let parent = parent_at(5);
+        let doc = doc_with_links(&["https://a.test/"]);
+        let partition = compute_outbound(&parent, &doc, capped(2));
+        assert_eq!(partition.depth_skipped.len(), 1);
+        assert_eq!(
+            partition.depth_skipped[0]
+                .discovered_from
+                .as_ref()
+                .map(|u| u.as_str()),
             Some("https://parent.test/"),
         );
     }
@@ -791,9 +880,11 @@ mod tests {
         // a.test capped at depth 2 -> child at depth 3 dropped.
         // b.test uncapped -> child at depth 3 kept.
         let doc = doc_with_links(&["https://a.test/", "https://b.test/"]);
-        let outbound = compute_outbound(&parent, &doc, |host| (host == "a.test").then_some(2));
-        assert_eq!(outbound.len(), 1);
-        assert_eq!(outbound[0].url.as_str(), "https://b.test/");
+        let partition = compute_outbound(&parent, &doc, |host| (host == "a.test").then_some(2));
+        assert_eq!(partition.kept.len(), 1);
+        assert_eq!(partition.kept[0].url.as_str(), "https://b.test/");
+        assert_eq!(partition.depth_skipped.len(), 1);
+        assert_eq!(partition.depth_skipped[0].url.as_str(), "https://a.test/");
     }
 
     #[test]
@@ -804,11 +895,13 @@ mod tests {
         // global=2 (low). Children at depth 3: a.test passes (3 <= 10),
         // b.test drops (3 > 2).
         let doc = doc_with_links(&["https://a.test/", "https://b.test/"]);
-        let outbound = compute_outbound(&parent, &doc, |host| match host {
+        let partition = compute_outbound(&parent, &doc, |host| match host {
             "a.test" => Some(10),
             _ => Some(2),
         });
-        assert_eq!(outbound.len(), 1);
-        assert_eq!(outbound[0].url.as_str(), "https://a.test/");
+        assert_eq!(partition.kept.len(), 1);
+        assert_eq!(partition.kept[0].url.as_str(), "https://a.test/");
+        assert_eq!(partition.depth_skipped.len(), 1);
+        assert_eq!(partition.depth_skipped[0].url.as_str(), "https://b.test/");
     }
 }

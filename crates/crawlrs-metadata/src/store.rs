@@ -17,7 +17,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use crawlrs_core::{
     CanonicalUrl, Error, FailureKind, MetadataStore, Outbox, OutboxEntry, OutboxRowId, Result,
-    ShipFn, SuccessRecord, UrlEntry, UrlMetadata, UrlStatus,
+    ShipFn, SkipReason, SuccessRecord, UrlEntry, UrlMetadata, UrlStatus,
 };
 use serde_json::json;
 use sqlx::postgres::{PgPool, PgPoolOptions};
@@ -30,7 +30,19 @@ const STATUS_IN_PROGRESS: &str = "in_progress";
 const STATUS_SUCCEEDED: &str = "succeeded";
 const STATUS_FAILED_TRANSIENT: &str = "failed_transient";
 const STATUS_PERMANENTLY_FAILED: &str = "permanently_failed";
-const STATUS_SKIPPED: &str = "skipped";
+const STATUS_SKIPPED_BLOCKLIST: &str = "skipped_blocklist";
+const STATUS_SKIPPED_ROBOTS: &str = "skipped_robots";
+const STATUS_SKIPPED_DEPTH: &str = "skipped_depth";
+const STATUS_SKIPPED_MAX_URLS: &str = "skipped_max_urls";
+
+fn skip_status_str(reason: SkipReason) -> &'static str {
+    match reason {
+        SkipReason::Blocklist => STATUS_SKIPPED_BLOCKLIST,
+        SkipReason::Robots => STATUS_SKIPPED_ROBOTS,
+        SkipReason::Depth => STATUS_SKIPPED_DEPTH,
+        SkipReason::MaxUrls => STATUS_SKIPPED_MAX_URLS,
+    }
+}
 
 const EVENT_ATTEMPTED: &str = "attempted";
 const EVENT_SUCCEEDED: &str = "succeeded";
@@ -151,7 +163,7 @@ impl MetadataStore for PostgresMetadataStore {
         let _timer = crate::metrics::QueryTimer::new(crate::metrics::OP_GET);
         let row: Option<UrlRow> = sqlx::query_as::<_, UrlRow>(
             "SELECT url, status, retry_count, blob_path, content_hash, depth,
-                    last_run_id, discovered_at, updated_at
+                    last_run_id, discovered_from, discovered_at, updated_at
              FROM url_metadata WHERE url = $1",
         )
         .bind(url.as_str())
@@ -282,6 +294,40 @@ impl MetadataStore for PostgresMetadataStore {
         .await?;
         tx.commit().await.map_err(PostgresMetadataError::from)?;
         debug!(url = url.as_str(), "mark_permanently_failed");
+        Ok(())
+    }
+
+    #[tracing::instrument(skip(self), fields(url = %url, run_id = %run_id, depth, reason = ?reason))]
+    async fn mark_discovered_skipped(
+        &self,
+        url: &CanonicalUrl,
+        run_id: &str,
+        depth: u32,
+        discovered_from: Option<&CanonicalUrl>,
+        reason: SkipReason,
+    ) -> Result<()> {
+        let _timer = crate::metrics::QueryTimer::new(crate::metrics::OP_MARK_DISCOVERED_SKIPPED);
+        let host = url.host().unwrap_or("_unknown_");
+        // ON CONFLICT DO NOTHING: any prior row (Succeeded from a
+        // previous run, Pending, etc.) is preserved. Skipped status is
+        // recorded only for URLs whose first ledger encounter is this
+        // rejection.
+        sqlx::query(
+            "INSERT INTO url_metadata
+                (url, host, status, last_run_id, depth, discovered_from)
+             VALUES ($1, $2, $3, $4, $5, $6)
+             ON CONFLICT (url) DO NOTHING",
+        )
+        .bind(url.as_str())
+        .bind(host)
+        .bind(skip_status_str(reason))
+        .bind(run_id)
+        .bind(depth as i32)
+        .bind(discovered_from.map(|u| u.as_str()))
+        .execute(&self.pool)
+        .await
+        .map_err(PostgresMetadataError::from)?;
+        debug!(url = url.as_str(), ?reason, "mark_discovered_skipped");
         Ok(())
     }
 }
@@ -506,7 +552,10 @@ fn parse_status(s: &str) -> LocalResult<UrlStatus> {
         STATUS_SUCCEEDED => UrlStatus::Succeeded,
         STATUS_FAILED_TRANSIENT => UrlStatus::FailedTransient,
         STATUS_PERMANENTLY_FAILED => UrlStatus::PermanentlyFailed,
-        STATUS_SKIPPED => UrlStatus::Skipped,
+        STATUS_SKIPPED_BLOCKLIST
+        | STATUS_SKIPPED_ROBOTS
+        | STATUS_SKIPPED_DEPTH
+        | STATUS_SKIPPED_MAX_URLS => UrlStatus::Skipped,
         other => {
             return Err(PostgresMetadataError::Decode(format!(
                 "unknown status string: {other}"
@@ -525,12 +574,17 @@ struct UrlRow {
     content_hash: Option<i64>,
     depth: i32,
     last_run_id: String,
+    discovered_from: Option<String>,
     discovered_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
 
 impl UrlRow {
     fn into_metadata(self, url: &CanonicalUrl) -> LocalResult<UrlMetadata> {
+        let discovered_from = self
+            .discovered_from
+            .as_deref()
+            .and_then(|s| CanonicalUrl::parse(s).ok());
         Ok(UrlMetadata {
             url: url.clone(),
             status: parse_status(&self.status)?,
@@ -539,6 +593,7 @@ impl UrlRow {
             content_hash: self.content_hash.map(|v| v as u64),
             depth: self.depth.max(0) as u32,
             last_run_id: self.last_run_id,
+            discovered_from,
             discovered_at: datetime_to_system_time(self.discovered_at),
             updated_at: datetime_to_system_time(self.updated_at),
         })
@@ -583,7 +638,10 @@ mod tests {
             (STATUS_SUCCEEDED, UrlStatus::Succeeded),
             (STATUS_FAILED_TRANSIENT, UrlStatus::FailedTransient),
             (STATUS_PERMANENTLY_FAILED, UrlStatus::PermanentlyFailed),
-            (STATUS_SKIPPED, UrlStatus::Skipped),
+            (STATUS_SKIPPED_BLOCKLIST, UrlStatus::Skipped),
+            (STATUS_SKIPPED_ROBOTS, UrlStatus::Skipped),
+            (STATUS_SKIPPED_DEPTH, UrlStatus::Skipped),
+            (STATUS_SKIPPED_MAX_URLS, UrlStatus::Skipped),
         ] {
             assert_eq!(parse_status(s).unwrap(), expected);
         }

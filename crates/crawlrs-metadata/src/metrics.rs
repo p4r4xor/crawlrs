@@ -13,6 +13,7 @@ pub const OP_MARK_ATTEMPTING: &str = "mark_attempting";
 pub const OP_MARK_SUCCEEDED: &str = "mark_succeeded";
 pub const OP_MARK_FAILED: &str = "mark_failed";
 pub const OP_MARK_PERMANENTLY_FAILED: &str = "mark_permanently_failed";
+pub const OP_MARK_DISCOVERED_SKIPPED: &str = "mark_discovered_skipped";
 
 pub fn register() {
     describe_histogram!(
