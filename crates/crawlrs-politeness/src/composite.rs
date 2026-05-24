@@ -25,8 +25,8 @@ use async_trait::async_trait;
 use bb8::Pool;
 use bb8_redis::RedisConnectionManager;
 use crawlrs_core::{
-    BackoffTracker, CanonicalUrl, Error, FailureKind, Fetcher, NextWake, PoliteDecision,
-    Politeness, Result, RobotsChecker, ShardKey, ShardingPolicy, WakePlanner,
+    BackoffTracker, CanonicalUrl, DisallowReason, Error, FailureKind, Fetcher, NextWake,
+    PoliteDecision, Politeness, Result, RobotsChecker, ShardKey, ShardingPolicy, WakePlanner,
 };
 use tracing::info;
 
@@ -212,12 +212,12 @@ impl Politeness for CompositePoliteness {
         if self.backoff.is_open(host).await? {
             metrics::counter!(crate::metrics::POLITENESS_CIRCUIT_OPEN_TOTAL).increment(1);
             record_check_decision(crate::metrics::DECISION_DISALLOW_CIRCUIT);
-            return Ok(PoliteDecision::Disallow);
+            return Ok(PoliteDecision::Disallow(DisallowReason::Circuit));
         }
 
         if self.effective_obey_robots(host) && !self.robots.allowed(url).await? {
             record_check_decision(crate::metrics::DECISION_DISALLOW_ROBOTS);
-            return Ok(PoliteDecision::Disallow);
+            return Ok(PoliteDecision::Disallow(DisallowReason::Robots));
         }
 
         // Wake-time pacing is enforced by the frontier (the host's

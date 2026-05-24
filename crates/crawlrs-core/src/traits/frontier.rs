@@ -74,31 +74,45 @@ pub enum SubmitOutcome {
 
 /// Aggregated outcome of one `Frontier::submit_batch` call.
 ///
-/// `queued` and `rejected` partition the batch alongside the
+/// `queued` and `rejected_urls` partition the batch alongside the
 /// implicit "bloom-duplicate" count (which equals
-/// `batch_size - queued - rejected`). Two named fields rather
-/// than three because the duplicate count is derivable and rarely
-/// the operator-facing number. Bloom-duplicates are NOT counted
-/// under `rejected`; today `rejected` is exclusively the per-host
-/// quota signal, and the comment on the field documents that.
+/// `batch_size - queued - rejected_urls.len()`). The duplicate
+/// count is derivable and rarely the operator-facing number, so it
+/// stays implicit. Bloom-duplicates are NOT counted under rejected
+/// URLs; today the rejected list is exclusively the per-host quota
+/// signal, and the field doc records that.
 ///
 /// Pattern: Parameter Object on the return side. Keeps the trait
 /// method's return monomorphic so adding a future per-batch field
-/// (e.g. a per-URL audit log) doesn't break callers.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// (e.g. a per-URL audit log for a new rejection reason) doesn't
+/// break callers.
+#[derive(Debug, Clone, Default)]
 pub struct SubmitBatchOutcome {
     /// URLs that the bloom filter accepted as new AND that the
     /// per-host counter accepted as within quota; now waiting on
     /// their host's queue. Symmetric with `SubmitOutcome::Queued`
     /// at the single-URL level (each `Queued` contributes +1).
     pub queued: usize,
-    /// URLs the host's `[crawl].max_urls` counter rejected. Counter-first
-    /// ordering means these are NOT marked in the bloom and remain
-    /// eligible for a future run (where the counter resets to zero).
+    /// URLs the host's `[crawl].max_urls` counter rejected.
+    /// Counter-first ordering means these are NOT marked in the
+    /// bloom and remain eligible for a future run (where the
+    /// counter resets to zero). The runtime records each rejected
+    /// entry as a `Skipped` ledger row so the URL has a trail for
+    /// later replay.
+    ///
     /// The only rejection reason at submit time today; if more are
-    /// introduced (e.g. submit-time scope checks), break this into
-    /// a `RejectionReason` enum rather than overloading the field.
-    pub rejected: usize,
+    /// introduced (e.g. submit-time scope checks), pair each entry
+    /// with a `RejectionReason` rather than overloading this field.
+    pub rejected_urls: Vec<UrlEntry>,
+}
+
+impl SubmitBatchOutcome {
+    /// Count of URLs rejected by the per-host quota. Sugar over
+    /// `self.rejected_urls.len()`; lets count-only consumers
+    /// (dashboards, seed-load progress) ignore the per-URL payload.
+    pub fn rejected_count(&self) -> usize {
+        self.rejected_urls.len()
+    }
 }
 
 #[async_trait]

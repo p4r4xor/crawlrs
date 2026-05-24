@@ -23,18 +23,20 @@
 --                                            packed per URL. max_urls = -1
 --                                            means "no cap for this host."
 --
--- Returns: a Redis array {queued, rejected}. The rest of the
--- batch (N - queued - rejected) was a bloom duplicate.
+-- Returns: a Redis array {queued, rejected_url_ids}. The rest of
+-- the batch (N - queued - #rejected_url_ids) was a bloom duplicate.
+-- Per-URL rejection ids surface so the caller can record each one
+-- as a discovery-skip in the metadata ledger.
 --
 -- All KEYS share the per-shard hash tag so Redis Cluster routes the
 -- script to one slot. Cross-shard batching is the caller's job;
 -- mixing shards in one call would split the keyspace and break the
 -- single-slot guarantee.
 
-local n         = tonumber(ARGV[1])
-local now_ms    = tonumber(ARGV[2])
-local queued    = 0
-local rejected  = 0
+local n              = tonumber(ARGV[1])
+local now_ms         = tonumber(ARGV[2])
+local queued         = 0
+local rejected_ids   = {}
 
 for i = 0, n - 1 do
   local base    = 3 + i * 4
@@ -59,7 +61,7 @@ for i = 0, n - 1 do
   if cap >= 0 then
     local cur = tonumber(redis.call('GET', host_count_key)) or 0
     if cur >= cap then
-      rejected = rejected + 1
+      rejected_ids[#rejected_ids + 1] = url_id
       quota_exceeded = true
     end
   end
@@ -82,4 +84,4 @@ for i = 0, n - 1 do
   end
 end
 
-return {queued, rejected}
+return {queued, rejected_ids}

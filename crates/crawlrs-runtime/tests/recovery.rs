@@ -198,9 +198,12 @@ async fn outbox_publisher_drains_into_frontier_atleast_once() {
         .unwrap();
 
     let (tx, rx) = watch::channel(false);
+    let metadata_dyn: Arc<dyn MetadataStore> = metadata.clone();
     let publisher = tokio::spawn(outbox_publisher(
         outbox.clone(),
         frontier.clone(),
+        metadata_dyn,
+        "run-1".to_string(),
         rx,
         Duration::from_millis(20),
     ));

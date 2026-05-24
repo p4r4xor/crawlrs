@@ -21,10 +21,11 @@
 use std::sync::Arc;
 
 use crawlrs_core::{
-    AttemptId, Blocklist, CanonicalUrl, ClaimOutcome, Clock, CrawlScope, FailureKind, FetchRequest,
-    FetchResponse, Fetcher, Frontier, LinkDispatch, MetadataStore, NextWake, ParsedDocument,
-    Parser, PoliteDecision, Politeness, ShardingPolicy, SiteAdapterRegistry, SkipReason, Store,
-    StoreRecord, SuccessRecord, UrlEntry, UrlId, WorkerIdentity, content_hash,
+    AttemptId, Blocklist, CanonicalUrl, ClaimOutcome, Clock, CrawlScope, DisallowReason,
+    FailureKind, FetchRequest, FetchResponse, Fetcher, Frontier, LinkDispatch, MetadataStore,
+    NextWake, ParsedDocument, Parser, PoliteDecision, Politeness, ShardingPolicy,
+    SiteAdapterRegistry, SkipReason, Store, StoreRecord, SuccessRecord, UrlEntry, UrlId,
+    WorkerIdentity, content_hash,
 };
 use tokio::sync::watch;
 use tokio::time::Instant as TokioInstant;
@@ -283,11 +284,13 @@ impl UrlPipeline {
     ///    via `Politeness::check`. Returns `Disallow` for
     ///    open-circuit or robots-blocked URLs.
     ///
-    /// Blocklist rejections write a `Skipped` ledger row (insert-only;
-    /// any prior row is preserved) so the URL has a discovery record
-    /// for replay if the blocklist is later relaxed. Politeness
-    /// disallows are not recorded: they're per-attempt policy, not a
-    /// terminal verdict on the URL itself.
+    /// Blocklist and robots rejections write a `Skipped` ledger row
+    /// (insert-only; any prior row is preserved) so the URL has a
+    /// discovery record for replay if the rule is later relaxed.
+    /// Circuit-open disallows are NOT recorded: the breaker is
+    /// per-host per-attempt policy, not a terminal verdict on the
+    /// URL itself; the URL stays claimable and a future attempt will
+    /// see `Allow` once the breaker resets.
     async fn politeness_allows(&self) -> bool {
         let _phase = PhaseTimer::start(crate::metrics::PHASE_POLITENESS);
 
@@ -313,13 +316,26 @@ impl UrlPipeline {
 
         match self.deps.politeness.check(self.url()).await {
             Ok(PoliteDecision::Allow) => true,
-            Ok(PoliteDecision::Disallow) => {
-                debug!(url = %self.url(), "politeness disallowed; acking");
+            Ok(PoliteDecision::Disallow(reason)) => {
+                debug!(url = %self.url(), ?reason, "politeness disallowed; acking");
                 metrics::counter!(
                     crate::metrics::URLS_SKIPPED_TOTAL,
                     "reason" => crate::metrics::SKIP_POLITENESS_DISALLOWED,
                 )
                 .increment(1);
+                // Robots is a URL-level verdict (terminal until the
+                // robots cache TTL elapses); Circuit is per-host
+                // breaker state, not a property of this URL, so we
+                // skip the ledger write on that path.
+                if matches!(reason, DisallowReason::Robots) {
+                    self.record_discovered_skip(
+                        self.url(),
+                        self.entry.depth,
+                        self.entry.discovered_from.as_ref(),
+                        SkipReason::Robots,
+                    )
+                    .await;
+                }
                 let _ = self.deps.frontier.ack(self.attempt()).await;
                 false
             }
@@ -602,12 +618,22 @@ impl UrlPipeline {
             let n = outbound.len();
             match self.deps.frontier.submit_batch(outbound).await {
                 Ok(outcome) => {
-                    if outcome.rejected > 0 {
+                    let rejected_n = outcome.rejected_urls.len();
+                    if rejected_n > 0 {
                         metrics::counter!(
                             crate::metrics::URLS_REJECTED_TOTAL,
                             "reason" => crate::metrics::REJECTED_REASON_QUOTA,
                         )
-                        .increment(outcome.rejected as u64);
+                        .increment(rejected_n as u64);
+                    }
+                    for rejected in &outcome.rejected_urls {
+                        self.record_discovered_skip(
+                            &rejected.url,
+                            rejected.depth,
+                            rejected.discovered_from.as_ref(),
+                            SkipReason::MaxUrls,
+                        )
+                        .await;
                     }
                 }
                 Err(e) => {

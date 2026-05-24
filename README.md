@@ -25,12 +25,12 @@ $$ |      $$ |     $$  __$$ |$$ | $$ | $$ |$$ |$$ |       \____$$\
 
 <p align="center">An extremely fast distributed web crawler. Deploy anywhere. Monitor like production.</p>
 
-- **Extremely fast.** Hundreds of async workers per pod, one round trip per URL batch, 50 ms scheduling tick. Scales horizontally; throughput grows with cluster size.
-- **Built to survive.** Fault tolerance is built in at every layer of the pipeline. Failed fetches retry; crashed workers recover; the queue and the metadata ledger both survive backend restarts; exhausted retries land in a dead-letter queue. Nothing is silently dropped.
-- **Built for stealth.** Randomised TLS / HTTP-2 fingerprints on every HTTP request, plus a patched Chrome binary with source-level Audio / Canvas / WebGL / WebRTC spoofing for JS-heavy targets. No flaky JS injection; the patches live in the binary.
-- **Deploy anywhere.** Standalone binary, container image, or a one-command Helm install with bundled Redis + Postgres + Grafana. The same chart runs on a laptop kind cluster and in production.
-- **Monitor like production.** Prometheus contract across every stage. Three provisioned Grafana dashboards out of the box. Liveness / readiness / startup probes wired to the actual pipeline.
-- **Plug in your own crawl logic.** Per-domain `SiteAdapter` hooks for sites that need bespoke extraction, login flows, or custom pagination. URL-pattern routing picks the right adapter; everything else falls through to the generic pipeline.
+- **Extremely fast.** Thousands of async workers per pod, batched at the queue boundary so each URL costs about one Redis round trip. Throughput scales linearly when you add pods.
+- **Built to survive.** Every stage has its own recovery path: retries on transient failures, lease-based recovery for crashed workers, a persistent queue and ledger that survive Redis or Postgres restarts. URLs that exhaust their retry budget land in a dead-letter queue instead of disappearing.
+- **Built for stealth.** Every HTTP request ships with a randomised TLS and HTTP-2 fingerprint, so common bot-detection heuristics don't see a single repeating signature. For JS-heavy targets, a patched Chrome handles rendering; Audio, Canvas, WebGL, and WebRTC spoofing live in the binary, not in injected JS that breaks every Chrome release.
+- **Deploy anywhere.** Ship a standalone binary, run the container image, or `helm install` the whole stack: Redis, Postgres, and Grafana included. The same chart runs on a laptop kind cluster and in production; no separate config tree per environment.
+- **Monitor like production.** Every pipeline stage exports Prometheus metrics on the same contract, so dashboards built for one deployment work for the next. Three Grafana dashboards ship pre-provisioned, and the liveness / readiness / startup probes check actual pipeline health, not just whether the binary is running.
+- **Plug in your own crawl logic.** Some sites need bespoke handling: custom extraction shapes, login flows, weird pagination. Register a `SiteAdapter` keyed on a URL pattern; matching URLs run your code, everything else falls through to the generic pipeline.
 
 ---
 
@@ -72,37 +72,41 @@ Iterate by editing `local/seeds.txt` or `local/values.local.yaml` and re-running
 
 ---
 
-## What you can build
+## What you can build!
 
-- **A continuously-fresh search corpus.** Re-crawl a known domain set on a cadence; downstream readers see Parquet they can query immediately.
-- **An ML training dataset that's actually yours.** Your bucket, your schema, no third-party pipeline in between.
-- **A vector-store ingest pipeline.** Crawl → Parquet → LanceDB / pgvector / Qdrant. Same blob layout works for all three.
-- **A competitive-intelligence feed.** Cross-run dedup means each run only emits URLs that are new or changed.
-- **An archival mirror.** WARC output is byte-exact wire format; the same crawl feeds both analytical and archival paths.
+- **A continuously-fresh search corpus.** Point the crawler at a domain set, schedule re-crawls on a cadence, and let downstream readers query the Parquet output directly. Each run deduplicates against previous runs, so only new or changed pages land in the next batch.
+- **An ML training dataset you actually own.** The data lands in your bucket, in your schema, with no third-party pipeline sitting between the crawl and the training job.
+- **A vector-store ingest pipeline.** Crawl into Parquet, then load into LanceDB, pgvector, or Qdrant. The blob layout is the same for all three, so switching stores doesn't mean re-crawling.
+- **An archival mirror.** WARC output is byte-exact wire format. The same crawl can feed both an analytical path (Parquet) and an archival path (WARC) in parallel; you don't have to choose one.
 
 ---
 
 ## What crawlrs does well
 
-**Atomic, reasonable frontier.** Per-host queues with atomic admission, dedup, and per-host quota checks (`max_urls`, `max_depth`). Each host's queue is independent so hot domains don't starve cold ones.
+**Atomic, reasonable frontier.** Every URL goes through one atomic admission path: bloom dedup, per-host quota check (`max_urls`, `max_depth`), then enqueue. Each host has its own queue, so a hot domain can't starve everything else.
 
-**Fault-tolerant by construction.** Every layer in the pipeline (worker, queue, metadata, outbound dispatch) has its own recovery story. The runtime never silently drops a URL: it gets retried, recovered after a backend restart, or routed to the dead-letter queue.
+**Fault-tolerant by construction.** Every layer in the pipeline has its own recovery path. Workers restart under a supervisor with a bounded restart budget. The queue and ledger survive Redis or Postgres restarts. URLs that fail transiently get retried; URLs that exhaust their budget land in a dead-letter queue. Nothing is silently dropped.
 
-**Adaptive politeness across millions of domains.** Per-host scheduling, robots.txt cache, backoff on failure, per-domain overrides. Comfortable rates are learned per-host from observed responses instead of a static delay. Hosts that ask for slowdowns get them; hosts that don't get full throughput. State is sharded so politeness scales with the cluster.
+**Adaptive politeness across millions of domains.** The crawler learns a comfortable rate per host from observed responses instead of applying a static delay everywhere. Hosts that return 429s or 503s get exponential backoff; hosts that respond normally get full throughput. On top of that: per-host robots.txt caching, a circuit breaker for persistently failing hosts, and per-domain overrides when you need manual control. The politeness state is sharded, so it scales with the cluster.
 
-**Anti-bot by default.** Randomised TLS / HTTP-2 fingerprints on every HTTP request slip past common detection. For JS-heavy targets, a patched Chrome binary (closed source today) handles rendering with source-level Audio / Canvas / WebGL / WebRTC spoofing.
+**Anti-bot by default.** Every HTTP request ships with a randomised TLS and HTTP-2 fingerprint. For JS-heavy targets, a patched Chrome binary (closed source today) handles rendering with source-level Audio, Canvas, WebGL, and WebRTC spoofing baked into the binary itself.
 
-**Smart scheduling.** Wake-time ordering with atomic per-host quotas. Workers never race for the same URL. Priority weighting (depth, freshness, host-importance) is on the roadmap.
+**Smart scheduling.** Hosts are ordered by wake-time and claimed atomically, so workers never race for the same URL. Per-host quotas cap how many URLs any single domain can consume from the crawl budget. Priority weighting (depth, freshness, host-importance) is on the roadmap.
 
-**Output your warehouse already understands.** Parquet (analytical; LanceDB-ready) and WARC (archival; byte-exact wire) write in parallel under the same path layout. Plug into LanceDB, DuckDB, Polars, or Spark with no transform step.
+**Output your warehouse already understands.** Parquet and WARC write in parallel under the same path layout. Parquet is query-ready for LanceDB, DuckDB, Polars, or Spark with no transform step. WARC gives you byte-exact wire format for archival or compliance.
 
-**Trait-boundary separation.** `crawlrs-core` defines `Frontier`, `Politeness`, `Fetcher`, `Parser`, `Store`, `MetadataStore`, `SiteAdapter`, `ShardingPolicy`. Every concrete impl is one crate. Swapping the metadata store from Postgres to something else is a one-crate change, not a refactor.
+**Trait-boundary separation.** The core crate defines the trait surfaces: `Frontier`, `Politeness`, `Fetcher`, `Parser`, `Store`, `MetadataStore`, `SiteAdapter`, `ShardingPolicy`. Every concrete implementation lives in its own crate. If you want to swap the metadata store from Postgres to something else, that's a one-crate change, not a cross-repo refactor.
 
 ---
 
 ## Custom crawl logic
 
-Two ways to attach per-domain extraction. Rust impls of `SiteAdapter` for compile-time-checked logic; hot-loadable Lua / WASM scripts for adapters you want to change without rebuilding. Both live behind the same trait and dispatch via first-match URL routing.
+There are two ways to attach per-domain extraction. Pick based on how often the logic changes:
+
+- **Rust adapters** - write a `SiteAdapter` impl compiled into the binary. Type-checked, fast, best when the rules are stable.
+- **Lua / WASM scripts** - drop a script into the config path. Reloads without a rebuild or restart, best when you're still iterating.
+
+The runtime tries each registered adapter against the URL in order and uses the first match. Everything else falls through to the generic pipeline.
 
 ```rust
 use async_trait::async_trait;
@@ -123,8 +127,6 @@ impl SiteAdapter for GitHubAdapter {
     }
 }
 ```
-
-Register in priority order via `SiteAdapterRegistry::register`; first match wins.
 
 ---
 
@@ -163,10 +165,12 @@ Both still need Redis Stack and Postgres reachable. See [`local/DEPLOYMENT.md`](
 
 ## Roadmap
 
-- **Coverage-driven scheduling.** Spread the crawl budget across the target so a finite number of requests reaches as much of it as possible.
-- **Priority scheduling.** Pick the next URL by expected value (depth bias, freshness, host importance) instead of pure queue order.
-- **Published benchmarks.** Repeatable throughput numbers in `BENCHMARKS.md`.
-- **Open-source patched Chrome binary.** Possible future release of the rendering extension.
+| Feature | Status | What it does |
+|---|---|---|
+| **Priority scheduling** | planned | Pick the next URL by expected value (depth, freshness, host importance) instead of pure queue order. |
+| **Coverage-driven scheduling** | planned | Spread the crawl budget across the target so a finite number of requests reaches as much of it as possible. |
+| **Published benchmarks** | planned | Repeatable throughput numbers in `BENCHMARKS.md` so you can size a cluster before deploying. |
+| **Open-source Chrome binary** | exploring | Possible future release of the patched rendering extension. |
 
 ---
 

@@ -20,13 +20,35 @@ use crate::url::CanonicalUrl;
 /// Politeness gate decision for a single URL. Two states: the wake
 /// time is enforced by the frontier (claim never returns a URL whose
 /// host is still in the wake-window), so `check` only has to answer
-/// "is this URL allowed at all?" (robots, blocklist, circuit-open).
+/// "is this URL allowed at all?" (robots, circuit-open).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PoliteDecision {
     /// Safe to fetch right now.
     Allow,
-    /// Disallowed (robots.txt, blocklist, circuit open).
-    Disallow,
+    /// Disallowed; the inner [`DisallowReason`] tells the runtime
+    /// whether the verdict is host-as-guest behavior (robots.txt;
+    /// terminal for this URL until the cache TTL elapses) or
+    /// per-attempt policy (circuit-open; the URL may become claimable
+    /// later when the breaker resets). The runtime uses the
+    /// distinction to decide whether to write a `Skipped` ledger row.
+    Disallow(DisallowReason),
+}
+
+/// Why a [`PoliteDecision::Disallow`] fired. Mirrors the existing
+/// `DECISION_DISALLOW_ROBOTS` / `DECISION_DISALLOW_CIRCUIT` metric
+/// labels so the wire surface and the dashboards stay in lockstep.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DisallowReason {
+    /// `robots.txt` disallowed this URL for our user agent. Terminal
+    /// at the URL level until the robots cache TTL elapses or the
+    /// remote relaxes the rule; the runtime records this as a
+    /// `Skipped` discovery so the URL has a trail for later replay.
+    Robots,
+    /// The per-host circuit breaker is open (too many consecutive
+    /// failures). Per-attempt policy, not a URL-level verdict; the
+    /// URL stays eligible and a future attempt will see `Allow` once
+    /// the breaker resets on the next successful fetch.
+    Circuit,
 }
 
 /// Why a fetch failed. The politeness layer cares about the *category*

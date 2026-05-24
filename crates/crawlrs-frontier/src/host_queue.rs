@@ -157,16 +157,18 @@ impl<'a> HostQueueOps<'a> {
     /// batching is the caller's responsibility (a single Lua script
     /// touches a single cluster slot).
     ///
-    /// Returns `(queued, rejected)`. Bloom duplicates are the
-    /// remainder: `items.len() - queued - rejected`.
+    /// Returns `(queued, rejected_url_ids)`. Bloom duplicates are
+    /// the remainder: `items.len() - queued - rejected_url_ids.len()`.
+    /// The id list lets the caller map rejected URLs back to their
+    /// `UrlEntry` for ledger-side discovery-skip recording.
     pub(crate) async fn submit_batch(
         &self,
         shard: ShardKey,
         items: &[SubmitItem<'_>],
         now_ms: i64,
-    ) -> Result<(usize, usize), HostQueueError> {
+    ) -> Result<(usize, Vec<UrlId>), HostQueueError> {
         if items.is_empty() {
-            return Ok((0, 0));
+            return Ok((0, Vec::new()));
         }
 
         // Encode all payloads upfront so a codec failure aborts before
@@ -344,8 +346,9 @@ impl<'a> HostQueueOps<'a> {
     }
 }
 
-fn parse_submit_batch_value(value: Value) -> Result<(usize, usize), HostQueueError> {
-    // submit_batch.lua returns a two-element array {queued, rejected}.
+fn parse_submit_batch_value(value: Value) -> Result<(usize, Vec<UrlId>), HostQueueError> {
+    // submit_batch.lua returns {queued, rejected_url_ids} where the
+    // second element is a Redis array of hex-encoded UrlId strings.
     let parts = <Vec<Value> as FromRedisValue>::from_redis_value(value)?;
     let mut iter = parts.into_iter();
     let queued_v = iter
@@ -353,10 +356,16 @@ fn parse_submit_batch_value(value: Value) -> Result<(usize, usize), HostQueueErr
         .ok_or_else(|| HostQueueError::BadTag("submit_batch.lua returned empty array".into()))?;
     let rejected_v = iter
         .next()
-        .ok_or_else(|| HostQueueError::BadTag("submit_batch.lua missing rejected".into()))?;
+        .ok_or_else(|| HostQueueError::BadTag("submit_batch.lua missing rejected_ids".into()))?;
     let queued = <i64 as FromRedisValue>::from_redis_value(queued_v)?;
-    let rejected = <i64 as FromRedisValue>::from_redis_value(rejected_v)?;
-    Ok((queued as usize, rejected as usize))
+    let rejected_hex = <Vec<String> as FromRedisValue>::from_redis_value(rejected_v)?;
+    let mut rejected_ids = Vec::with_capacity(rejected_hex.len());
+    for hex in rejected_hex {
+        rejected_ids.push(UrlId::from_hex(&hex).ok_or_else(|| {
+            HostQueueError::BadTag(format!("rejected_id parse: not 32 hex chars: {hex}"))
+        })?);
+    }
+    Ok((queued as usize, rejected_ids))
 }
 
 fn parse_claim_value(value: Value) -> Result<ClaimRaw, HostQueueError> {

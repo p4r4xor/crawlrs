@@ -303,7 +303,7 @@ impl Frontier for RedisFrontier {
                     max_urls,
                 });
             }
-            let (queued, rejected) = self
+            let (queued, rejected_ids) = self
                 .ops()
                 .submit_batch(*shard, &items, now)
                 .await
@@ -316,12 +316,25 @@ impl Frontier for RedisFrontier {
             for _ in 0..queued {
                 record_submit_outcome(SubmitOutcome::Queued);
             }
-            let bloom_dupes = items.len().saturating_sub(queued).saturating_sub(rejected);
+            let rejected_n = rejected_ids.len();
+            let bloom_dupes = items
+                .len()
+                .saturating_sub(queued)
+                .saturating_sub(rejected_n);
             for _ in 0..bloom_dupes {
                 record_submit_outcome(SubmitOutcome::SkippedDuplicate);
             }
+            // Map rejected url_ids back to their UrlEntry by walking
+            // the shard's items in input order; the id-set is small
+            // (bounded by per-host quota deltas) so the linear scan
+            // per rejected item is cheap relative to the Redis round
+            // trip we just made.
+            for rejected_id in rejected_ids {
+                if let Some(item) = items.iter().find(|item| item.url_id == rejected_id) {
+                    total.rejected_urls.push(item.entry.clone());
+                }
+            }
             total.queued += queued;
-            total.rejected += rejected;
         }
 
         metrics::histogram!(

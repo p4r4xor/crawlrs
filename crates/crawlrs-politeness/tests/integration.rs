@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use bb8::Pool;
 use bb8_redis::RedisConnectionManager;
 use crawlrs_core::{
-    CanonicalUrl, FailureKind, Fetcher, PoliteDecision, Politeness, ShardingPolicy,
+    CanonicalUrl, DisallowReason, FailureKind, Fetcher, PoliteDecision, Politeness, ShardingPolicy,
     SingleShardPolicy,
 };
 use crawlrs_fakes::FakeFetcher;
@@ -126,7 +126,10 @@ async fn circuit_opens_after_threshold_consecutive_failures() {
             .await
             .unwrap();
     }
-    assert_eq!(p.check(&u).await.unwrap(), PoliteDecision::Disallow);
+    assert_eq!(
+        p.check(&u).await.unwrap(),
+        PoliteDecision::Disallow(DisallowReason::Circuit),
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -199,7 +202,10 @@ async fn record_fetch_resets_circuit_breaker_state() {
             .await
             .unwrap();
     }
-    assert_eq!(p.check(&u).await.unwrap(), PoliteDecision::Disallow);
+    assert_eq!(
+        p.check(&u).await.unwrap(),
+        PoliteDecision::Disallow(DisallowReason::Circuit),
+    );
 
     // One success: circuit closes.
     p.record_fetch(&u).await.unwrap();
@@ -321,14 +327,14 @@ async fn robots_txt_blocks_disallowed_path_and_caches_body() {
 
     // Public path: allowed.
     let pub_decision = p.check(&url("https://blocky.test/public")).await.unwrap();
-    assert_ne!(pub_decision, PoliteDecision::Disallow);
+    assert_eq!(pub_decision, PoliteDecision::Allow);
 
     // Private path: blocked by robots.
     assert_eq!(
         p.check(&url("https://blocky.test/private/secret"))
             .await
             .unwrap(),
-        PoliteDecision::Disallow,
+        PoliteDecision::Disallow(DisallowReason::Robots),
     );
 
     // Cache check: a third request to the same host shouldn't re-fetch
@@ -358,7 +364,7 @@ async fn robots_txt_404_treated_as_no_rules() {
         .check(&url("https://norobots.test/anything"))
         .await
         .unwrap();
-    assert_ne!(decision, PoliteDecision::Disallow);
+    assert_eq!(decision, PoliteDecision::Allow);
 }
 
 #[tokio::test]
@@ -386,7 +392,7 @@ async fn robots_per_domain_override_disables_check() {
         .check(&url("https://staging.test/anything"))
         .await
         .unwrap();
-    assert_ne!(decision, PoliteDecision::Disallow);
+    assert_eq!(decision, PoliteDecision::Allow);
     // Robots.txt is never fetched because the gate is disabled.
     assert_eq!(fake.calls().len(), 0);
 }

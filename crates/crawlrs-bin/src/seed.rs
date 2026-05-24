@@ -88,13 +88,14 @@ async fn submit_in_batches(
         match frontier.submit_batch(chunk.to_vec()).await {
             Ok(outcome) => {
                 batches_succeeded += 1;
+                let outcome_rejected = outcome.rejected_count();
                 queued += outcome.queued as u64;
-                rejected += outcome.rejected as u64;
+                rejected += outcome_rejected as u64;
                 info!(
                     batch = batch_num,
                     size = chunk.len(),
                     queued = outcome.queued,
-                    rejected = outcome.rejected,
+                    rejected = outcome_rejected,
                     "batch submitted"
                 );
             }

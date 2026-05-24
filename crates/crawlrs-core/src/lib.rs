@@ -36,7 +36,7 @@ pub use traits::frontier::{ClaimOutcome, Frontier, SubmitBatchOutcome, SubmitOut
 pub use traits::metadata::{MetadataStore, SuccessRecord};
 pub use traits::outbox::{Outbox, OutboxEntry, OutboxRowId, ShipFn, ShipFuture};
 pub use traits::parser::Parser;
-pub use traits::politeness::{FailureKind, PoliteDecision, Politeness};
+pub use traits::politeness::{DisallowReason, FailureKind, PoliteDecision, Politeness};
 pub use traits::proxy::{ProxyOutcome, ProxyResolver, ProxySelection};
 pub use traits::robots_checker::RobotsChecker;
 pub use traits::sharding::{HostHashShardPolicy, ShardKey, ShardingPolicy, SingleShardPolicy};

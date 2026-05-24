@@ -205,10 +205,14 @@ impl Crawler {
         if matches!(self.deps.config.link_dispatch, LinkDispatch::DurableOutbox) {
             let outbox = self.outbox.clone();
             let frontier = self.deps.frontier.clone();
+            let metadata = self.deps.metadata.clone();
+            let run_id = self.deps.run_id.clone();
             let p_shutdown = self.shutdown_rx.clone();
             tasks.spawn(outbox_publisher(
                 outbox,
                 frontier,
+                metadata,
+                run_id,
                 p_shutdown,
                 crate::outbox::DEFAULT_PUBLISH_INTERVAL,
             ));

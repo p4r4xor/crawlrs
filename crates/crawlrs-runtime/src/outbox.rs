@@ -46,7 +46,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crawlrs_core::{Frontier, Outbox, ShipFn};
+use crawlrs_core::{Frontier, MetadataStore, Outbox, ShipFn, SkipReason};
 use tokio::sync::watch;
 use tracing::{debug, warn};
 
@@ -70,6 +70,8 @@ pub const DEFAULT_PUBLISH_INTERVAL: Duration = Duration::from_millis(250);
 pub async fn outbox_publisher(
     outbox: Arc<dyn Outbox>,
     frontier: Arc<dyn Frontier>,
+    metadata: Arc<dyn MetadataStore>,
+    run_id: String,
     mut shutdown: watch::Receiver<bool>,
     interval: Duration,
 ) {
@@ -80,7 +82,8 @@ pub async fn outbox_publisher(
         "outbox_publisher starting"
     );
     while !*shutdown.borrow() {
-        let progressed = publish_one_batch(&outbox, &frontier, batch_size).await;
+        let progressed =
+            publish_one_batch(&outbox, &frontier, &metadata, &run_id, batch_size).await;
 
         // If we just shipped a full batch, loop immediately: the
         // outbox is likely backlogged and we don't want to wait
@@ -98,25 +101,46 @@ pub async fn outbox_publisher(
     // One final drain on graceful shutdown so the metadata-side
     // commits the worker pool already produced are not stranded in
     // the outbox until the next process starts.
-    let _ = publish_one_batch(&outbox, &frontier, batch_size).await;
+    let _ = publish_one_batch(&outbox, &frontier, &metadata, &run_id, batch_size).await;
     debug!("outbox_publisher exiting");
 }
 
 /// Lease, ship, and mark one batch. Returns the number of rows
 /// successfully shipped (so the caller can decide whether to
-/// loop-immediately or sleep).
+/// loop-immediately or sleep). The ship closure records any
+/// max_urls-rejected URLs as discovery-skips on the metadata ledger
+/// so the URL has a trail for later replay (matching the Direct
+/// dispatch path's behavior).
 async fn publish_one_batch(
     outbox: &Arc<dyn Outbox>,
     frontier: &Arc<dyn Frontier>,
+    metadata: &Arc<dyn MetadataStore>,
+    run_id: &str,
     batch_size: usize,
 ) -> usize {
     let frontier = frontier.clone();
+    let metadata = metadata.clone();
+    let run_id = run_id.to_string();
     let ship: ShipFn = Box::new(move |entries| {
         Box::pin(async move {
-            frontier
+            let outcome = frontier
                 .submit_batch(entries.into_iter().map(|e| e.entry).collect())
-                .await
-                .map(|_| ())
+                .await?;
+            for rejected in &outcome.rejected_urls {
+                if let Err(e) = metadata
+                    .mark_discovered_skipped(
+                        &rejected.url,
+                        &run_id,
+                        rejected.depth,
+                        rejected.discovered_from.as_ref(),
+                        SkipReason::MaxUrls,
+                    )
+                    .await
+                {
+                    warn!(url = %rejected.url, error = %e, "publisher mark_discovered_skipped failed");
+                }
+            }
+            Ok(())
         })
     });
 
