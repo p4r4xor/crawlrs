@@ -179,14 +179,20 @@ async fn process_url(
     attempt_id: AttemptId,
 ) {
     let started_at = tokio::time::Instant::now();
-    metrics::gauge!(crate::metrics::WORKERS_ACTIVE).increment(1.0);
-    UrlPipeline::new(Arc::clone(deps), url_id, *entry, attempt_id)
-        .run()
-        .await;
-    metrics::gauge!(crate::metrics::WORKERS_ACTIVE).decrement(1.0);
-    metrics::histogram!(crate::metrics::PIPELINE_SECONDS)
+    let worker_label = identity.to_string();
+    metrics::gauge!(crate::metrics::WORKERS_ACTIVE, crate::metrics::LABEL_WORKER => worker_label.clone()).increment(1.0);
+    UrlPipeline::new(
+        Arc::clone(deps),
+        url_id,
+        *entry,
+        attempt_id,
+        worker_label.clone(),
+    )
+    .run()
+    .await;
+    metrics::gauge!(crate::metrics::WORKERS_ACTIVE, crate::metrics::LABEL_WORKER => worker_label.clone()).decrement(1.0);
+    metrics::histogram!(crate::metrics::PIPELINE_SECONDS, crate::metrics::LABEL_WORKER => worker_label)
         .record(started_at.elapsed().as_secs_f64());
-    let _ = identity; // referenced via tracing fields
 }
 
 // ---------------------------------------------------------------------------
@@ -211,15 +217,23 @@ struct UrlPipeline {
     url_id: UrlId,
     entry: UrlEntry,
     attempt_id: AttemptId,
+    worker_label: String,
 }
 
 impl UrlPipeline {
-    fn new(deps: Arc<WorkerDeps>, url_id: UrlId, entry: UrlEntry, attempt_id: AttemptId) -> Self {
+    fn new(
+        deps: Arc<WorkerDeps>,
+        url_id: UrlId,
+        entry: UrlEntry,
+        attempt_id: AttemptId,
+        worker_label: String,
+    ) -> Self {
         Self {
             deps,
             url_id,
             entry,
             attempt_id,
+            worker_label,
         }
     }
 
@@ -264,9 +278,12 @@ impl UrlPipeline {
         // (drained by a separate publisher task); Direct enqueues
         // them via `Frontier::submit_batch` after the metadata
         // commit, accepting bounded loss on transient errors.
-        let partition = compute_outbound(&self.entry, &doc, |host| {
-            self.deps.crawl_scope.depth_cap(host)
-        });
+        let partition = compute_outbound(
+            &self.entry,
+            &doc,
+            |host| self.deps.crawl_scope.depth_cap(host),
+            &self.worker_label,
+        );
         Box::pin(self.finalize(&resp, &doc, partition)).await;
     }
 
@@ -301,6 +318,7 @@ impl UrlPipeline {
             metrics::counter!(
                 crate::metrics::URLS_SKIPPED_TOTAL,
                 "reason" => crate::metrics::SKIP_BLOCKLISTED,
+                crate::metrics::LABEL_WORKER => self.worker_label.clone(),
             )
             .increment(1);
             self.record_discovered_skip(
@@ -321,6 +339,7 @@ impl UrlPipeline {
                 metrics::counter!(
                     crate::metrics::URLS_SKIPPED_TOTAL,
                     "reason" => crate::metrics::SKIP_POLITENESS_DISALLOWED,
+                    crate::metrics::LABEL_WORKER => self.worker_label.clone(),
                 )
                 .increment(1);
                 // Robots is a URL-level verdict (terminal until the
@@ -623,6 +642,7 @@ impl UrlPipeline {
                         metrics::counter!(
                             crate::metrics::URLS_REJECTED_TOTAL,
                             "reason" => crate::metrics::REJECTED_REASON_QUOTA,
+                            crate::metrics::LABEL_WORKER => self.worker_label.clone(),
                         )
                         .increment(rejected_n as u64);
                     }
@@ -638,8 +658,11 @@ impl UrlPipeline {
                 }
                 Err(e) => {
                     warn!(url = %self.url(), error = %e, n, "direct dispatch lost outbound URLs");
-                    metrics::counter!(crate::metrics::DIRECT_DISPATCH_LOST_TOTAL)
-                        .increment(n as u64);
+                    metrics::counter!(
+                        crate::metrics::DIRECT_DISPATCH_LOST_TOTAL,
+                        crate::metrics::LABEL_WORKER => self.worker_label.clone(),
+                    )
+                    .increment(n as u64);
                 }
             }
         }
@@ -652,7 +675,11 @@ impl UrlPipeline {
         // url + identity + depth + url_id fields, see #[instrument] on
         // the function) marks completion, and `URLS_FETCHED_TOTAL`
         // counts. Logging both would be redundant at high volume.
-        metrics::counter!(crate::metrics::URLS_FETCHED_TOTAL).increment(1);
+        metrics::counter!(
+            crate::metrics::URLS_FETCHED_TOTAL,
+            crate::metrics::LABEL_WORKER => self.worker_label.clone(),
+        )
+        .increment(1);
     }
 
     /// Common path for transport + HTTP-status failures: increment
@@ -666,6 +693,7 @@ impl UrlPipeline {
         metrics::counter!(
             crate::metrics::URLS_FAILED_TOTAL,
             "kind" => kind.as_str(),
+            crate::metrics::LABEL_WORKER => self.worker_label.clone(),
         )
         .increment(1);
         let new_count = match self.deps.metadata.mark_failed(self.url(), kind).await {
@@ -725,6 +753,7 @@ fn compute_outbound(
     parent: &UrlEntry,
     doc: &ParsedDocument,
     depth_cap: impl Fn(&str) -> Option<u32>,
+    worker_label: &str,
 ) -> OutboundPartition {
     let new_depth = parent.depth + 1;
     let mut kept = Vec::with_capacity(doc.outbound_links.len());
@@ -755,6 +784,7 @@ fn compute_outbound(
         metrics::counter!(
             crate::metrics::URLS_SKIPPED_TOTAL,
             "reason" => crate::metrics::SKIP_DEPTH_LIMIT,
+            crate::metrics::LABEL_WORKER => worker_label.to_string(),
         )
         .increment(depth_skipped.len() as u64);
     }
@@ -840,7 +870,7 @@ mod tests {
     fn compute_outbound_with_no_cap_keeps_all_http_links() {
         let parent = parent_at(0);
         let doc = doc_with_links(&["https://a.test/", "https://b.test/"]);
-        let partition = compute_outbound(&parent, &doc, uncapped);
+        let partition = compute_outbound(&parent, &doc, uncapped, "");
         assert_eq!(partition.kept.len(), 2);
         assert!(partition.depth_skipped.is_empty());
         assert!(partition.kept.iter().all(|e| e.depth == 1));
@@ -852,7 +882,7 @@ mod tests {
         let doc = doc_with_links(&["https://a.test/", "https://b.test/"]);
         // Cap=2 means a parent at depth 2 produces children at depth
         // 3, which exceeds the cap; everything is filtered out.
-        let partition = compute_outbound(&parent, &doc, capped(2));
+        let partition = compute_outbound(&parent, &doc, capped(2), "");
         assert!(partition.kept.is_empty());
         assert_eq!(partition.depth_skipped.len(), 2);
         assert!(partition.depth_skipped.iter().all(|e| e.depth == 3));
@@ -865,7 +895,7 @@ mod tests {
         // Cap=3 means a parent at depth 2 produces children at depth
         // 3 (exactly the cap); they must be kept, not treated as
         // past-cap.
-        let partition = compute_outbound(&parent, &doc, capped(3));
+        let partition = compute_outbound(&parent, &doc, capped(3), "");
         assert_eq!(partition.kept.len(), 1);
         assert!(partition.depth_skipped.is_empty());
         assert_eq!(partition.kept[0].depth, 3);
@@ -875,7 +905,7 @@ mod tests {
     fn compute_outbound_threads_parent_url_as_discovered_from() {
         let parent = parent_at(0);
         let doc = doc_with_links(&["https://a.test/"]);
-        let partition = compute_outbound(&parent, &doc, uncapped);
+        let partition = compute_outbound(&parent, &doc, uncapped, "");
         assert_eq!(
             partition.kept[0]
                 .discovered_from
@@ -889,7 +919,7 @@ mod tests {
     fn compute_outbound_depth_skipped_carries_parent_as_discovered_from() {
         let parent = parent_at(5);
         let doc = doc_with_links(&["https://a.test/"]);
-        let partition = compute_outbound(&parent, &doc, capped(2));
+        let partition = compute_outbound(&parent, &doc, capped(2), "");
         assert_eq!(partition.depth_skipped.len(), 1);
         assert_eq!(
             partition.depth_skipped[0]
@@ -906,7 +936,7 @@ mod tests {
         // a.test capped at depth 2 -> child at depth 3 dropped.
         // b.test uncapped -> child at depth 3 kept.
         let doc = doc_with_links(&["https://a.test/", "https://b.test/"]);
-        let partition = compute_outbound(&parent, &doc, |host| (host == "a.test").then_some(2));
+        let partition = compute_outbound(&parent, &doc, |host| (host == "a.test").then_some(2), "");
         assert_eq!(partition.kept.len(), 1);
         assert_eq!(partition.kept[0].url.as_str(), "https://b.test/");
         assert_eq!(partition.depth_skipped.len(), 1);
@@ -921,10 +951,15 @@ mod tests {
         // global=2 (low). Children at depth 3: a.test passes (3 <= 10),
         // b.test drops (3 > 2).
         let doc = doc_with_links(&["https://a.test/", "https://b.test/"]);
-        let partition = compute_outbound(&parent, &doc, |host| match host {
-            "a.test" => Some(10),
-            _ => Some(2),
-        });
+        let partition = compute_outbound(
+            &parent,
+            &doc,
+            |host| match host {
+                "a.test" => Some(10),
+                _ => Some(2),
+            },
+            "",
+        );
         assert_eq!(partition.kept.len(), 1);
         assert_eq!(partition.kept[0].url.as_str(), "https://a.test/");
         assert_eq!(partition.depth_skipped.len(), 1);

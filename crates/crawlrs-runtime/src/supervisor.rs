@@ -114,6 +114,7 @@ pub async fn supervise_worker(
                 metrics::counter!(
                     crate::metrics::WORKER_RESTARTS_TOTAL,
                     "reason" => reason,
+                    crate::metrics::LABEL_WORKER => identity.to_string(),
                 )
                 .increment(1);
                 warn!(

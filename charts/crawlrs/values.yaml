@@ -337,7 +337,7 @@ o11y:
   vmsingle:
     image:
       repository: victoriametrics/victoria-metrics
-      tag: v1.107.0
+      tag: v1.108.0
       pullPolicy: IfNotPresent
     # Persistent volume for the time-series data dir.
     storage:
@@ -392,13 +392,16 @@ o11y:
     enabled: true
     image:
       repository: grafana/grafana
-      tag: 11.4.0
+      tag: 11.6.0
       pullPolicy: IfNotPresent
     # Sandbox-shape default; override in production via --set or
     # secrets management. Set to "" to skip provisioning the env var
     # (Grafana then prompts for password on first login).
     adminUser: admin
     adminPassword: admin
+    # Feature toggles shipped as opt-in in 11.2+. `provisioning`
+    # enables the Git sync UI for dashboard-as-code workflows.
+    featureToggles: "provisioning"
     # Names match the ConfigMaps the chart provisions; only override
     # if you're swapping in your own.
     datasourceProvisioning: true

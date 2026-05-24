@@ -1,6 +1,6 @@
 # crawlrs Helm chart
 
-Deploys the crawlrs binary as a `StatefulSet` against externally-provided Redis Stack, Postgres, and (for `kind=s3` store backends) an S3-compatible object store.
+Deploys the crawlrs binary as a `StatefulSet` against externally-provided Valkey (or Redis) with Bloom module support, Postgres, and (for `kind=s3` store backends) an S3-compatible object store.
 
 A one-shot `post-install` Job loads the seed URLs into the Frontier on first install; subsequent `helm upgrade` calls do not re-seed.
 
@@ -29,13 +29,13 @@ helm test my-crawlrs -n crawlrs
 
 ## Redis requirements
 
-The frontier requires the **RedisBloom** module for submit-time dedup (`BF.RESERVE` / `BF.ADD` / `BF.EXISTS`). Supported deployment shapes: **Redis Stack** (the official `redis-stack-server` image bundles RedisBloom alongside the other modules) or stock Redis with the `redisbloom` module loaded.
+The frontier requires a **Bloom filter module** for submit-time dedup (`BF.RESERVE` / `BF.ADD` / `BF.EXISTS`). Supported deployment shapes: **Valkey Bundle** (`valkey/valkey-bundle`, bundles `valkey-bloom` alongside JSON and Search modules), **Redis Stack** (`redis/redis-stack-server`, bundles RedisBloom), or stock Redis/Valkey with the bloom module loaded manually.
 
 Configure Redis with `maxmemory-policy noeviction`. The frontier writes URLs and bloom state durably; under memory pressure we want loud OOM errors (which the runtime warns on and continues past), not silent LRU eviction that drops URLs the system thinks are queued.
 
 Durability: RDB snapshots only. The default save thresholds (`save 60 10000 / save 300 10 / save 900 1`) give a progressively-sparser snapshot cadence that suits the frontier's write pattern. AOF is intentionally disabled; bloom-filter state survives RDB snapshots and AOF replay's per-op overhead isn't worth it for this workload.
 
-Managed services: cloud-managed Redis (ElastiCache, Memorystore, Upstash) must support RedisBloom for the frontier to work. AWS ElastiCache supports it on the Redis 7+ "extended" engine variants; Google Memorystore for Redis does not at the time of writing. Verify before deploying.
+Managed services: AWS ElastiCache and MemoryDB now default to Valkey and support Bloom filter commands. Google Memorystore for Redis does not support Bloom modules at the time of writing. Verify before deploying.
 
 ## What's deployed
 

@@ -4,7 +4,7 @@ One-command sandbox install of the full crawlrs stack:
 
 - `crawlrs` (the crawler StatefulSet, via the `charts/crawlrs/` subchart)
 - `vmsingle` + Grafana (bundled observability, three provisioned dashboards)
-- Redis Stack (frontier + politeness backend, `redis/redis-stack-server:7.4.0-v0`; RedisBloom required)
+- Valkey (frontier + politeness backend, `valkey/valkey-bundle`; valkey-bloom module required)
 - Postgres (metadata ledger, `postgres:17.2-alpine`)
 
 Backing services run as raw `StatefulSet` + `Service` manifests in `templates/{redis,postgres}-*.yaml` using official upstream images directly. No third-party charts in the supply chain.
@@ -53,7 +53,7 @@ helm install my-name ./charts/crawlrs-demo \
 
 ## Migrating to production
 
-This chart is the wrong shape for production. When you outgrow it: stand up production-grade Redis (Sentinel or managed service with RedisBloom), Postgres (managed RDS / Cloud SQL / your own HA cluster), and S3-compatible storage outside Kubernetes; then switch to the bare [`charts/crawlrs/`](../crawlrs/README.md) chart with `o11y.enabled=true` so you keep the bundled observability but drop the bundled deps.
+This chart is the wrong shape for production. When you outgrow it: stand up production-grade Valkey or Redis (Sentinel or managed service with Bloom module support), Postgres (managed RDS / Cloud SQL / your own HA cluster), and S3-compatible storage outside Kubernetes; then switch to the bare [`charts/crawlrs/`](../crawlrs/README.md) chart with `o11y.enabled=true` so you keep the bundled observability but drop the bundled deps.
 
 See [`charts/crawlrs/README.md`](../crawlrs/README.md#tldr) for the production helm install command and the full values reference. The `crawlrs.*` subchart values you pass to `crawlrs-demo` map directly to the `charts/crawlrs/` values; the only meaningful change between sandbox and production is `store.backend.kind` (`local` vs `s3`) plus the URLs of the backing services.
 

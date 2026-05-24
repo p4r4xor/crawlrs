@@ -54,6 +54,10 @@ spec:
               value: "false"
             - name: GF_ANALYTICS_CHECK_FOR_UPDATES
               value: "false"
+            {{- if .Values.o11y.grafana.featureToggles }}
+            - name: GF_FEATURE_TOGGLES_ENABLE
+              value: {{ .Values.o11y.grafana.featureToggles | quote }}
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /api/health

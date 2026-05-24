@@ -24,20 +24,23 @@ fn metric_name_contract_holds() {
     recorder.install().expect("install DebuggingRecorder");
 
     // ---- runtime layer ----
-    metrics::counter!(crawlrs_runtime::metrics::URLS_FETCHED_TOTAL).increment(1);
-    metrics::counter!(crawlrs_runtime::metrics::URLS_FAILED_TOTAL, "kind" => "other").increment(1);
+    let w = crawlrs_runtime::metrics::LABEL_WORKER;
+    metrics::counter!(crawlrs_runtime::metrics::URLS_FETCHED_TOTAL, w => "pod-0:0").increment(1);
+    metrics::counter!(crawlrs_runtime::metrics::URLS_FAILED_TOTAL, "kind" => "other", w => "pod-0:0").increment(1);
     metrics::counter!(
         crawlrs_runtime::metrics::URLS_SKIPPED_TOTAL,
         "reason" => crawlrs_runtime::metrics::SKIP_POLITENESS_DISALLOWED,
+        w => "pod-0:0",
     )
     .increment(1);
     metrics::counter!(
         crawlrs_runtime::metrics::URLS_REJECTED_TOTAL,
         "reason" => crawlrs_runtime::metrics::REJECTED_REASON_QUOTA,
+        w => "pod-0:0",
     )
     .increment(1);
-    metrics::gauge!(crawlrs_runtime::metrics::WORKERS_ACTIVE).set(0.0);
-    metrics::histogram!(crawlrs_runtime::metrics::PIPELINE_SECONDS).record(0.1);
+    metrics::gauge!(crawlrs_runtime::metrics::WORKERS_ACTIVE, w => "pod-0:0").set(0.0);
+    metrics::histogram!(crawlrs_runtime::metrics::PIPELINE_SECONDS, w => "pod-0:0").record(0.1);
 
     // ---- frontier layer ----
     metrics::counter!(

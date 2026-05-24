@@ -18,8 +18,8 @@ spec:
         {{- include "crawlrs-demo.labels" . | nindent 8 }}
         app.kubernetes.io/component: redis
     spec:
-      # redis-stack-server's image runs as uid 1000 by default;
-      # fsGroup makes the mounted volume writable for that uid.
+      # valkey-bundle runs as uid 1000 by default; fsGroup
+      # makes the mounted volume writable for that uid.
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
@@ -29,14 +29,13 @@ spec:
         - name: redis
           image: {{ .Values.redis.image | quote }}
           imagePullPolicy: {{ .Values.redis.imagePullPolicy | quote }}
-          # redis-stack-server uses a custom entrypoint that runs
-          # `redis-server --loadmodule .../redisbloom.so ...` so the
-          # bloom + JSON + search modules are present at startup.
-          # We must NOT override `args:` here; doing so replaces
-          # that entrypoint and Redis comes up without modules, so
-          # the frontier's `BF.RESERVE` would fail with "unknown
-          # command". Customise via `REDIS_ARGS` instead; the
-          # entrypoint appends it to its own arg list.
+          # valkey-bundle's entrypoint auto-loads the bundled
+          # modules (valkey-bloom, JSON, Search). We must NOT
+          # override `args:` here; doing so replaces that entrypoint
+          # and Valkey comes up without modules, so the frontier's
+          # `BF.RESERVE` would fail with "unknown command".
+          # Customise via `REDIS_ARGS` instead; the entrypoint
+          # appends it to its own arg list.
           #
           # RDB-only durability. Three save thresholds give a
           # progressively-sparser snapshot cadence:
@@ -53,7 +52,7 @@ spec:
           # commands. Production deploys should set a password and
           # pass it in the connection URL instead.
           env:
-            # `--maxmemory` is Redis's own ceiling: at this point Redis
+            # `--maxmemory` is Valkey's own ceiling: at this point it
             # returns OOM error to writers instead of growing further.
             # Combined with `--maxmemory-policy noeviction`, NO key is
             # ever evicted - the OOM signal flows back to the crawler

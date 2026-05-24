@@ -13,13 +13,13 @@
 # directly with `--set store.backend.kind=s3` and your own bucket /
 # region / credentials.
 
-# ---- Redis Stack (official upstream image) --------------------------
-# The frontier requires the RedisBloom module for submit-time dedup;
-# stock `redis:7-alpine` lacks `BF.RESERVE`. `redis-stack-server`
-# bundles RedisBloom + RedisJSON + RediSearch + RedisTimeSeries on top
-# of stock Redis.
+# ---- Valkey (Linux Foundation fork of Redis, BSD-licensed) -----------
+# The frontier requires the Bloom module for submit-time dedup;
+# `valkey-bundle` bundles valkey-bloom + JSON + Search on top of
+# core Valkey. Wire-compatible with Redis; the `redis` Rust crate
+# speaks the same protocol unchanged.
 redis:
-  image: redis/redis-stack-server:7.4.0-v0
+  image: valkey/valkey-bundle:latest
   imagePullPolicy: IfNotPresent
   # RDB-only durability: snapshot at progressively-sparser thresholds
   # so frequent writes flush often, idle periods still snapshot

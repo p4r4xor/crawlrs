@@ -38,6 +38,10 @@ pub const PROCESS_FDS: &str = "crawlrs_process_fds";
 pub const TOKIO_ALIVE_TASKS: &str = "crawlrs_tokio_alive_tasks";
 pub const TOKIO_WORKERS: &str = "crawlrs_tokio_workers";
 
+/// Prometheus label key for per-worker identity. Value is the
+/// `WorkerIdentity::Display` output, e.g. `pod-0:7`.
+pub const LABEL_WORKER: &str = "worker";
+
 pub const SKIP_POLITENESS_DISALLOWED: &str = "politeness_disallowed";
 pub const SKIP_DEPTH_LIMIT: &str = "depth_limit";
 /// `[access].blocklist` hit; the worker rejected the URL before

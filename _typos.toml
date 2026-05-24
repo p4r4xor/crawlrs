@@ -16,6 +16,9 @@ crawlrs = "crawlrs"
 # the Bloom-filter literature; it appears in config keys
 # (`bloom_fpr`, `bloomFpr`), struct fields, and doc comments.
 fpr = "fpr"
+# AIMD = Additive Increase Multiplicative Decrease; standard
+# congestion-control term used in the adaptive politeness layer.
+AIMD = "AIMD"
 
 [files]
 extend-exclude = [
