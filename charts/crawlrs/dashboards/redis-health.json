@@ -26,7 +26,7 @@
         "type": "prometheus",
         "uid": "crawlrs-vm"
       },
-      "description": "redis_memory_used_bytes / redis_memory_max_bytes, expressed as percent. `--maxmemory` is Redis's own ceiling; once this line crosses 100% Redis returns OOM-on-write errors (with `--maxmemory-policy noeviction` no keys are dropped, the writer sees the error). Threshold-shaded: green <70%, yellow 70-85%, orange 85-95%, red >95%. Sustained red means raise the pod limit + `--maxmemory`, or trim the working set.",
+      "description": "Memory used as a percentage of the configured maxmemory cap. Requires maxmemory to be set (the demo chart sets it via VALKEY_EXTRA_FLAGS). When maxmemory is 0 (uncapped), the denominator collapses and the panel shows nonsensical values. Source: redis_memory_used_bytes / redis_memory_max_bytes.",
       "fieldConfig": {
         "defaults": {
           "color": {

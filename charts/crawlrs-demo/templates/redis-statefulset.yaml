@@ -59,7 +59,7 @@ spec:
             # which treats failed submits as bloom-marked drops. Set
             # to ~80% of the pod's memory limit so RDB snapshot COW
             # has headroom.
-            - name: REDIS_ARGS
+            - name: VALKEY_EXTRA_FLAGS
               value: "--protected-mode no --appendonly no --save 60 10000 --save 300 10 --save 900 1 --dir /data --maxmemory 1600mb --maxmemory-policy noeviction"
           ports:
             - name: redis

@@ -2,14 +2,13 @@
 
 Deploys the crawlrs binary as a `StatefulSet` against externally-provided Valkey (or Redis) with Bloom module support, Postgres, and (for `kind=s3` store backends) an S3-compatible object store.
 
-A one-shot `post-install` Job loads the seed URLs into the Frontier on first install; subsequent `helm upgrade` calls do not re-seed.
+A one-shot `post-install` Job loads seed URLs into the Frontier on first install. Subsequent `helm upgrade` calls do not re-seed.
 
-By default also deploys a self-contained observability stack (`vmsingle` + Grafana with three provisioned dashboards). Operators with their own Prometheus / VM / Grafana fleet can disable the bundled instances via `--set o11y.enabled=false`.
+By default, the chart also deploys a self-contained observability stack (VictoriaMetrics + Grafana with four provisioned dashboards). If you already run your own Prometheus or Grafana, disable the bundled stack with `--set o11y.enabled=false` and point your scraper at the crawler's `/metrics` endpoint.
 
 ## TL;DR
 
 ```bash
-# From the repo root
 helm install my-crawlrs ./charts/crawlrs \
   --namespace crawlrs --create-namespace \
   --set redis.url=redis://my-redis-master:6379 \
@@ -20,81 +19,75 @@ helm install my-crawlrs ./charts/crawlrs \
   --set secrets.existingSecret=my-crawlrs-creds \
   --set-file seeds.content=./seeds.txt
 
-# Watch readiness
 kubectl get pods -n crawlrs -l app.kubernetes.io/instance=my-crawlrs -w
-
-# Smoke-test readiness via the bundled helm hook
 helm test my-crawlrs -n crawlrs
 ```
 
-## Redis requirements
+## Valkey / Redis requirements
 
-The frontier requires a **Bloom filter module** for submit-time dedup (`BF.RESERVE` / `BF.ADD` / `BF.EXISTS`). Supported deployment shapes: **Valkey Bundle** (`valkey/valkey-bundle`, bundles `valkey-bloom` alongside JSON and Search modules), **Redis Stack** (`redis/redis-stack-server`, bundles RedisBloom), or stock Redis/Valkey with the bloom module loaded manually.
+The frontier uses a Bloom filter for submit-time URL dedup (`BF.RESERVE` / `BF.ADD`). Any of these will work:
 
-Configure Redis with `maxmemory-policy noeviction`. The frontier writes URLs and bloom state durably; under memory pressure we want loud OOM errors (which the runtime warns on and continues past), not silent LRU eviction that drops URLs the system thinks are queued.
+- **Valkey Bundle** (`valkey/valkey-bundle`) - bundles `valkey-bloom` alongside JSON and Search modules. Recommended.
+- **Redis Stack** (`redis/redis-stack-server`) - bundles RedisBloom.
+- **Stock Valkey or Redis** with the bloom module loaded manually.
 
-Durability: RDB snapshots only. The default save thresholds (`save 60 10000 / save 300 10 / save 900 1`) give a progressively-sparser snapshot cadence that suits the frontier's write pattern. AOF is intentionally disabled; bloom-filter state survives RDB snapshots and AOF replay's per-op overhead isn't worth it for this workload.
+Two configuration requirements:
 
-Managed services: AWS ElastiCache and MemoryDB now default to Valkey and support Bloom filter commands. Google Memorystore for Redis does not support Bloom modules at the time of writing. Verify before deploying.
+- **`maxmemory-policy noeviction`.** The frontier writes URLs and bloom state durably. Under memory pressure you want loud OOM errors (which the runtime handles gracefully), not silent LRU eviction that drops URLs the system thinks are queued.
+- **RDB snapshots, no AOF.** Bloom state survives RDB snapshots. AOF replay's per-op overhead isn't worth it for this workload. The default save thresholds (`save 60 10000 / save 300 10 / save 900 1`) give a progressively-sparser snapshot cadence that matches the frontier's write pattern.
 
-## What's deployed
+**Managed services:** AWS ElastiCache and MemoryDB default to Valkey and support Bloom commands. Google Memorystore for Redis does not support Bloom modules at the time of writing. Verify before deploying.
+
+## What gets deployed
 
 ### Crawler core (always)
 
-| Resource | Name | Purpose |
+| Resource | Name | What it does |
 |---|---|---|
-| `StatefulSet` | `<release>-crawlrs` | Worker pods with stable per-pod ordinals |
-| `Service` (headless) | `<release>-crawlrs-headless` | Per-pod DNS for vmsingle scrape |
-| `ServiceAccount` | `<release>-crawlrs` | (created when `serviceAccount.create=true`) |
-| `ConfigMap` | `<release>-crawlrs-config` | `crawl.toml` + `seeds.txt` rendered from values |
-| `Secret` | `<release>-crawlrs-secret` | Redis/Postgres URLs + (optional) S3 creds |
-| `Job` | `<release>-crawlrs-seed` | One-shot seed loader; `helm.sh/hook: post-install`, runs once and exits |
-| `PodDisruptionBudget` | `<release>-crawlrs` | `maxUnavailable: 1` |
+| StatefulSet | `<release>-crawlrs` | Worker pods with stable per-pod ordinals for shard ownership |
+| Service (headless) | `<release>-crawlrs-headless` | Per-pod DNS so the metrics scraper can target individual pods |
+| ServiceAccount | `<release>-crawlrs` | Created when `serviceAccount.create=true`; annotate with an IRSA role ARN for S3 access |
+| ConfigMap | `<release>-crawlrs-config` | `crawl.toml` rendered from chart values |
+| Secret | `<release>-crawlrs-secret` | Connection URLs for Valkey, Postgres, and (optionally) S3 credentials |
+| Job | `<release>-crawlrs-seed` | Loads seed URLs into the Frontier on first install, then exits |
+| PodDisruptionBudget | `<release>-crawlrs` | `maxUnavailable: 1` so rolling upgrades don't kill all workers at once |
 
-### Observability stack (`o11y.enabled=true`, default)
+### Observability stack (on by default)
 
-| Resource | Name | Purpose |
-|---|---|---|
-| `Deployment` | `<release>-crawlrs-vmsingle` | Single-node VictoriaMetrics; scrape + storage + PromQL |
-| `Service` | `<release>-crawlrs-vmsingle` | ClusterIP on 8429 |
-| `PVC` | `<release>-crawlrs-vmsingle` | 10 GB default, time-series storage |
-| `ConfigMap` | `<release>-crawlrs-vmsingle-scrape` | Static-targets scrape config |
-| `Deployment` | `<release>-crawlrs-grafana` | Grafana with anonymous viewer access |
-| `Service` | `<release>-crawlrs-grafana` | ClusterIP on 3000 |
-| `ConfigMap` | `<release>-crawlrs-grafana-datasources` | vmsingle as default Prometheus datasource |
-| `ConfigMap` | `<release>-crawlrs-grafana-dashboards-provider` | File-based dashboard provider config |
-| `ConfigMap` | `<release>-crawlrs-grafana-dashboards` | Three dashboard JSONs from `dashboards/` |
+Disabled with `--set o11y.enabled=false`. Includes VictoriaMetrics (single-node scrape + storage + PromQL) and Grafana (anonymous viewer access, four dashboards pre-provisioned).
 
-## Required overrides for any non-trivial deploy
+## Required overrides
 
-| Value | Purpose |
+These are the values you must set for any real deployment. Everything else has sane defaults.
+
+| Value | Why you need it |
 |---|---|
-| `image.tag` | Pin to your registry's tag (default: `Chart.appVersion`) |
-| `redis.url` + `secrets.values.redisUrl` | Both: the ConfigMap-rendered URL is a placeholder, the Secret is the source of truth |
-| `postgres.url` + `secrets.values.postgresUrl` | Same pattern as Redis |
-| `store.backend.kind` | `local` (sandbox) or `s3` (production) |
-| `replicaCount` | Defaults to 1; scale per shard ownership math |
-| `seeds.content` | URL list for the post-install seed Job. Skip to leave the Frontier empty and bootstrap externally |
+| `image.tag` | Pin to your registry's tag so upgrades are explicit, not implicit |
+| `redis.url` + `secrets.values.redisUrl` | The ConfigMap URL is a placeholder; the Secret is the actual source of truth at runtime |
+| `postgres.url` + `secrets.values.postgresUrl` | Same pattern as Valkey |
+| `store.backend.kind` | `local` for sandbox, `s3` for production |
+| `replicaCount` | Defaults to 1; scale up based on how many shards each pod should own |
+| `seeds.content` | URL list for the seed Job. Skip to leave the Frontier empty and bootstrap externally |
 
-## Runtime knobs worth knowing
+## Runtime knobs
 
-These map straight to fields in the rendered `crawl.toml`. Defaults are sane for most deploys; tune when you have a reason.
+These map to fields in the rendered `crawl.toml`. Defaults work for most deploys; tune when you have a specific reason.
 
-| Value | What it does |
+| Value | What it controls |
 |---|---|
-| `politeness.enabled` | Master switch. `false` swaps in no-op politeness collaborators (no robots, no per-host pacing). Only use against infrastructure you own or have explicit permission for. `[crawl]` scope and `[access]` blocklist stay active either way. |
-| `politeness.perDomain.<host>` | Per-host overrides for `hostDelay`, `obeyRobotsTxt`, `robotsTtl`. Take precedence over global defaults. |
-| `crawl.maxDepth` / `crawl.maxUrls` | Per-host quotas. `null` (default) is unbounded. When set, checked atomically inside the frontier's submit script; URLs over the cap are rejected without consuming bloom space. |
-| `crawl.perDomain.<host>.maxUrls` / `.maxDepth` | Per-host quota overrides. Raise or lower an individual host's cap. |
-| `access.blocklist` | Hosts the crawler refuses to visit. Checked first, before robots / rate / backoff. Exact host strings, no eTLD+1 rollup. |
-| `runtime.linkDispatch` | `direct` (default): worker calls `Frontier::submit_batch` itself after the metadata commit; bounded loss under transient errors. `durable_outbox`: outbound URLs commit atomically into a Postgres outbox; a publisher drains them at-least-once. Trade durability for ~50x lower Postgres write rate vs `durable_outbox`. |
+| `politeness.enabled` | Master switch. `false` disables robots.txt and per-host pacing (use only against infrastructure you own). Blocklist and crawl scope stay active either way. |
+| `politeness.perDomain.<host>` | Per-host overrides for `hostDelay`, `obeyRobotsTxt`, `robotsTtl`. Takes precedence over global defaults when you need to be gentler (or more aggressive) with a specific site. |
+| `crawl.maxDepth` / `crawl.maxUrls` | Per-host quotas. `null` (default) means unbounded. When set, checked atomically inside the frontier's submit script so URLs over the cap are rejected without consuming bloom space. |
+| `crawl.perDomain.<host>.maxUrls` / `.maxDepth` | Per-host quota overrides. Raise or lower an individual host's cap independently of the global default. |
+| `access.blocklist` | Hosts the crawler refuses to visit. Checked before robots, rate limiting, or backoff. Exact host strings, no eTLD+1 rollup. |
+| `runtime.linkDispatch` | How outbound URLs reach the Frontier. `direct` (default): the worker enqueues them itself after the metadata commit, accepting bounded loss on transient errors. `durable_outbox`: URLs commit into a Postgres outbox atomically with the metadata write and a publisher drains them at-least-once. |
 
-## Reseeding after the initial install
+## Reseeding
 
-The seed Job has annotation `helm.sh/hook: post-install`. `helm upgrade` does not re-fire it. To reload seeds:
+The seed Job runs on `post-install` only. To reload seeds after the initial deploy:
 
 ```bash
-# Option A: reinstall the chart, which re-runs the post-install hook
+# Option A: reinstall (re-fires the post-install hook)
 helm install --replace my-crawlrs ./charts/crawlrs ...
 
 # Option B: re-run the existing Job spec under a new name
@@ -102,51 +95,46 @@ kubectl create job --from=job/<release>-crawlrs-seed \
   reseed-$(date +%s) -n crawlrs
 ```
 
-## Sharding math
+## Sharding
 
-With `replicaCount=N` and `sharding.numShards=S` (default 8), each pod ordinal owns shards `(ordinal, ordinal+N, ordinal+2N, ...)` mod S. The `CRAWLRS_REPLICAS` env var (set automatically by the chart) tells the binary how many peers exist so each owns a disjoint subset.
+With `replicaCount=N` and `sharding.numShards=S` (default 8), each pod owns shards `(ordinal, ordinal+N, ordinal+2N, ...)` mod S. The chart sets `CRAWLRS_REPLICAS` automatically so each pod knows how many peers exist and claims a disjoint subset.
 
-Examples:
-- `replicaCount=1`, `numShards=8`: pod 0 owns all 8 shards.
-- `replicaCount=4`, `numShards=8`: pod 0 owns {0,4}, pod 1 owns {1,5}, pod 2 owns {2,6}, pod 3 owns {3,7}.
-- `replicaCount=8`, `numShards=8`: each pod owns exactly one shard.
+| Setup | Shard ownership |
+|---|---|
+| 1 pod, 8 shards | Pod 0 owns all 8 |
+| 4 pods, 8 shards | Pod 0: {0,4}, Pod 1: {1,5}, Pod 2: {2,6}, Pod 3: {3,7} |
+| 8 pods, 8 shards | Each pod owns exactly one shard |
 
-## Secret modes
+## Secrets
 
-- **Chart-rendered** (`secrets.create: true`, default): the chart writes a `Secret` from `secrets.values`. Quick-start shape; not for production. Set values via `--set-file` for sensitive fields.
-- **Externally managed** (`secrets.existingSecret: <name>`): the chart references a Secret you provide. Must expose keys `redisUrl`, `postgresUrl`, and (for `s3` backend) `s3AccessKeyId`, `s3SecretAccessKey`.
+Two modes, depending on how you manage credentials:
+
+- **Chart-rendered** (`secrets.create: true`, default): the chart writes a Secret from `secrets.values`. Good for getting started; pass sensitive fields via `--set-file` rather than committing them.
+- **Externally managed** (`secrets.existingSecret: <name>`): the chart references a Secret you create yourself. It must expose keys `redisUrl`, `postgresUrl`, and (for S3 backends) `s3AccessKeyId`, `s3SecretAccessKey`.
 
 ## Probes
 
-Three Kubernetes probes wired to the binary's HTTP host on port 9090.
+Three Kubernetes probes check the binary's HTTP host on port 9090:
 
-| Probe | Endpoint | Default thresholds |
-|---|---|---|
-| Startup | `/livez` | initialDelay 0s, period 5s, failureThreshold 30 (= 150s for slow Postgres migrations on first install) |
-| Liveness | `/livez` | initialDelay 30s, period 10s, failureThreshold 3 (= 30s of failures restart the pod) |
-| Readiness | `/readyz` | initialDelay 5s, period 10s, failureThreshold 3 (= 30s of failures take pod out of service) |
+- **Startup** (`/livez`): allows up to 150s for first-boot Postgres migrations before declaring failure.
+- **Liveness** (`/livez`): restarts the pod after 30s of consecutive failures.
+- **Readiness** (`/readyz`): removes the pod from service after 30s of failures. On SIGTERM, readiness flips to 503 immediately and the pod drains for 5s before shutting down workers.
 
-Two init containers (`wait-for-redis`, `wait-for-postgres`) gate the crawler container's startup on backend reachability. Without them, fresh `helm install` crashloops the crawler a few times while the dependency StatefulSets come up.
-
-Shutdown protocol: SIGTERM flips `/readyz` to 503 immediately, then drains for 5s before signaling worker-pool shutdown. Readiness probe respects this; load balancers stop sending traffic during drain.
+Two init containers (`wait-for-redis`, `wait-for-postgres`) block the crawler container until both backends are reachable. Without them, fresh installs crashloop a few times while the dependency pods come up.
 
 ## Security context
 
 Defaults follow the [Kubernetes restricted PodSecurity profile](https://kubernetes.io/docs/concepts/security/pod-security-standards/#restricted):
 
-- `runAsNonRoot: true`
-- `runAsUser: 65532`, `runAsGroup: 65532` (the `nonroot` user in distroless / Chainguard images)
-- `readOnlyRootFilesystem: true` (writable `/tmp` provided as `emptyDir`)
-- `capabilities.drop: [ALL]`
-- `allowPrivilegeEscalation: false`
+- Runs as non-root (uid/gid 65532, the `nonroot` user in distroless images)
+- Read-only root filesystem (writable `/tmp` via `emptyDir`)
+- All capabilities dropped, no privilege escalation
 
 Override `podSecurityContext` / `containerSecurityContext` if your base image needs different UIDs.
 
-## Required S3 bucket lifecycle rule (production)
+## S3 lifecycle rule (production)
 
-When `store.backend.kind=s3`, the bucket MUST have an `AbortIncompleteMultipartUpload` lifecycle rule configured. Without it, multipart uploads abandoned by a crashed worker (e.g. a pod OOM mid-rotation of a 128 MB Parquet file) accumulate as billable storage parts that the application has no hook to clean up.
-
-The rule is one-time bucket configuration, set out-of-band before the first crawl runs. AWS CLI form:
+When using `store.backend.kind=s3`, configure an `AbortIncompleteMultipartUpload` lifecycle rule on the bucket. Without it, multipart uploads abandoned by a crashed worker (e.g. OOM mid-rotation of a Parquet file) accumulate as billable storage that the application has no way to clean up.
 
 ```bash
 aws s3api put-bucket-lifecycle-configuration \
@@ -161,58 +149,45 @@ aws s3api put-bucket-lifecycle-configuration \
   }'
 ```
 
-Equivalent settings exist on every S3-compatible store (MinIO, GCS via the XML API, Cloudflare R2, etc.); consult your provider's docs.
+The 1-day window is generous: completed uploads are atomic, so nothing in-flight will be affected. Anything incomplete for a day is by definition orphaned. Equivalent settings exist on MinIO, GCS (XML API), and Cloudflare R2.
 
-The 1-day window is generous: completed multipart uploads are atomic, so no in-flight upload that's still progressing will be aborted. Anything sitting incomplete for a day is by definition orphaned.
+## Local storage (sandbox)
 
-## Persistence (local store backend)
+When `store.backend.kind=local`, blobs land at `store.backend.path` inside the crawler pod. Two modes:
 
-When `store.backend.kind=local`, two modes:
+- **`persistence.enabled=false`** (default): `emptyDir` volume. Blobs are lost on pod restart. Fine for validating the pipeline end-to-end.
+- **`persistence.enabled=true`**: PVC via `volumeClaimTemplates`. Blobs survive restarts. Tune `persistence.size` and `persistence.storageClassName` as needed.
 
-- `store.backend.persistence.enabled=false` (default): the chart provisions an `emptyDir` volume at `store.backend.path`. Blobs written there are lost on pod restart. Acceptable for sandboxes validating the pipeline end-to-end.
-- `store.backend.persistence.enabled=true`: the chart provisions a PVC via `volumeClaimTemplates`. Blobs survive pod restarts. Use when you want to keep what you crawl across iterations. Tune `persistence.size`, `persistence.storageClassName`, and `persistence.accessMode` as needed.
+Production deploys typically use `kind=s3` instead.
 
-Production deploys typically use `store.backend.kind=s3` with a real S3-compatible store instead.
+## Observability
 
-## Observability stack
+Four Grafana dashboards ship as JSON in `dashboards/`, loaded via ConfigMap and provisioned on startup:
 
-Three Grafana dashboards ship as JSON in `charts/crawlrs/dashboards/`, loaded into a ConfigMap via `Files.Glob` and provisioned by Grafana on startup.
+| Dashboard | What it shows |
+|---|---|
+| **Crawler Health** | Crawl rate, success rate, active workers, pipeline latency, error attribution, per-phase percentiles. Organized into collapsible sections: Overview, Pipeline Latency, Fetch & Parse, Discovery & Scheduling, Storage & Pools. |
+| **Worker Health** | Per-worker throughput, latency, restart count, skip rate. Uses the `worker` label to show all 32 workers individually. |
+| **Container Resources** | Per-pod CPU, memory, network, file descriptors, allocator behavior. |
+| **Redis Health** | Memory vs `maxmemory` cap, eviction rates, commands/sec, hit rate, per-key-group memory breakdown, fragmentation ratio. |
 
-| Dashboard | File | What it shows |
-|---|---|---|
-| **Crawler Health Overview** | `crawler-health.json` | Crawl rate, total URLs fetched, fetch success rate, active workers, end-to-end pipeline latency p50/p95/p99, error attribution, parse / store-write / metadata-query percentiles |
-| **Container Resources** | `container-resources.json` | Per-pod CPU, memory (working set + RSS), network rx/tx, file descriptors, GC / allocator behaviour |
-| **Redis Health** | `redis-health.json` | Memory used vs `maxmemory` cap, eviction + expiration rates, commands per second, hit rate, connected clients, per-key-group memory (host_queue, wake, urls, inflight, seen, host_count), per-key memory for bounded-cardinality keys, fragmentation ratio |
+To add a dashboard, drop a JSON file in `dashboards/` and run `helm upgrade`. The ConfigMap regenerates from the glob.
 
-To **add a dashboard**, drop a JSON file in `dashboards/` and re-run `helm upgrade`. The ConfigMap regenerates from the glob.
-
-To **disable the bundled o11y stack** (operators with their own Prometheus / VM / Grafana):
+To bring your own scraper instead of the bundled stack:
 
 ```bash
+# Disable bundled o11y entirely
 helm install ... --set o11y.enabled=false
+
+# Or keep VictoriaMetrics but drop Grafana
+helm install ... --set o11y.grafana.enabled=false
 ```
 
-Then point your existing scraper at:
+Then point your scraper at the headless service:
 
 ```
 <release>-crawlrs-headless.<namespace>.svc.cluster.local:9090/metrics
 ```
-
-Per-pod static targets (for static_configs in your own scrape file):
-
-```
-<release>-crawlrs-0.<release>-crawlrs-headless.<namespace>.svc.cluster.local:9090
-<release>-crawlrs-1.<release>-crawlrs-headless.<namespace>.svc.cluster.local:9090
-...
-```
-
-To **only disable Grafana** (keep vmsingle for metrics-only deploys):
-
-```bash
-helm install ... --set o11y.grafana.enabled=false
-```
-
-vmsingle ships with a built-in PromQL UI at `/vmui` (port 8429) as a fallback when Grafana isn't available.
 
 ## Verifying a deploy
 
@@ -224,13 +199,13 @@ kubectl get pods -n crawlrs -l app.kubernetes.io/instance=my-crawlrs
 kubectl exec -n crawlrs my-crawlrs-crawlrs-0 -- \
   wget -qO- http://localhost:9090/metrics | head -20
 
-# Schema migrations applied?
+# Migrations applied?
 kubectl logs -n crawlrs my-crawlrs-crawlrs-0 | grep -i migrat
 
-# Seed Job ran cleanly?
+# Seed Job ran?
 kubectl logs -n crawlrs job/my-crawlrs-crawlrs-seed
 
-# helm-test hook
+# Helm test hook
 helm test my-crawlrs -n crawlrs
 ```
 

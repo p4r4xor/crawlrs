@@ -3,7 +3,7 @@
 One-command sandbox install of the full crawlrs stack:
 
 - `crawlrs` (the crawler StatefulSet, via the `charts/crawlrs/` subchart)
-- `vmsingle` + Grafana (bundled observability, three provisioned dashboards)
+- `vmsingle` + Grafana (bundled observability, four provisioned dashboards)
 - Valkey (frontier + politeness backend, `valkey/valkey-bundle`; valkey-bloom module required)
 - Postgres (metadata ledger, `postgres:17.2-alpine`)
 

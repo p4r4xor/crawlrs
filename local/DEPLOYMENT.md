@@ -1,6 +1,6 @@
 # Local container deployment
 
-Production-shape `crawlrs` running on your laptop, end to end. Same chart as production, same backing services (Redis, Postgres), same observability stack (vmsingle, Grafana, three provisioned dashboards).
+Production-shape `crawlrs` running on your laptop, end to end. Same chart as production, same backing services (Valkey, Postgres), same observability stack (vmsingle, Grafana, four provisioned dashboards).
 
 Blob storage is **pod-local FS** for the sandbox (`store.backend.kind = local`). For production deploys flip to `kind = s3` and bring your own bucket / region / credentials; the prod chart at `charts/crawlrs/` already supports both modes via the same `[store.backend]` toggle.
 
@@ -18,14 +18,14 @@ crawlrs namespace
 |                                                                 |
 |  crawlrs-demo-crawlrs-seed (Job, one-shot; runs at install)     |
 |                                                                 |
-|  crawlrs-demo-redis        (StatefulSet, redis-stack-server)    |
+|  crawlrs-demo-redis        (StatefulSet, valkey-bundle)         |
 |  crawlrs-demo-postgres     (StatefulSet, postgres:17.2-alpine)  |
 |  crawlrs-demo-vmsingle     (Deployment, metrics storage)        |
 |  crawlrs-demo-grafana      (Deployment, 3 dashboards)           |
 +-----------------------------------------------------------------+
 ```
 
-Backing services use **official upstream images** directly via raw manifests in `charts/crawlrs-demo/templates/`. No third-party Helm charts in the supply chain. Redis is `redis/redis-stack-server:7.4.0-v0` (RedisBloom required by the frontier; stock `redis:*-alpine` doesn't ship the module).
+Backing services use **official upstream images** directly via raw manifests in `charts/crawlrs-demo/templates/`. No third-party Helm charts in the supply chain. Valkey is `valkey/valkey-bundle` (the frontier's Bloom filter commands require the `valkey-bloom` module, which the bundle image ships by default).
 
 Blobs (Parquet + WARC) write to a pod-local emptyDir at `/var/lib/crawlrs/data` by default; fast and simple, but **lost on pod restart**. To keep them across restarts, set `crawlrs.store.backend.persistence.enabled=true` (uses a `volumeClaimTemplates`-provisioned PVC instead).
 

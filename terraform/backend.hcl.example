@@ -1,0 +1,13 @@
+# Copy to backend.hcl, or generate it from the bootstrap module:
+#
+#   cd bootstrap && tofu output -raw backend_config > ../backend.hcl
+#
+# Every root module inits against this file, so the state bucket name
+# lives in one place:
+#
+#   tofu init -backend-config=../../../backend.hcl
+
+bucket       = "crawlrs-tfstate-000000000000-us-east-1"
+region       = "us-east-1"
+encrypt      = true
+use_lockfile = true

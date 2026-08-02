@@ -1,11 +1,27 @@
-# Terraform working files
+# Provider plugins and module caches.
 .terraform/
+
+# State and plan files. State lives in S3; the only local state is
+# bootstrap/, which is deliberately not committed.
 *.tfstate
-*.tfstate.backup
+*.tfstate.*
 *.tfplan
-.terraform.lock.hcl
 crash.log
+crash.*.log
+
+# Backend configuration. Holds the account-specific state bucket name;
+# generate it from the bootstrap module's `backend_config` output.
+backend.hcl
+
+# Override files are for local experiments and must never be committed.
 override.tf
 override.tf.json
 *_override.tf
 *_override.tf.json
+
+# NOT ignored: .terraform.lock.hcl.
+#
+# The dependency lock file pins provider versions and their checksums.
+# Committing it is what makes a plan reproducible across machines and
+# CI; ignoring it means two people running the same config can silently
+# resolve different provider versions.
