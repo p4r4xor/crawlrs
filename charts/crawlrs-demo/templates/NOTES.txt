@@ -13,7 +13,7 @@ Release    : {{ .Release.Name }} (namespace {{ .Release.Namespace }})
 # `crawlrs-demo-postgres`; those names won't resolve under your                                           #
 # release. Reinstall with:                                                                                #
 #                                                                                                         #
-#   helm install crawlrs-demo ./charts/crawlrs-demo \                                                     #    
+#   helm install crawlrs-demo ./charts/crawlrs-demo \                                                     #
 #     --create-namespace -n {{ .Release.Namespace }}                                                      #
 #                                                                                                         #
 # Or override the URLs:                                                                                   #

@@ -133,7 +133,7 @@ runtime:
 # Operator-tunable knobs for the Redis-backed Frontier. Defaults are
 # sized for the standard per-shard layout; raise `bloomCapacity` for
 # runs expected to submit more than ~1M unique URLs (oversizing
-# wastes some Redis RAM at startup; undersizing causes RedisBloom to
+# wastes some Valkey RAM at startup; undersizing causes the Bloom filter to
 # stack additional sub-filters, which costs per-op CPU and memory).
 frontier:
   # Lease expiry on an in-flight URL. Workers that hold a URL past
@@ -143,7 +143,7 @@ frontier:
   # lease-reclaim passes). 50ms keeps the latency tail collapsed
   # under sustained load.
   promoterTick: "50ms"
-  # Initial capacity of the RedisBloom filter that fronts submit.
+  # Initial capacity of the Bloom filter that fronts submit.
   # Size to expected unique URLs in the run with ~20% headroom.
   bloomCapacity: 10000000
   # Target false-positive rate at `bloomCapacity`. Each false
@@ -267,7 +267,7 @@ containerSecurityContext:
 # Init containers gate the crawler container's startup on Redis and
 # Postgres being reachable. Without them, the crawler crashloops a
 # few times during fresh `helm install` while the StatefulSets are
-# still bringing up their pods. `redis-cli ping` and `pg_isready`
+# still bringing up their pods. `valkey-cli ping` and `pg_isready`
 # only succeed once the server is actually serving protocol traffic,
 # which is what the crawler needs (a TCP-open Postgres mid-initdb
 # would still fail sqlx's first connect).
@@ -281,9 +281,9 @@ initContainers:
   # real failure instead of looping silently forever.
   deadlineSeconds: 180
   redis:
-    image: redis:7-alpine
+    image: valkey/valkey:9.1-alpine
   postgres:
-    image: postgres:17-alpine
+    image: postgres:17.10-alpine
 
 probes:
   startup:

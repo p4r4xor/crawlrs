@@ -12,11 +12,9 @@ target/
 *.swp
 *.swo
 
-# Internal docs + AI tooling (gitignored from the repo too)
+# Internal docs + local tooling (gitignored from the repo too)
 docs/
-CLAUDE.md
 ARCHITECTURE.md
-.claude/
 .playwright-mcp/
 
 # Local-deployment scaffolding (not needed for image build; mounted

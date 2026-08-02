@@ -260,7 +260,7 @@ async fn submit_then_tick_then_claim_yields_url() {
     // Without a `tick` the host is in `wake` (score = 0) but not yet
     // promoted to `ready`. Claim returns EmptyHint with the
     // soonest-wake score, or Empty if the score was already in the
-    // past — either is acceptable behavior before tick.
+    // past; either is acceptable behavior before tick.
     frontier.tick().await.unwrap();
 
     let (_, entry, _) = unwrap_claimed(frontier.claim(&IDENTITY).await.unwrap());

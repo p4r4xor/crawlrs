@@ -1,10 +1,8 @@
 /target
 Cargo.lock
 
-# Internal docs and AI tooling.
+# Internal docs and local tooling.
 docs/
-CLAUDE.md
 CONVENTIONS.md
 AUDIT.md
-.claude/
 .playwright-mcp/

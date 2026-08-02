@@ -58,13 +58,12 @@ tokio       = { version = "1", features = ["rt-multi-thread", "macros", "time", 
 tracing     = "0.1"
 url         = { version = "2", features = ["serde"] }
 
-# Explicit prerelease-aware version ranges on git deps so cargo-deny's
-# `wildcards` lint doesn't flag them as unbounded. A bare `*` excludes
-# prereleases by cargo's semver rules; `>=X.0.0-rc.0, <X+1` is the
-# canonical opt-in. Bump the upper bound when upstream ships a stable
-# major release.
-wreq        = { git = "https://github.com/0x676e67/wreq.git", version = ">=6.0.0-rc.0, <7", features = ["gzip", "brotli", "zstd", "deflate", "socks", "stream", "hickory-dns"] }
-wreq-util   = { git = "https://github.com/0x676e67/wreq-util.git", version = ">=3.0.0-rc.0, <4", default-features = false, features = ["emulation"] }
+# Pinned exactly: these are prereleases and the API breaks between RCs,
+# so an upgrade is a deliberate edit rather than whatever `cargo update`
+# resolves. wreq's default features carry `tokio-rt` (the async runtime)
+# and `webpki-roots` (the fallback trust store), so defaults stay on.
+wreq        = { version = "=6.0.0-rc.29", features = ["gzip", "brotli", "zstd", "deflate", "socks", "stream", "hickory-dns"] }
+wreq-util   = { version = "=3.0.0-rc.14", default-features = false, features = ["emulation"] }
 
 # Test-only.
 testcontainers         = "0.27"

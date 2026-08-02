@@ -5,33 +5,14 @@ metadata:
   labels:
     {{- include "crawlrs.labels" . | nindent 4 }}
 data:
-  # Rendered crawl.toml. Credentials (redis url, postgres url) are
-  # placeholders here and overwritten via env-var overlay
-  # (CRAWLRS_REDIS_URL, CRAWLRS_POSTGRES_URL) sourced from the Secret.
-  # The binary's apply_env_overlay() makes the env values win.
+  # Credentials here are placeholders; the env-var overlay from the
+  # Secret wins at runtime.
   #
-  # Type-coercion conventions used below:
-  #
-  #   `| quote`    - every string field. TOML requires strings be
-  #                  quoted; without it, `default_timeout = 30s` is
-  #                  rejected by the TOML parser.
-  #   `| int64`    - every int field. Helm parses YAML numbers as
-  #                  float64; without the cast, any int >= 10^6 hits
-  #                  Go's float-formatter scientific-notation
-  #                  threshold (5242880 -> 5.24288e+06) and breaks
-  #                  TOML parsing. Defensive: small ints don't trip
-  #                  this today, but a future operator bumping
-  #                  `workers:` to 5_000_000 would silently break.
-  #   `| float64`  - every float field. Marker-only at current values
-  #                  (renders the same as plain), but documents the
-  #                  type contract for the reader.
-  #   plain        - bool fields. Sprig doesn't ship a `toBool`
-  #                  coercion; rolling our own would mishandle
-  #                  ambiguous strings like `"no"` (truthy by Go
-  #                  template rules even though semantically false).
-  #                  Canonical YAML `true`/`false` renders correctly
-  #                  without a cast; the binary's TOML parser
-  #                  rejects anything else at startup.
+  # Casts are load-bearing: `| quote` because unquoted TOML strings are
+  # rejected, `| int64` because Helm parses numbers as float64 and any
+  # int >= 10^6 renders as scientific notation (5242880 -> 5.24288e+06).
+  # Bools take no cast; Sprig has no `toBool`, and a hand-rolled one
+  # reads `"no"` as true.
   crawl.toml: |
     run_id = {{ .Values.runId | quote }}
 

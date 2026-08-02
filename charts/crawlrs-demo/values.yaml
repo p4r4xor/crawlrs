@@ -19,7 +19,7 @@
 # core Valkey. Wire-compatible with Redis; the `redis` Rust crate
 # speaks the same protocol unchanged.
 redis:
-  image: valkey/valkey-bundle:latest
+  image: valkey/valkey-bundle:9.1.2
   imagePullPolicy: IfNotPresent
   # RDB-only durability: snapshot at progressively-sparser thresholds
   # so frequent writes flush often, idle periods still snapshot
@@ -30,7 +30,7 @@ redis:
   persistence:
     size: 5Gi
   # Memory limit covers Redis working set: per-shard host queues +
-  # wake/ready/inflight ZSETs + URL HASH + the RedisBloom filter
+  # wake/ready/inflight ZSETs + URL HASH + the Bloom filter
   # (~1.8 MB per 1M URLs at fpr=0.001). 2Gi gives Redis room to hit
   # its own `--maxmemory 1600mb` ceiling (in the statefulset
   # template) and still leave headroom for RDB snapshot COW.
@@ -44,7 +44,7 @@ redis:
 
 # ---- Postgres (official upstream image) -----------------------------
 postgresql:
-  image: postgres:17.2-alpine
+  image: postgres:17.10-alpine
   imagePullPolicy: IfNotPresent
   credentials:
     user: crawlrs

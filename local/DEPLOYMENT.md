@@ -19,9 +19,9 @@ crawlrs namespace
 |  crawlrs-demo-crawlrs-seed (Job, one-shot; runs at install)     |
 |                                                                 |
 |  crawlrs-demo-redis        (StatefulSet, valkey-bundle)         |
-|  crawlrs-demo-postgres     (StatefulSet, postgres:17.2-alpine)  |
+|  crawlrs-demo-postgres     (StatefulSet, postgres:17.10-alpine) |
 |  crawlrs-demo-vmsingle     (Deployment, metrics storage)        |
-|  crawlrs-demo-grafana      (Deployment, 3 dashboards)           |
+|  crawlrs-demo-grafana      (Deployment, 4 dashboards)           |
 +-----------------------------------------------------------------+
 ```
 

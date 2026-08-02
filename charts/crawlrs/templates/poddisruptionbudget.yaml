@@ -6,10 +6,8 @@ metadata:
   labels:
     {{- include "crawlrs.labels" . | nindent 4 }}
 spec:
-  # IntOrString: accepts both `1` (int) and `"25%"` (string). Skip
-  # the `| int64` cast we use elsewhere — it would break the
-  # percentage form. Values are always small (single digits) so the
-  # float-coercion bug doesn't bite here.
+  # No `| int64` cast here: the field is IntOrString and the cast would
+  # break the `"25%"` form.
   maxUnavailable: {{ .Values.podDisruptionBudget.maxUnavailable }}
   selector:
     matchLabels:

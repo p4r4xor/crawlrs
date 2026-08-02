@@ -4,8 +4,8 @@ One-command sandbox install of the full crawlrs stack:
 
 - `crawlrs` (the crawler StatefulSet, via the `charts/crawlrs/` subchart)
 - `vmsingle` + Grafana (bundled observability, four provisioned dashboards)
-- Valkey (frontier + politeness backend, `valkey/valkey-bundle`; valkey-bloom module required)
-- Postgres (metadata ledger, `postgres:17.2-alpine`)
+- Valkey (frontier + politeness backend, `valkey/valkey-bundle`; the `valkey-bloom` module is required)
+- Postgres (metadata ledger, `postgres:17.10-alpine`)
 
 Backing services run as raw `StatefulSet` + `Service` manifests in `templates/{redis,postgres}-*.yaml` using official upstream images directly. No third-party charts in the supply chain.
 
@@ -13,7 +13,7 @@ Blob storage uses the **pod-local FS backend** (`store.backend.kind = local`); b
 
 Useful for: trying crawlrs without standing up your own backing services, dev-loop integration tests, and CI smoke tests.
 
-**Not for production.** Sandbox shape: single replicas everywhere, fixed credentials, sandbox-sized PVCs.
+**Not for production:** single replicas everywhere, fixed credentials, sandbox-sized PVCs.
 
 The sandbox topology diagram and the laptop-specific deployment walkthrough live in [`local/DEPLOYMENT.md`](../../local/DEPLOYMENT.md).
 

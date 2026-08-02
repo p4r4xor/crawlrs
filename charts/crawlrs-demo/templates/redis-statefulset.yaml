@@ -42,7 +42,7 @@ spec:
           #   `save 60 10000`  - every 60s if >=10k keys changed
           #   `save 300 10`    - every 5min if >=10 keys changed
           #   `save 900 1`     - every 15min if >=1 key changed
-          # AOF is disabled. RedisBloom state survives RDB snapshots,
+          # AOF is disabled. Bloom filter state survives RDB snapshots,
           # so the bloom's cross-run dedup substrate survives pod
           # restarts.
           #
@@ -67,14 +67,14 @@ spec:
               protocol: TCP
           livenessProbe:
             exec:
-              command: ["redis-cli", "ping"]
+              command: ["valkey-cli", "ping"]
             initialDelaySeconds: 10
             periodSeconds: 10
             timeoutSeconds: 3
             failureThreshold: 3
           readinessProbe:
             exec:
-              command: ["redis-cli", "ping"]
+              command: ["valkey-cli", "ping"]
             initialDelaySeconds: 2
             periodSeconds: 5
             timeoutSeconds: 2
@@ -112,7 +112,7 @@ spec:
           #    one series per key. Limited to the bounded-cardinality
           #    keys (8 per pattern = ~40 series). NOT applied to
           #    host_queue / host_count which would explode cardinality
-          #    at any nontrivial host count - use redis-cli --bigkeys
+          #    at any nontrivial host count - use valkey-cli --bigkeys
           #    for ad-hoc per-host inspection.
           #
           # --check-keys-batch-size governs SCAN batching for both

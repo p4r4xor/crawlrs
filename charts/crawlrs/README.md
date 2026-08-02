@@ -27,16 +27,16 @@ helm test my-crawlrs -n crawlrs
 
 The frontier uses a Bloom filter for submit-time URL dedup (`BF.RESERVE` / `BF.ADD`). Any of these will work:
 
-- **Valkey Bundle** (`valkey/valkey-bundle`) - bundles `valkey-bloom` alongside JSON and Search modules. Recommended.
-- **Redis Stack** (`redis/redis-stack-server`) - bundles RedisBloom.
-- **Stock Valkey or Redis** with the bloom module loaded manually.
+- **Valkey Bundle** (`valkey/valkey-bundle`): ships `valkey-bloom` alongside the JSON and Search modules. Recommended.
+- **Redis Stack** (`redis/redis-stack-server`): ships RedisBloom.
+- **Stock Valkey or Redis** with the Bloom module loaded manually.
 
 Two configuration requirements:
 
-- **`maxmemory-policy noeviction`.** The frontier writes URLs and bloom state durably. Under memory pressure you want loud OOM errors (which the runtime handles gracefully), not silent LRU eviction that drops URLs the system thinks are queued.
-- **RDB snapshots, no AOF.** Bloom state survives RDB snapshots. AOF replay's per-op overhead isn't worth it for this workload. The default save thresholds (`save 60 10000 / save 300 10 / save 900 1`) give a progressively-sparser snapshot cadence that matches the frontier's write pattern.
+- **`maxmemory-policy noeviction`:** the frontier writes URLs and Bloom state durably. Under memory pressure you want a loud OOM error, which the runtime handles, rather than silent LRU eviction dropping URLs the crawler believes are queued.
+- **RDB snapshots, no AOF:** Bloom state survives RDB snapshots, and AOF replay's per-op overhead buys nothing here. The default save thresholds (`save 60 10000 / save 300 10 / save 900 1`) give a progressively sparser cadence that matches the frontier's write pattern.
 
-**Managed services:** AWS ElastiCache and MemoryDB default to Valkey and support Bloom commands. Google Memorystore for Redis does not support Bloom modules at the time of writing. Verify before deploying.
+**Managed services:** AWS ElastiCache exposes the Bloom filter data type from Valkey 8.1 onward. Below that the crawler connects successfully and then fails on every submit, which reads like an application bug rather than a provisioning one, so pin the engine version deliberately. Google Memorystore for Redis has no Bloom module at the time of writing. Verify before deploying.
 
 ## What gets deployed
 
@@ -169,7 +169,7 @@ Four Grafana dashboards ship as JSON in `dashboards/`, loaded via ConfigMap and 
 | **Crawler Health** | Crawl rate, success rate, active workers, pipeline latency, error attribution, per-phase percentiles. Organized into collapsible sections: Overview, Pipeline Latency, Fetch & Parse, Discovery & Scheduling, Storage & Pools. |
 | **Worker Health** | Per-worker throughput, latency, restart count, skip rate. Uses the `worker` label to show all 32 workers individually. |
 | **Container Resources** | Per-pod CPU, memory, network, file descriptors, allocator behavior. |
-| **Redis Health** | Memory vs `maxmemory` cap, eviction rates, commands/sec, hit rate, per-key-group memory breakdown, fragmentation ratio. |
+| **Valkey Health** | Memory vs `maxmemory` cap, eviction rates, commands/sec, hit rate, per-key-group memory breakdown, fragmentation ratio. |
 
 To add a dashboard, drop a JSON file in `dashboards/` and run `helm upgrade`. The ConfigMap regenerates from the glob.
 

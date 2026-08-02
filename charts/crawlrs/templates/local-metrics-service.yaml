@@ -1,15 +1,7 @@
 {{- if .Values.server.localNodePort.enabled }}
-# Sibling NodePort service exposing the crawler's HTTP listener
-# (/metrics + healthz/readyz/livez) on a fixed node port for local
-# kind development. The primary {{ include "crawlrs.headlessServiceName" . }}
-# Service is headless (clusterIP=None) for per-pod DNS used by
-# StatefulSet + vmsingle scraping, so it cannot itself be a
-# NodePort; this companion Service exists alongside it for host
-# reachability when `local/kind.yaml`'s extraPortMappings publish
-# hostPort 9090 -> nodePort 30090.
-#
-# Gated behind `server.localNodePort.enabled` so production deploys
-# stay ClusterIP-only.
+# The primary Service is headless for per-pod DNS, so it cannot carry a
+# NodePort. This companion exists so kind's extraPortMappings can reach
+# the crawler from the host; production deploys leave it disabled.
 apiVersion: v1
 kind: Service
 metadata:

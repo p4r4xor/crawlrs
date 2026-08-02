@@ -12,16 +12,16 @@ repos:
       - id: check-merge-conflict
       - id: check-toml
       - id: check-yaml
+        exclude: ^charts/.*/templates/
       - id: mixed-line-ending
         args: [--fix=lf]
 
-  # ASCII dash policy (per CLAUDE.md): no em or en dashes anywhere.
   - repo: local
     hooks:
       - id: no-em-or-en-dash
         name: forbid em (U+2014) and en (U+2013) dashes
         language: pygrep
-        entry: '[–—]'
+        entry: '\xe2\x80\x93|\xe2\x80\x94'
         types_or: [rust, markdown, toml, sql, yaml, shell]
 
   # Cargo fmt (commit stage; fast). Re-formats staged Rust files in place.

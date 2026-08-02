@@ -67,7 +67,7 @@ async fn lease_expiry_re_pushes_unacked_url_and_next_claim_yields_same_attempt_i
         ClaimOutcome::Claimed { attempt_id, .. } => attempt_id,
         other => panic!("expected first claim to succeed; got {other:?}"),
     };
-    // Worker A "crashes" — never calls ack.
+    // Worker A "crashes"; never calls ack.
 
     // Advance past the lease; tick reclaims + promotes.
     clock.advance_ms(1_000);

@@ -33,10 +33,8 @@ data:
               service: crawlrs
       {{- if .Values.o11y.vmsingle.redisExporter.enabled }}
 
-      # Redis health metrics, served by the redis_exporter sidecar
-      # baked into the Redis pod. The Service exposes the sidecar on
-      # port 9121 alongside the main 6379 port; we scrape the metrics
-      # port directly. Target name is the umbrella chart's Redis
+      # Valkey health metrics from the redis_exporter sidecar, exposed on
+      # port 9121 alongside 6379. Target name is the umbrella chart's
       # service: `<release>-redis:9121`.
       - job_name: redis
         metrics_path: /metrics

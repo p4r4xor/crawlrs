@@ -2232,7 +2232,7 @@
   },
   "timepicker": {},
   "timezone": "browser",
-  "title": "Redis Health",
+  "title": "Valkey Health",
   "uid": "crawlrs-redis",
   "version": 1,
   "weekStart": ""

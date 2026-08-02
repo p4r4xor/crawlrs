@@ -1,20 +1,6 @@
 {{- if .Values.seeds.content }}
-# One-shot bootstrap Job. Loads `crawl.seeds.content` (mounted at
-# /etc/crawlrs/seeds.txt via the same ConfigMap as crawl.toml) into
-# the Frontier, then exits.
-#
-# Lifecycle:
-#   helm install         -> Job runs once. Pods start fresh, seeds loaded.
-#   helm upgrade         -> Job is SKIPPED (post-install only). Pods
-#                           rolling-restart without touching seeds.
-#   pod crash + restart  -> Job NOT triggered; runtime stays pure-runtime.
-#
-# To force a reseed (e.g. after wiping Redis): `helm install --replace`
-# OR `kubectl create job --from=job/<name> reseed-$(date +%s)`.
-#
-# The loader is tolerant: per-batch failures (Redis OOM, transient
-# errors) are logged and the next batch is attempted. Job exits
-# non-zero only if every batch fails.
+# post-install only, so `helm upgrade` and pod restarts never re-seed.
+# See the chart README for how to force a reseed.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -23,18 +9,15 @@ metadata:
     {{- include "crawlrs.labels" . | nindent 4 }}
     app.kubernetes.io/component: seed-bootstrap
   annotations:
-    # `post-install` only: never re-fires on `helm upgrade`. Weight -5
-    # runs before NOTES.txt; `before-hook-creation` clears a prior Job
-    # if the user re-runs `helm install --replace`.
+    # Weight -5 runs before NOTES.txt; before-hook-creation clears a
+    # prior Job on `helm install --replace`.
     "helm.sh/hook": post-install
     "helm.sh/hook-weight": "-5"
     "helm.sh/hook-delete-policy": before-hook-creation
 spec:
-  # Limit retries to avoid wedging on a permanently-broken state
-  # (e.g. seeds file is empty / malformed).
+  # Bounded so a malformed seeds file fails visibly instead of looping.
   backoffLimit: 3
-  # Clean up the Job + Pod 1h after success. Failed Jobs stay so
-  # the operator can inspect logs.
+  # Successful Jobs are reaped after 1h; failed ones stay for their logs.
   ttlSecondsAfterFinished: 3600
   template:
     metadata:
@@ -51,9 +34,9 @@ spec:
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       {{- if .Values.initContainers.enabled }}
-      # Only wait for Redis; the seed Job never touches Postgres.
+      # The seed path never opens a Postgres connection.
       initContainers:
-        - name: wait-for-redis
+        - name: wait-for-valkey
           image: {{ .Values.initContainers.redis.image | quote }}
           imagePullPolicy: IfNotPresent
           env:
@@ -66,7 +49,7 @@ spec:
           args:
             - |
               deadline=$(( $(date +%s) + {{ .Values.initContainers.deadlineSeconds }} ))
-              until redis-cli -u "$CRAWLRS_REDIS_URL" ping 2>/dev/null | grep -q PONG; do
+              until valkey-cli -u "$CRAWLRS_REDIS_URL" ping 2>/dev/null | grep -q PONG; do
                 if [ $(date +%s) -ge $deadline ]; then
                   echo "redis still not ready after {{ .Values.initContainers.deadlineSeconds }}s; giving up"
                   exit 1
@@ -101,8 +84,7 @@ spec:
                 secretKeyRef:
                   name: {{ include "crawlrs.secretName" . }}
                   key: redisUrl
-            # Required by config loader even though the seed path
-            # never opens a Postgres connection.
+            # Required by the config loader even though it goes unused here.
             - name: CRAWLRS_POSTGRES_URL
               valueFrom:
                 secretKeyRef:
