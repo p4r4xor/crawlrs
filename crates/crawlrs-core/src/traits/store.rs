@@ -23,9 +23,19 @@ pub trait Store: Send + Sync {
     /// the write to several inner stores, the convention is that the
     /// first-configured store's path is the canonical one returned to
     /// the runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backing store cannot persist the
+    /// record (backend unreachable, serialization failure, quota).
     async fn write(&self, record: &StoreRecord<'_>) -> Result<String>;
 
     /// Flush any buffered writes to durable storage. Implementations that
     /// write synchronously may make this a no-op.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when buffered writes cannot be committed to the
+    /// backing store.
     async fn flush(&self) -> Result<()>;
 }

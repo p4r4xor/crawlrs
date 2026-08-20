@@ -11,10 +11,10 @@ use anyhow::{Context, Result, anyhow, bail};
 use bb8_redis::RedisConnectionManager;
 use crawlrs_core::{
     BackoffTracker, Blocklist, CrawlOverride, CrawlScope, HostHashShardPolicy, RobotsChecker,
-    ShardKey, ShardingPolicy, WakePlanner,
+    RunId, ShardKey, ShardingPolicy, WakePlanner, owned_shards_for_replica,
 };
 use crawlrs_fetch::{NoProxyResolver, WreqFetcher, WreqFetcherConfig};
-use crawlrs_frontier::{RedisFrontier, validate_pool_size};
+use crawlrs_frontier::{RedisFrontier, RedisFrontierParams, validate_pool_size};
 use crawlrs_metadata::PostgresMetadataStore;
 use crawlrs_parse::LolHtmlParser;
 use crawlrs_politeness::{
@@ -67,17 +67,17 @@ pub async fn build(config: &CrawlrsConfig) -> Result<Built> {
     let blocklist = build_blocklist(config);
 
     let frontier = Arc::new(
-        RedisFrontier::new(
-            redis_pool.clone(),
-            sharding_policy.clone(),
-            owned_shards.clone(),
-            &config.run_id,
-            crawlrs_frontier::BloomConfig {
+        RedisFrontier::new(RedisFrontierParams {
+            pool: redis_pool.clone(),
+            sharding_policy: sharding_policy.clone(),
+            owned_shards: owned_shards.clone(),
+            run_id: RunId::new(config.run_id.clone()),
+            bloom_config: crawlrs_frontier::BloomConfig {
                 capacity: config.frontier.bloom_capacity,
                 fpr: config.frontier.bloom_fpr,
             },
-            crawl_scope.clone(),
-        )
+            crawl_scope: crawl_scope.clone(),
+        })
         .await
         .context("constructing RedisFrontier")?
         .with_lease_timeout(config.frontier.lease_timeout),
@@ -112,7 +112,7 @@ pub async fn build(config: &CrawlrsConfig) -> Result<Built> {
         .config(runtime_config)
         .crawl_scope(crawl_scope)
         .blocklist(blocklist)
-        .run_id(&config.run_id)
+        .run_id(config.run_id.as_str())
         .build()
         .map_err(|e| anyhow!("CrawlerBuilder::build: {e}"))?;
 
@@ -139,17 +139,17 @@ pub async fn build_frontier(config: &CrawlrsConfig) -> Result<Arc<RedisFrontier>
     let crawl_scope = build_crawl_scope(config);
 
     let frontier = Arc::new(
-        RedisFrontier::new(
-            redis_pool,
+        RedisFrontier::new(RedisFrontierParams {
+            pool: redis_pool,
             sharding_policy,
             owned_shards,
-            &config.run_id,
-            crawlrs_frontier::BloomConfig {
+            run_id: RunId::new(config.run_id.clone()),
+            bloom_config: crawlrs_frontier::BloomConfig {
                 capacity: config.frontier.bloom_capacity,
                 fpr: config.frontier.bloom_fpr,
             },
             crawl_scope,
-        )
+        })
         .await
         .context("constructing RedisFrontier")?
         .with_lease_timeout(config.frontier.lease_timeout),
@@ -163,14 +163,15 @@ async fn build_redis_pool(config: &CrawlrsConfig) -> Result<bb8::Pool<RedisConne
     // is a v1.x extension; it would require swapping the manager type.
     // The check here surfaces the "not yet implemented" path eagerly
     // rather than silently producing a connection failure.
-    if config.redis.url.starts_with("redis-sentinel://") {
+    if config.redis.url.expose().starts_with("redis-sentinel://") {
         bail!(
             "redis-sentinel:// URLs aren't supported yet; \
              use redis:// against a Sentinel-aware proxy or pin a primary"
         );
     }
-    let manager = RedisConnectionManager::new(config.redis.url.clone())
-        .with_context(|| format!("parsing Redis URL: {}", config.redis.url))?;
+    // Don't interpolate the URL into the error: it embeds credentials.
+    let manager =
+        RedisConnectionManager::new(config.redis.url.expose()).context("parsing Redis URL")?;
     let pool = bb8::Pool::builder()
         .max_size(config.redis.pool_size)
         .build(manager)
@@ -182,9 +183,10 @@ async fn build_redis_pool(config: &CrawlrsConfig) -> Result<bb8::Pool<RedisConne
 async fn build_postgres_pool(config: &CrawlrsConfig) -> Result<sqlx::PgPool> {
     let pool = PgPoolOptions::new()
         .max_connections(config.postgres.pool_size)
-        .connect(&config.postgres.url)
+        .connect(config.postgres.url.expose())
         .await
-        .with_context(|| format!("connecting to Postgres: {}", config.postgres.url))?;
+        // Don't interpolate the URL into the error: it embeds credentials.
+        .context("connecting to Postgres")?;
     Ok(pool)
 }
 
@@ -379,10 +381,10 @@ async fn build_store(config: &CrawlrsConfig) -> Result<Arc<dyn crawlrs_core::Sto
                 builder = builder.with_endpoint(ep);
             }
             if let Some(k) = access_key_id {
-                builder = builder.with_access_key_id(k);
+                builder = builder.with_access_key_id(k.expose());
             }
             if let Some(s) = secret_access_key {
-                builder = builder.with_secret_access_key(s);
+                builder = builder.with_secret_access_key(s.expose());
             }
             Arc::new(builder.build().context("building AmazonS3 backend")?)
         }
@@ -449,26 +451,18 @@ fn derive_owned_shards(config: &CrawlrsConfig) -> Result<Vec<ShardKey>> {
     }
 
     if let Some(ordinal) = pod_ordinal() {
-        // Owners are 0..N modulo replica count. We don't know the
-        // replica count from inside the pod; for v1 assume each pod
-        // owns shards `ordinal, ordinal + R, ordinal + 2R, ...` where
-        // R is read from CRAWLRS_REPLICAS env (set by the StatefulSet
-        // template). If unset, default to one pod owning all shards
-        // mod ordinal (i.e., this pod owns just `ordinal` if ordinal
-        // < num_shards, else nothing - which would be a misconfig).
+        // Each pod owns a strided subset of shards keyed on its ordinal
+        // and the replica count R (from CRAWLRS_REPLICAS, set by the
+        // StatefulSet template). If R is unset, default it to num_shards
+        // so this pod owns exactly `[ordinal]` and never overlaps a
+        // sibling. (A default of 1 would make pod k claim every shard
+        // >= k, i.e. overlapping ownership across pods.) The strided
+        // ownership math itself lives in crawlrs-core.
         let replicas: u32 = std::env::var("CRAWLRS_REPLICAS")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or(1);
-        let mut owned = Vec::new();
-        let mut shard = ordinal;
-        while shard < config.sharding.num_shards {
-            owned.push(shard);
-            shard = shard.saturating_add(replicas);
-            if replicas == 0 {
-                break;
-            }
-        }
+            .unwrap_or(config.sharding.num_shards);
+        let owned = owned_shards_for_replica(ordinal, replicas, config.sharding.num_shards);
         if owned.is_empty() {
             bail!(
                 "POD_NAME ordinal {ordinal} >= num_shards {} with replicas={replicas}; \

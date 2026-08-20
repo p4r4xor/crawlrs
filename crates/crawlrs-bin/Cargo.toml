@@ -27,6 +27,7 @@ bb8.workspace                          = true
 bb8-redis.workspace                    = true
 clap.workspace                         = true
 humantime-serde.workspace              = true
+metrics.workspace                      = true
 metrics-exporter-prometheus.workspace  = true
 object_store.workspace                 = true
 serde.workspace                        = true

@@ -74,7 +74,37 @@ use anyhow::{Context, Result};
 use crawlrs_core::LinkDispatch;
 use serde::Deserialize;
 
+/// Wrapper for a credential-bearing string (connection URLs with
+/// embedded passwords, cloud access keys). Its `Debug` prints `"***"`
+/// and it has no `Display`, so a stray `{:?}`/`{}` on the config cannot
+/// leak the secret into logs or error messages; read the value back
+/// explicitly with [`Secret::expose`].
+#[derive(Clone, Deserialize)]
+#[serde(transparent)]
+pub struct Secret(String);
+
+impl Secret {
+    /// Borrow the underlying secret. Every call site is an audit point
+    /// for where the plaintext credential flows.
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<String> for Secret {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("\"***\"")
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CrawlrsConfig {
     pub run_id: String,
     pub redis: RedisConfig,
@@ -100,23 +130,25 @@ pub struct CrawlrsConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RedisConfig {
     /// `redis://...` or `redis-sentinel://service-name@sentinel-host:port,...`
-    pub url: String,
+    pub url: Secret,
     #[serde(default = "default_redis_pool_size")]
     pub pool_size: u32,
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PostgresConfig {
     /// `postgres://user:pass@host/db`
-    pub url: String,
+    pub url: Secret,
     #[serde(default = "default_postgres_pool_size")]
     pub pool_size: u32,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct FetchConfig {
     pub max_body_bytes: u64,
     /// Override the User-Agent on outgoing fetches. `None` (the
@@ -247,7 +279,7 @@ pub struct PolitenessOverride {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct RuntimeConfig {
     pub workers: usize,
     pub max_retries: u32,
@@ -277,7 +309,7 @@ impl Default for RuntimeConfig {
 /// headroom). See `BloomConfig` in `crawlrs-frontier` for the
 /// memory / FPR tradeoff.
 #[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct FrontierConfig {
     /// Lease expiry for an in-flight URL. A worker holding a URL for
     /// longer is presumed dead; the reclaim pass re-pushes the URL.
@@ -314,7 +346,7 @@ impl Default for FrontierConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct StoreConfig {
     pub parquet: bool,
     pub warc: bool,
@@ -344,7 +376,7 @@ impl Default for StoreConfig {
 /// resident memory is bounded by (shards * max_bytes) plus the
 /// per-row inline overhead.
 #[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct StoreRotationConfig {
     pub max_bytes: usize,
     pub max_rows: usize,
@@ -362,6 +394,8 @@ impl Default for StoreRotationConfig {
     }
 }
 
+// No `deny_unknown_fields` here: it is unsupported on an internally
+// tagged enum (the `kind` tag field would itself trip the check).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum StoreBackend {
@@ -372,8 +406,8 @@ pub enum StoreBackend {
         endpoint: Option<String>,
         bucket: String,
         region: String,
-        access_key_id: Option<String>,
-        secret_access_key: Option<String>,
+        access_key_id: Option<Secret>,
+        secret_access_key: Option<Secret>,
         #[serde(default)]
         allow_http: bool,
         #[serde(default)]
@@ -390,7 +424,7 @@ impl Default for StoreBackend {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ServerConfig {
     pub listen: String,
 }
@@ -404,7 +438,7 @@ impl Default for ServerConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ShardingConfig {
     pub num_shards: u32,
     /// `None` means "owned shards derived from POD_NAME ordinal";
@@ -469,10 +503,10 @@ impl CrawlrsConfig {
             self.run_id = v;
         }
         if let Ok(v) = std::env::var("CRAWLRS_REDIS_URL") {
-            self.redis.url = v;
+            self.redis.url = v.into();
         }
         if let Ok(v) = std::env::var("CRAWLRS_POSTGRES_URL") {
-            self.postgres.url = v;
+            self.postgres.url = v.into();
         }
         if let Ok(v) = std::env::var("CRAWLRS_LISTEN") {
             self.server.listen = v;
@@ -495,10 +529,10 @@ impl CrawlrsConfig {
                 *endpoint = Some(v);
             }
             if let Ok(v) = std::env::var("CRAWLRS_S3_ACCESS_KEY_ID") {
-                *access_key_id = Some(v);
+                *access_key_id = Some(v.into());
             }
             if let Ok(v) = std::env::var("CRAWLRS_S3_SECRET_ACCESS_KEY") {
-                *secret_access_key = Some(v);
+                *secret_access_key = Some(v.into());
             }
         }
     }

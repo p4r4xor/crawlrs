@@ -64,6 +64,11 @@ pub fn denies(url: &CanonicalUrl) -> bool {
     if ext.is_empty() {
         return false;
     }
-    let lowered = ext.to_ascii_lowercase();
-    DENY_SET.contains(lowered.as_str())
+    // Real-world extensions are almost always already lowercase; only
+    // allocate a lowercased copy when an uppercase byte is present.
+    if ext.bytes().any(|b| b.is_ascii_uppercase()) {
+        DENY_SET.contains(ext.to_ascii_lowercase().as_str())
+    } else {
+        DENY_SET.contains(ext)
+    }
 }

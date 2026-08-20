@@ -23,7 +23,7 @@ use std::sync::Arc;
 use crawlrs_core::{
     AttemptId, Blocklist, CanonicalUrl, ClaimOutcome, Clock, CrawlScope, DisallowReason,
     FailureKind, FetchRequest, FetchResponse, Fetcher, Frontier, LinkDispatch, MetadataStore,
-    NextWake, ParsedDocument, Parser, PoliteDecision, Politeness, ShardingPolicy,
+    NextWake, ParsedDocument, Parser, PoliteDecision, Politeness, RunId, ShardingPolicy,
     SiteAdapterRegistry, SkipReason, Store, StoreRecord, SuccessRecord, UrlEntry, UrlId,
     WorkerIdentity, content_hash,
 };
@@ -68,6 +68,28 @@ impl Drop for PhaseTimer {
     }
 }
 
+/// Holds the `WORKERS_ACTIVE` gauge up by one for its lifetime:
+/// increment on construction, decrement on `Drop`. Same RAII rationale
+/// as [`PhaseTimer`] - the decrement runs on the panic-unwind path too,
+/// so a worker panic (which the supervisor catches and respawns) can't
+/// leave the gauge permanently inflated for that worker label.
+struct ActiveWorkerGuard {
+    worker_label: Arc<str>,
+}
+
+impl ActiveWorkerGuard {
+    fn new(worker_label: Arc<str>) -> Self {
+        metrics::gauge!(crate::metrics::WORKERS_ACTIVE, crate::metrics::LABEL_WORKER => worker_label.clone()).increment(1.0);
+        Self { worker_label }
+    }
+}
+
+impl Drop for ActiveWorkerGuard {
+    fn drop(&mut self) {
+        metrics::gauge!(crate::metrics::WORKERS_ACTIVE, crate::metrics::LABEL_WORKER => self.worker_label.clone()).decrement(1.0);
+    }
+}
+
 /// Bag of dependencies shared across all worker tasks. `Arc<dyn _>`
 /// for each so workers can clone cheaply.
 pub struct WorkerDeps {
@@ -96,7 +118,7 @@ pub struct WorkerDeps {
     /// so cross-run dedup and history queries can distinguish "URL X
     /// was last touched by run Y." Must be stable for the lifetime of
     /// the `Crawler`.
-    pub run_id: String,
+    pub run_id: RunId,
     /// Sharding policy used to derive a URL's shard at storage time.
     /// The blob store's path layout includes the shard component for
     /// Hive-partitioned downstream pruning. Must agree with whatever
@@ -129,6 +151,10 @@ pub async fn worker_loop(
     mut shutdown: watch::Receiver<bool>,
 ) {
     debug!(identity = %identity, "worker_loop started");
+    // Interned once per worker task; the per-URL hot loop clones this
+    // Arc (refcount bump) for every metric emission instead of
+    // re-allocating `identity.to_string()` on each claim.
+    let worker_label: Arc<str> = identity.to_string().into();
     while !*shutdown.borrow() {
         match deps.frontier.claim(&identity).await {
             Ok(ClaimOutcome::Claimed {
@@ -136,7 +162,15 @@ pub async fn worker_loop(
                 entry,
                 attempt_id,
             }) => {
-                process_url(identity, &deps, url_id, entry, attempt_id).await;
+                process_url(
+                    identity,
+                    worker_label.clone(),
+                    &deps,
+                    url_id,
+                    entry,
+                    attempt_id,
+                )
+                .await;
             }
             Ok(ClaimOutcome::EmptyHint { sleep_until }) => {
                 let when_tokio = TokioInstant::from_std(sleep_until);
@@ -156,7 +190,10 @@ pub async fn worker_loop(
             }
             Err(e) => {
                 warn!(identity = %identity, error = %e, "frontier.claim failed");
-                tokio::time::sleep(deps.config.error_backoff).await;
+                tokio::select! {
+                    _ = tokio::time::sleep(deps.config.error_backoff) => {}
+                    _ = shutdown.changed() => break,
+                }
             }
         }
     }
@@ -168,19 +205,20 @@ pub async fn worker_loop(
 /// emits, and so the per-URL metric envelope (workers_active gauge +
 /// pipeline_seconds histogram) lives in one place.
 #[tracing::instrument(
-    skip(deps, entry),
+    skip(deps, worker_label, entry),
     fields(identity = %identity, url = %entry.url, depth = entry.depth, url_id = %url_id),
 )]
 async fn process_url(
     identity: WorkerIdentity,
+    worker_label: Arc<str>,
     deps: &Arc<WorkerDeps>,
     url_id: UrlId,
     entry: Box<UrlEntry>,
     attempt_id: AttemptId,
 ) {
     let started_at = tokio::time::Instant::now();
-    let worker_label = identity.to_string();
-    metrics::gauge!(crate::metrics::WORKERS_ACTIVE, crate::metrics::LABEL_WORKER => worker_label.clone()).increment(1.0);
+    // RAII: releases the gauge on every exit path, panic included.
+    let _active = ActiveWorkerGuard::new(worker_label.clone());
     UrlPipeline::new(
         Arc::clone(deps),
         url_id,
@@ -190,7 +228,6 @@ async fn process_url(
     )
     .run()
     .await;
-    metrics::gauge!(crate::metrics::WORKERS_ACTIVE, crate::metrics::LABEL_WORKER => worker_label.clone()).decrement(1.0);
     metrics::histogram!(crate::metrics::PIPELINE_SECONDS, crate::metrics::LABEL_WORKER => worker_label)
         .record(started_at.elapsed().as_secs_f64());
 }
@@ -217,7 +254,7 @@ struct UrlPipeline {
     url_id: UrlId,
     entry: UrlEntry,
     attempt_id: AttemptId,
-    worker_label: String,
+    worker_label: Arc<str>,
 }
 
 impl UrlPipeline {
@@ -226,7 +263,7 @@ impl UrlPipeline {
         url_id: UrlId,
         entry: UrlEntry,
         attempt_id: AttemptId,
-        worker_label: String,
+        worker_label: Arc<str>,
     ) -> Self {
         Self {
             deps,
@@ -328,7 +365,9 @@ impl UrlPipeline {
                 SkipReason::Blocklist,
             )
             .await;
-            let _ = self.deps.frontier.ack(self.attempt()).await;
+            if let Err(e) = self.deps.frontier.ack(self.attempt()).await {
+                warn!(url = %self.url(), error = %e, "frontier ack failed (blocklist skip)");
+            }
             return false;
         }
 
@@ -355,14 +394,16 @@ impl UrlPipeline {
                     )
                     .await;
                 }
-                let _ = self.deps.frontier.ack(self.attempt()).await;
+                if let Err(e) = self.deps.frontier.ack(self.attempt()).await {
+                    warn!(url = %self.url(), error = %e, "frontier ack failed (politeness disallow)");
+                }
                 false
             }
             Err(e) => {
                 warn!(url = %self.url(), error = %e, "politeness.check failed; leasing expires");
-                // Don't ack: the URL stays in the inflight ZSET. When
-                // the lease expires, the frontier's reclaim path
-                // re-pushes it to its host_queue for re-delivery.
+                // Don't ack: the URL keeps its lease. When the lease
+                // expires, the frontier's reclaim path re-delivers it on
+                // a future claim.
                 false
             }
         }
@@ -418,7 +459,13 @@ impl UrlPipeline {
         let resp = match self.deps.fetcher.fetch(req).await {
             Ok(r) => r,
             Err(e) => {
-                let kind = classify_transport_error(&e);
+                // Typed transport failures carry their category from the
+                // fetcher; fall back to text classification for other
+                // fetch errors (e.g. a body-cap policy rejection).
+                let kind = match &e {
+                    crawlrs_core::Error::Transport { kind, .. } => *kind,
+                    other => classify_transport_error(other),
+                };
                 warn!(url = %self.url(), error = %e, kind = ?kind, "fetch transport error");
                 let plan = self
                     .deps
@@ -468,7 +515,7 @@ impl UrlPipeline {
     /// safety net (a missed wake-time defaults to the lease timeout
     /// via the claim-time wake stamp).
     ///
-    /// When `next.until` is at or before now (the rate limiter's
+    /// When `next.until_ms` is at or before now (the rate limiter's
     /// zero-delay signal), the frontier write is skipped: there's
     /// no future wake to record, and writing a now-time would just
     /// fail the frontier's GT semantics anyway. Saves one Redis
@@ -476,13 +523,17 @@ impl UrlPipeline {
     async fn apply_wake_plan(&self, plan: crawlrs_core::Result<NextWake>) {
         match plan {
             Ok(next) => {
-                if next.until <= std::time::Instant::now() {
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0);
+                if next.until_ms <= now_ms {
                     return;
                 }
                 if let Err(e) = self
                     .deps
                     .frontier
-                    .advance_wake(&next.host, next.until)
+                    .advance_wake(&next.host, next.until_ms)
                     .await
                 {
                     warn!(host = %next.host, error = %e, "frontier.advance_wake failed");
@@ -539,12 +590,17 @@ impl UrlPipeline {
     /// for the two parse paths (site adapter + generic).
     async fn fail_parse(&self, reason: &str) {
         let dlq_reason = format!("parse: {reason}");
-        let _ = self
+        if let Err(e) = self
             .deps
             .metadata
             .mark_permanently_failed(self.url(), &dlq_reason)
-            .await;
-        let _ = self.deps.frontier.ack(self.attempt()).await;
+            .await
+        {
+            warn!(url = %self.url(), error = %e, "metadata.mark_permanently_failed failed (parse)");
+        }
+        if let Err(e) = self.deps.frontier.ack(self.attempt()).await {
+            warn!(url = %self.url(), error = %e, "frontier ack failed (parse failure)");
+        }
     }
 
     /// Persist the body via the store, record the blob path + content
@@ -584,7 +640,9 @@ impl UrlPipeline {
             Err(e) => {
                 warn!(url = %self.url(), error = %e, "store write failed; acking anyway to avoid hot loop");
                 let _phase = PhaseTimer::start(crate::metrics::PHASE_COMMIT);
-                let _ = self.deps.frontier.ack(self.attempt()).await;
+                if let Err(e) = self.deps.frontier.ack(self.attempt()).await {
+                    warn!(url = %self.url(), error = %e, "frontier ack failed (store write failure)");
+                }
                 return;
             }
         };
@@ -707,20 +765,25 @@ impl UrlPipeline {
         if new_count >= self.deps.config.max_retries {
             debug!(url = %self.url(), retry_count = new_count, "retry budget exhausted; DLQ");
             let dlq_reason = format!("retries exceeded ({new_count}): {reason}");
-            let _ = self
+            if let Err(e) = self
                 .deps
                 .metadata
                 .mark_permanently_failed(self.url(), &dlq_reason)
-                .await;
-            let _ = self.deps.frontier.ack(self.attempt()).await;
+                .await
+            {
+                warn!(url = %self.url(), error = %e, "metadata.mark_permanently_failed failed (DLQ)");
+            }
+            if let Err(e) = self.deps.frontier.ack(self.attempt()).await {
+                warn!(url = %self.url(), error = %e, "frontier ack failed (DLQ)");
+            }
         } else {
             debug!(
                 url = %self.url(),
                 retry_count = new_count,
                 "retry budget remaining; lease expires for re-delivery",
             );
-            // No ack: the lease will time out and the frontier's
-            // reclaim path re-pushes the URL onto its host_queue.
+            // No ack: the lease times out and the frontier's reclaim
+            // path re-delivers the URL.
         }
     }
 }
@@ -738,7 +801,8 @@ struct OutboundPartition {
 }
 
 /// Filter outbound links by scheme + max-depth and partition them
-/// into kept-for-enqueue vs depth-dropped. Pure: no I/O. The actual
+/// into kept-for-enqueue vs depth-dropped. No network/disk I/O; the
+/// depth-drop path emits one `URLS_SKIPPED_TOTAL` counter. The actual
 /// enqueue into the Frontier happens via the outbox publisher (see
 /// [`crate::outbox::outbox_publisher`]) so that the Postgres commit
 /// and the queue write are atomic from the worker's perspective.
@@ -753,7 +817,7 @@ fn compute_outbound(
     parent: &UrlEntry,
     doc: &ParsedDocument,
     depth_cap: impl Fn(&str) -> Option<u32>,
-    worker_label: &str,
+    worker_label: &Arc<str>,
 ) -> OutboundPartition {
     let new_depth = parent.depth + 1;
     let mut kept = Vec::with_capacity(doc.outbound_links.len());
@@ -784,7 +848,7 @@ fn compute_outbound(
         metrics::counter!(
             crate::metrics::URLS_SKIPPED_TOTAL,
             "reason" => crate::metrics::SKIP_DEPTH_LIMIT,
-            crate::metrics::LABEL_WORKER => worker_label.to_string(),
+            crate::metrics::LABEL_WORKER => worker_label.clone(),
         )
         .increment(depth_skipped.len() as u64);
     }
@@ -866,11 +930,15 @@ mod tests {
         move |_host| Some(n)
     }
 
+    fn label() -> Arc<str> {
+        Arc::from("")
+    }
+
     #[test]
     fn compute_outbound_with_no_cap_keeps_all_http_links() {
         let parent = parent_at(0);
         let doc = doc_with_links(&["https://a.test/", "https://b.test/"]);
-        let partition = compute_outbound(&parent, &doc, uncapped, "");
+        let partition = compute_outbound(&parent, &doc, uncapped, &label());
         assert_eq!(partition.kept.len(), 2);
         assert!(partition.depth_skipped.is_empty());
         assert!(partition.kept.iter().all(|e| e.depth == 1));
@@ -882,7 +950,7 @@ mod tests {
         let doc = doc_with_links(&["https://a.test/", "https://b.test/"]);
         // Cap=2 means a parent at depth 2 produces children at depth
         // 3, which exceeds the cap; everything is filtered out.
-        let partition = compute_outbound(&parent, &doc, capped(2), "");
+        let partition = compute_outbound(&parent, &doc, capped(2), &label());
         assert!(partition.kept.is_empty());
         assert_eq!(partition.depth_skipped.len(), 2);
         assert!(partition.depth_skipped.iter().all(|e| e.depth == 3));
@@ -895,7 +963,7 @@ mod tests {
         // Cap=3 means a parent at depth 2 produces children at depth
         // 3 (exactly the cap); they must be kept, not treated as
         // past-cap.
-        let partition = compute_outbound(&parent, &doc, capped(3), "");
+        let partition = compute_outbound(&parent, &doc, capped(3), &label());
         assert_eq!(partition.kept.len(), 1);
         assert!(partition.depth_skipped.is_empty());
         assert_eq!(partition.kept[0].depth, 3);
@@ -905,7 +973,7 @@ mod tests {
     fn compute_outbound_threads_parent_url_as_discovered_from() {
         let parent = parent_at(0);
         let doc = doc_with_links(&["https://a.test/"]);
-        let partition = compute_outbound(&parent, &doc, uncapped, "");
+        let partition = compute_outbound(&parent, &doc, uncapped, &label());
         assert_eq!(
             partition.kept[0]
                 .discovered_from
@@ -919,7 +987,7 @@ mod tests {
     fn compute_outbound_depth_skipped_carries_parent_as_discovered_from() {
         let parent = parent_at(5);
         let doc = doc_with_links(&["https://a.test/"]);
-        let partition = compute_outbound(&parent, &doc, capped(2), "");
+        let partition = compute_outbound(&parent, &doc, capped(2), &label());
         assert_eq!(partition.depth_skipped.len(), 1);
         assert_eq!(
             partition.depth_skipped[0]
@@ -936,7 +1004,12 @@ mod tests {
         // a.test capped at depth 2 -> child at depth 3 dropped.
         // b.test uncapped -> child at depth 3 kept.
         let doc = doc_with_links(&["https://a.test/", "https://b.test/"]);
-        let partition = compute_outbound(&parent, &doc, |host| (host == "a.test").then_some(2), "");
+        let partition = compute_outbound(
+            &parent,
+            &doc,
+            |host| (host == "a.test").then_some(2),
+            &label(),
+        );
         assert_eq!(partition.kept.len(), 1);
         assert_eq!(partition.kept[0].url.as_str(), "https://b.test/");
         assert_eq!(partition.depth_skipped.len(), 1);
@@ -958,7 +1031,7 @@ mod tests {
                 "a.test" => Some(10),
                 _ => Some(2),
             },
-            "",
+            &label(),
         );
         assert_eq!(partition.kept.len(), 1);
         assert_eq!(partition.kept[0].url.as_str(), "https://a.test/");

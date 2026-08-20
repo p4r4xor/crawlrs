@@ -31,6 +31,7 @@ pub const CONTENT_TYPE_UNKNOWN: &str = "unknown";
 /// `/robots.txt` that's actually a regular page) are vanishingly rare;
 /// the politeness layer is the only thing that fetches /robots.txt
 /// internally.
+#[must_use]
 pub fn fetch_kind(url: &CanonicalUrl) -> &'static str {
     if url.as_url().path() == "/robots.txt" {
         KIND_ROBOTS
@@ -42,6 +43,7 @@ pub fn fetch_kind(url: &CanonicalUrl) -> &'static str {
 /// Bucket an HTTP status code into a 5-element categorical set
 /// (`2xx` / `3xx` / `4xx` / `5xx` / `other`). Anything outside
 /// 100..=599 falls into `other`.
+#[must_use]
 pub fn status_class(status: u16) -> &'static str {
     match status {
         200..=299 => "2xx",
@@ -56,6 +58,7 @@ pub fn status_class(status: u16) -> &'static str {
 /// set (`html` / `non_html` / `unknown`). Missing or unparsable
 /// headers map to `unknown` so absence is distinguishable from an
 /// explicit non-html type.
+#[must_use]
 pub fn content_type(content_type_header: Option<&str>) -> &'static str {
     let Some(value) = content_type_header else {
         return CONTENT_TYPE_UNKNOWN;

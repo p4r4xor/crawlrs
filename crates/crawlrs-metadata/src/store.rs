@@ -11,13 +11,11 @@
 //! `BIGINT` (i64) in Postgres; the bit-cast at the boundary is
 //! lossless because the value is opaque.
 
-use std::time::SystemTime;
-
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use crawlrs_core::{
     CanonicalUrl, Error, FailureKind, MetadataStore, Outbox, OutboxEntry, OutboxRowId, Result,
-    ShipFn, SkipReason, SuccessRecord, UrlEntry, UrlMetadata, UrlStatus,
+    RunId, ShipFn, SkipReason, SuccessRecord, UrlEntry, UrlMetadata, UrlStatus,
 };
 use serde_json::json;
 use sqlx::postgres::{PgPool, PgPoolOptions};
@@ -97,6 +95,10 @@ static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 impl PostgresMetadataStore {
     /// Open a pool against `database_url`, run pending migrations,
     /// return a ready store. Use this in production wiring.
+    ///
+    /// # Errors
+    /// Returns an error if the pool cannot connect to `database_url` or
+    /// if applying pending migrations fails.
     pub async fn connect(database_url: &str, max_connections: u32) -> Result<Self> {
         let pool = PgPoolOptions::new()
             .max_connections(max_connections)
@@ -116,6 +118,9 @@ impl PostgresMetadataStore {
     }
 
     /// Apply pending migrations against `pool`. Idempotent.
+    ///
+    /// # Errors
+    /// Returns an error if a migration fails to apply.
     pub async fn migrate(pool: &PgPool) -> Result<()> {
         MIGRATOR
             .run(pool)
@@ -124,17 +129,20 @@ impl PostgresMetadataStore {
         Ok(())
     }
 
-    /// Number of URLs currently in the dead-letter state. Used as a
-    /// metric and for ops dashboards. Counts metadata rows, not
-    /// history events; a URL that ends up `permanently_failed` is
-    /// counted once even if it was retried multiple times before.
+    /// Number of URLs currently in the dead-letter state. Counts
+    /// metadata rows, not history events; a URL that ends up
+    /// `permanently_failed` is counted once even if it was retried
+    /// multiple times before. Pure read: callers that want the
+    /// `crawlrs_dlq_size` gauge set the value themselves.
+    ///
+    /// # Errors
+    /// Returns an error if the count query against Postgres fails.
     pub async fn dlq_size(&self) -> Result<u64> {
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM url_metadata WHERE status = $1")
             .bind(STATUS_PERMANENTLY_FAILED)
             .fetch_one(&self.pool)
             .await
             .map_err(PostgresMetadataError::from)?;
-        metrics::gauge!(crate::metrics::DLQ_SIZE).set(count as f64);
         Ok(count as u64)
     }
 
@@ -148,12 +156,6 @@ impl PostgresMetadataStore {
         let active = self.pool.size().saturating_sub(self.pool.num_idle() as u32);
         metrics::gauge!(crate::metrics::METADATA_POOL_PENDING).set(active as f64);
     }
-
-    /// Borrow the underlying pool. Exposed so the runtime can share
-    /// the same pool across collaborators (e.g. metrics queries).
-    pub fn pool(&self) -> &PgPool {
-        &self.pool
-    }
 }
 
 #[async_trait]
@@ -162,7 +164,7 @@ impl MetadataStore for PostgresMetadataStore {
     async fn get(&self, url: &CanonicalUrl) -> Result<Option<UrlMetadata>> {
         let _timer = crate::metrics::QueryTimer::new(crate::metrics::OP_GET);
         let row: Option<UrlRow> = sqlx::query_as::<_, UrlRow>(
-            "SELECT url, status, retry_count, blob_path, content_hash, depth,
+            "SELECT status, retry_count, blob_path, content_hash, depth,
                     last_run_id, discovered_from, discovered_at, updated_at
              FROM url_metadata WHERE url = $1",
         )
@@ -176,15 +178,15 @@ impl MetadataStore for PostgresMetadataStore {
     }
 
     #[tracing::instrument(skip(self), fields(url = %url, run_id = %run_id, depth))]
-    async fn mark_attempting(&self, url: &CanonicalUrl, run_id: &str, depth: u32) -> Result<()> {
+    async fn mark_attempting(&self, url: &CanonicalUrl, run_id: &RunId, depth: u32) -> Result<()> {
         let _timer = crate::metrics::QueryTimer::new(crate::metrics::OP_MARK_ATTEMPTING);
         let mut tx = self
             .pool
             .begin()
             .await
             .map_err(PostgresMetadataError::from)?;
-        let id = upsert_attempting(&mut tx, url, run_id, depth as i32).await?;
-        insert_history(&mut tx, id, run_id, EVENT_ATTEMPTED, None, None).await?;
+        let id = upsert_attempting(&mut tx, url, run_id.as_str(), depth as i32).await?;
+        insert_history(&mut tx, id, run_id.as_str(), EVENT_ATTEMPTED, None, None).await?;
         tx.commit().await.map_err(PostgresMetadataError::from)?;
         debug!(url = url.as_str(), "mark_attempting");
         Ok(())
@@ -301,7 +303,7 @@ impl MetadataStore for PostgresMetadataStore {
     async fn mark_discovered_skipped(
         &self,
         url: &CanonicalUrl,
-        run_id: &str,
+        run_id: &RunId,
         depth: u32,
         discovered_from: Option<&CanonicalUrl>,
         reason: SkipReason,
@@ -321,7 +323,7 @@ impl MetadataStore for PostgresMetadataStore {
         .bind(url.as_str())
         .bind(host)
         .bind(skip_status_str(reason))
-        .bind(run_id)
+        .bind(run_id.as_str())
         .bind(depth as i32)
         .bind(discovered_from.map(|u| u.as_str()))
         .execute(&self.pool)
@@ -566,8 +568,6 @@ fn parse_status(s: &str) -> LocalResult<UrlStatus> {
 
 #[derive(sqlx::FromRow)]
 struct UrlRow {
-    #[allow(dead_code)] // url is supplied by the caller; kept for future use
-    url: String,
     status: String,
     retry_count: i32,
     blob_path: Option<String>,
@@ -581,10 +581,21 @@ struct UrlRow {
 
 impl UrlRow {
     fn into_metadata(self, url: &CanonicalUrl) -> LocalResult<UrlMetadata> {
-        let discovered_from = self
-            .discovered_from
-            .as_deref()
-            .and_then(|s| CanonicalUrl::parse(s).ok());
+        // A corrupt stored provenance URL shouldn't make the whole row
+        // unreadable, but it also shouldn't vanish silently the way the
+        // outbox path surfaces the identical failure; log and drop it.
+        let discovered_from = self.discovered_from.as_deref().and_then(|raw| {
+            CanonicalUrl::parse(raw)
+                .map_err(|e| {
+                    tracing::warn!(
+                        url = %url,
+                        discovered_from = %raw,
+                        error = %e,
+                        "stored discovered_from is unparsable; dropping provenance",
+                    );
+                })
+                .ok()
+        });
         Ok(UrlMetadata {
             url: url.clone(),
             status: parse_status(&self.status)?,
@@ -594,41 +605,25 @@ impl UrlRow {
             depth: self.depth.max(0) as u32,
             last_run_id: self.last_run_id,
             discovered_from,
-            discovered_at: datetime_to_system_time(self.discovered_at),
-            updated_at: datetime_to_system_time(self.updated_at),
+            discovered_at: self.discovered_at.into(),
+            updated_at: self.updated_at.into(),
         })
     }
 }
 
-fn datetime_to_system_time(dt: DateTime<Utc>) -> SystemTime {
-    let secs = dt.timestamp();
-    let nanos = dt.timestamp_subsec_nanos();
-    if secs >= 0 {
-        SystemTime::UNIX_EPOCH + std::time::Duration::new(secs as u64, nanos)
-    } else {
-        // Pre-epoch timestamps cannot occur in our schema (NOW() at
-        // insert), but encode defensively.
-        let abs_secs = (-secs) as u64;
-        SystemTime::UNIX_EPOCH - std::time::Duration::new(abs_secs, 0)
-            + std::time::Duration::new(0, nanos)
-    }
-}
-
-// Inline because: `parse_status` and `datetime_to_system_time` are
-// private boundary functions that translate Postgres-vocabulary
-// (TEXT statuses, BIGINT timestamps, chrono::DateTime) into our
-// domain types. Making them `pub` would commit the public API to a
-// specific DB schema and break a future swap to DynamoDB / Scylla.
-// They stay private; their tests stay here.
+// Inline because: `parse_status` is a private boundary function that
+// translates Postgres-vocabulary (TEXT statuses) into our domain
+// types. Making it `pub` would commit the public API to a specific DB
+// schema and break a future swap to DynamoDB / Scylla. It stays
+// private; its tests stay here.
 #[cfg(test)]
 mod tests {
     // Inline because: visibility-forced. These tests exercise the
-    // private helpers `parse_status` and `datetime_to_system_time`;
-    // `tests/*.rs` (compiled as a separate crate) cannot reach them.
-    // Public-API integration tests live in `tests/postgres_metadata.rs`.
+    // private helper `parse_status`; `tests/*.rs` (compiled as a
+    // separate crate) cannot reach it. Public-API integration tests
+    // live in `tests/postgres_metadata.rs`.
 
     use super::*;
-    use chrono::TimeZone;
 
     #[test]
     fn status_round_trips_through_string() {
@@ -650,13 +645,5 @@ mod tests {
     #[test]
     fn unknown_status_string_fails_to_decode() {
         assert!(parse_status("nonsense").is_err());
-    }
-
-    #[test]
-    fn datetime_round_trips_through_system_time() {
-        let now = Utc.with_ymd_and_hms(2026, 5, 1, 12, 0, 0).unwrap();
-        let st = datetime_to_system_time(now);
-        let back: DateTime<Utc> = st.into();
-        assert_eq!(back.timestamp(), now.timestamp());
     }
 }

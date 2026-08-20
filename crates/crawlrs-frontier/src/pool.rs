@@ -34,6 +34,12 @@ pub enum PoolSizeError {
 
 /// Returns Ok if the pool's max_size is at least `workers + POOL_HEADROOM`.
 /// Call once at startup, before spawning workers.
+///
+/// # Errors
+///
+/// Returns [`PoolSizeError::Undersized`] if the pool's `max_size` is
+/// below `workers + POOL_HEADROOM`.
+#[must_use = "startup guard: an ignored undersized-pool error defeats the check"]
 pub fn validate_pool_size(
     pool: &Pool<RedisConnectionManager>,
     workers: u32,

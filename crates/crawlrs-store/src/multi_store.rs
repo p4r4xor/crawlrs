@@ -8,11 +8,17 @@
 //! but otherwise dropped, since the metadata schema only carries one
 //! `blob_path: Option<String>`.
 //!
-//! Failure semantics are fail-fast: any inner write error returns
-//! immediately and the runtime treats the call as a write failure.
-//! Partial state (one store wrote, another didn't) is acceptable for
-//! v1; the runtime's per-URL retry budget covers eventual re-attempt
-//! and the at-least-once delivery posture is unchanged.
+//! `write` failure semantics are fail-fast: any inner write error
+//! returns immediately and the runtime treats the call as a write
+//! failure. Partial state (one store wrote, another didn't) is
+//! acceptable for v1; the runtime's per-URL retry budget covers
+//! eventual re-attempt and the at-least-once delivery posture is
+//! unchanged.
+//!
+//! `flush` failure semantics are best-effort: every store is flushed
+//! even if an earlier one errors, so one store's flush failure cannot
+//! strand the buffered records of the others on the shutdown drain
+//! path. All errors are aggregated into a single returned error.
 
 use std::sync::Arc;
 
@@ -70,9 +76,24 @@ impl Store for MultiStore {
     }
 
     async fn flush(&self) -> Result<()> {
+        // Best-effort: attempt every child even if one fails, so a
+        // single store's flush error can't strand the others' buffered
+        // records on shutdown. Aggregate and surface afterward.
+        let mut errors = Vec::new();
         for store in &self.stores {
-            store.flush().await?;
+            if let Err(flush_error) = store.flush().await {
+                errors.push(flush_error.to_string());
+            }
         }
-        Ok(())
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(Error::Store(format!(
+                "{} of {} stores failed to flush: {}",
+                errors.len(),
+                self.stores.len(),
+                errors.join("; "),
+            )))
+        }
     }
 }

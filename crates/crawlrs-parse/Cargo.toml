@@ -14,6 +14,7 @@ async-trait.workspace = true
 lol_html.workspace    = true
 metrics.workspace     = true
 simdutf8.workspace    = true
+tracing.workspace     = true
 
 [dev-dependencies]
 bytes.workspace     = true

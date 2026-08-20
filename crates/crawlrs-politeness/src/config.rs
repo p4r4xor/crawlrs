@@ -93,6 +93,7 @@ impl PolitenessConfig {
     /// delay lookup on the hot path. See `RedisWakePlanner` and
     /// the worker's `apply_wake_plan` for the downstream
     /// `Frontier::advance_wake` skip when this returns `false`.
+    #[must_use]
     pub fn has_host_delay(&self) -> bool {
         if !self.host_delay.is_zero() {
             return true;

@@ -19,7 +19,6 @@ use bb8::Pool;
 use bb8_redis::RedisConnectionManager;
 use bytes::Bytes;
 use crawlrs_core::{CanonicalUrl, FetchRequest, Fetcher, ShardingPolicy};
-use redis::AsyncCommands;
 use tracing::{info, warn};
 
 use crate::error::{LocalResult, PolitenessError};
@@ -42,12 +41,12 @@ const TTL_JITTER_PCT: i64 = 20;
 /// own TTL on each rewrite, but is spread across hosts so the
 /// expiration moments fan out across `[0.8 * ttl, 1.2 * ttl]`.
 fn jittered_ttl(base: Duration, host: &str) -> Duration {
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    host.hash(&mut h);
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    host.hash(&mut hasher);
     // Map the 64-bit hash to `[-TTL_JITTER_PCT, +TTL_JITTER_PCT]`
     // (inclusive); 2N+1 buckets total.
     let band = (TTL_JITTER_PCT as u64 * 2) + 1;
-    let bucket = (h.finish() % band) as i64;
+    let bucket = (hasher.finish() % band) as i64;
     let jitter_pct = bucket - TTL_JITTER_PCT;
     let secs = base.as_secs() as i64;
     let scaled = (secs * (100 + jitter_pct)) / 100;
@@ -65,9 +64,11 @@ const IN_PROCESS_LRU_CAPACITY: u64 = 1024;
 ///
 /// Two-tier cache:
 /// - **In-process** (`moka::sync::Cache<host, Bytes>`) - first hit, no
-///   network. TTL aligned with the Redis TTL so the two layers expire
-///   together. Cuts the typical Redis HGET-per-fetch load to roughly
-///   one HGET per host per TTL window per worker process.
+///   network. Holds the base robots TTL; the Redis tier applies a
+///   host-stable +/-20% jitter to its own expiry, so the two layers
+///   expire within that jitter band rather than in lockstep. Cuts the
+///   typical Redis HGET-per-fetch load to roughly one HGET per host
+///   per TTL window per worker process.
 /// - **Redis** (Hash keyed on `crawlrs:{run}:s{shard}:robots:{host}`):
 ///   second hit, shared across pods. Survives worker restarts and
 ///   amortises fetches across the cluster.
@@ -85,7 +86,7 @@ pub struct RobotsCache {
 }
 
 impl RobotsCache {
-    pub fn new(
+    pub(crate) fn new(
         pool: Pool<RedisConnectionManager>,
         keys: KeyPrefix,
         sharding_policy: Arc<dyn ShardingPolicy>,
@@ -112,6 +113,7 @@ impl RobotsCache {
     /// Number of hosts currently held in the in-process LRU. Useful as
     /// a gauge metric and for verifying the cache is being populated
     /// in tests.
+    #[must_use]
     pub fn cache_len(&self) -> u64 {
         self.in_process.entry_count()
     }
@@ -125,8 +127,9 @@ impl RobotsCache {
     }
 
     /// Override the per-request fetch timeout for robots.txt requests.
-    pub fn with_fetch_timeout(mut self, t: Duration) -> Self {
-        self.fetch_timeout = t;
+    #[must_use]
+    pub fn with_fetch_timeout(mut self, timeout: Duration) -> Self {
+        self.fetch_timeout = timeout;
         self
     }
 
@@ -184,19 +187,18 @@ impl RobotsCache {
             .await
             .map_err(|e| PolitenessError::Pool(format!("{e:?}")))?;
 
-        let status: Option<String> = conn
-            .hget::<_, _, Option<String>>(&key, ROBOTS_FIELD_STATUS)
+        // One HMGET fetches both fields; the body is only interpreted
+        // when the status marks the entry as present.
+        let (status, raw): (Option<String>, Option<redis::Value>) = redis::cmd("HMGET")
+            .arg(&key)
+            .arg(ROBOTS_FIELD_STATUS)
+            .arg(ROBOTS_FIELD_BODY)
+            .query_async(&mut *conn)
             .await
             .map_err(PolitenessError::from)?;
 
         match status.as_deref() {
-            Some(ROBOTS_STATUS_OK) => {
-                let raw: Option<redis::Value> = conn
-                    .hget(&key, ROBOTS_FIELD_BODY)
-                    .await
-                    .map_err(PolitenessError::from)?;
-                Ok(raw.map(value_into_bytes).transpose()?)
-            }
+            Some(ROBOTS_STATUS_OK) => Ok(raw.map(value_into_bytes).transpose()?),
             Some(ROBOTS_STATUS_ABSENT) => Ok(Some(Bytes::new())),
             Some(other) => {
                 warn!(

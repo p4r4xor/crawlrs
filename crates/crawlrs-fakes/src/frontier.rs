@@ -144,6 +144,7 @@ impl InMemoryFrontier {
 
     /// Override the wall-clock source. Tests inject a manual clock to
     /// make lease-expiry and wake-time decisions deterministic.
+    #[must_use]
     pub fn with_clock(mut self, clock: Arc<dyn Clock>) -> Self {
         self.anchor_clock_ms = clock.now_ms();
         self.anchor_instant = Instant::now();
@@ -154,8 +155,19 @@ impl InMemoryFrontier {
     /// Override the lease timeout. Tests pass a short timeout (e.g.
     /// 100ms) so reclaim fires on the next `tick` after a manual
     /// clock advance.
+    #[must_use]
     pub fn with_lease_timeout(mut self, t: Duration) -> Self {
         self.lease_timeout_ms = t.as_millis() as u64;
+        self
+    }
+
+    /// Override the crawl scope so the per-host `max_urls` quota
+    /// rejection path in `submit_batch` can be exercised without Redis.
+    /// Mirrors the required `crawl_scope` argument on `RedisFrontier`;
+    /// the default scope leaves every host uncapped.
+    #[must_use]
+    pub fn with_crawl_scope(mut self, scope: CrawlScope) -> Self {
+        self.crawl_scope = scope;
         self
     }
 
@@ -169,20 +181,9 @@ impl InMemoryFrontier {
         Ok(())
     }
 
-    /// Convert an `Instant` to clock-millis using the captured anchor.
-    /// Instants in the past relative to the anchor saturate at the
-    /// anchor's millis value (the worker is asking for "now" or
-    /// earlier, which means "ready immediately").
-    fn instant_to_clock_ms(&self, when: Instant) -> u64 {
-        if when <= self.anchor_instant {
-            return self.anchor_clock_ms;
-        }
-        let delta = when.duration_since(self.anchor_instant).as_millis() as u64;
-        self.anchor_clock_ms.saturating_add(delta)
-    }
-
-    /// Inverse of `instant_to_clock_ms`. Used to surface wake-time as
-    /// an `Instant` in `ClaimOutcome::EmptyHint`.
+    /// Surface a stored wake-time (clock-millis) as an `Instant` for
+    /// `ClaimOutcome::EmptyHint`, using the captured anchor to bridge
+    /// the wall-clock and monotonic domains.
     fn clock_ms_to_instant(&self, ms: u64) -> Instant {
         let delta = ms.saturating_sub(self.anchor_clock_ms);
         self.anchor_instant + Duration::from_millis(delta)
@@ -218,7 +219,7 @@ impl Frontier for InMemoryFrontier {
         let host = entry
             .url
             .host()
-            .ok_or_else(|| Error::Frontier(format!("URL has no host: {}", entry.url)))?
+            .ok_or_else(|| Error::Frontier(format!("url has no host: {}", entry.url)))?
             .to_string();
         let now_ms = self.clock.now_ms();
 
@@ -246,6 +247,15 @@ impl Frontier for InMemoryFrontier {
 
     async fn submit_batch(&self, entries: Vec<UrlEntry>) -> Result<SubmitBatchOutcome> {
         let mut outcome = SubmitBatchOutcome::default();
+        let now_ms = self.clock.now_ms();
+
+        // Single lock held across the whole batch so it is atomic
+        // against a concurrent claim/tick/submit, matching the real
+        // impl's single Lua EVAL (which collapses the N submits into one
+        // atomic round-trip). Re-locking per URL would let another op
+        // observe a partially-submitted batch and hide that ordering
+        // assumption from tests.
+        let mut state = self.state.lock().unwrap();
         for entry in entries {
             let shard = self.sharding_policy.shard_key(&entry.url);
             self.assert_owned(shard)?;
@@ -253,12 +263,10 @@ impl Frontier for InMemoryFrontier {
             let host = entry
                 .url
                 .host()
-                .ok_or_else(|| Error::Frontier(format!("URL has no host: {}", entry.url)))?
+                .ok_or_else(|| Error::Frontier(format!("url has no host: {}", entry.url)))?
                 .to_string();
-            let now_ms = self.clock.now_ms();
             let cap = self.crawl_scope.max_urls_for(&host);
 
-            let mut state = self.state.lock().unwrap();
             let shard_state = state
                 .shards
                 .get_mut(&shard)
@@ -353,8 +361,7 @@ impl Frontier for InMemoryFrontier {
             .sum())
     }
 
-    async fn advance_wake(&self, host: &str, until: Instant) -> Result<()> {
-        let until_ms = self.instant_to_clock_ms(until);
+    async fn advance_wake(&self, host: &str, until_ms: u64) -> Result<()> {
         let mut state = self.state.lock().unwrap();
         // Apply to every owned shard that has the host. In production
         // the sharding policy resolves the host to one shard, but the
@@ -400,15 +407,14 @@ impl Frontier for InMemoryFrontier {
             }
             for host in &promoted {
                 shard_state.wake.remove(host);
-                // Only promote hosts that have URLs queued.
-                if shard_state
-                    .host_queue
-                    .get(host)
-                    .is_some_and(|q| !q.is_empty())
-                {
-                    shard_state.ready.push_back(host.clone());
-                    affected += 1;
-                }
+                // Push unconditionally, mirroring the real promoter: a
+                // host whose queue is momentarily empty (its URL is in
+                // flight) becomes a stale `ready` entry that `claim`
+                // skips. Combined with the claim-time safety wake-time,
+                // this lets a single tick both reclaim a crashed lease
+                // and re-promote the host, matching RedisFrontier.
+                shard_state.ready.push_back(host.clone());
+                affected += 1;
             }
 
             // Reclaim: scan inflight for lease_expiry <= now, re-push
@@ -458,14 +464,29 @@ fn pop_one_ready(
         let Some(url_id) = q.pop_front() else {
             continue;
         };
-        let entry = shard.urls.get(&url_id).cloned()?;
+        // A url_id in a host_queue must have a matching entry in the
+        // urls HASH. Violating that is a bug in this model, not a normal
+        // empty-queue case; fail loud to match the real impl (which errors
+        // out of claim) instead of silently dropping the URL.
+        let entry = shard
+            .urls
+            .get(&url_id)
+            .cloned()
+            .expect("BUG: host_queue referenced a url_id absent from the urls HASH");
+        let lease_expiry_ms = now_ms.saturating_add(lease_timeout_ms);
         shard.inflight.insert(
             url_id,
             InflightSlot {
                 host: host.clone(),
-                lease_expiry_ms: now_ms.saturating_add(lease_timeout_ms),
+                lease_expiry_ms,
             },
         );
+        // Claim-time safety wake-time: keeps the host out of `ready`
+        // until advance_wake overwrites it from the post-fetch path, and
+        // lets a single promoter tick re-promote the host if the worker
+        // crashes before acking (the reclaim pass picks up the URL in
+        // the same tick).
+        shard.wake.insert(host.clone(), lease_expiry_ms);
         return Some((url_id, entry, host));
     }
     None

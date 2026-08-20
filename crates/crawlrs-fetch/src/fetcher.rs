@@ -6,7 +6,8 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use crawlrs_core::{
-    CanonicalUrl, Error, FetchRequest, FetchResponse, Fetcher, ProxyOutcome, RedirectHop, Result,
+    CanonicalUrl, Error, FailureKind, FetchRequest, FetchResponse, Fetcher, ProxyOutcome,
+    RedirectHop, Result,
 };
 use futures::StreamExt;
 use wreq::tls::session::{Key, TlsSession, TlsSessionCache};
@@ -33,12 +34,24 @@ impl TlsSessionCache for NoopTlsSessionCache {
     }
 }
 
+/// [`Fetcher`] adapter backed by the `wreq` HTTP client. Holds a
+/// single reusable client plus the [`WreqFetcherConfig`] that governs
+/// timeouts, redirects, body caps, browser emulation, and proxy
+/// resolution for every fetch.
 pub struct WreqFetcher {
     client: Client,
     config: WreqFetcherConfig,
 }
 
 impl WreqFetcher {
+    /// Build a fetcher from `config`, constructing the underlying
+    /// `wreq` client once for reuse across all fetches.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Fetch`] when the proxy resolver supplies a CA
+    /// PEM bundle that fails to parse, or when the `wreq` client
+    /// itself fails to build.
     pub fn new(config: WreqFetcherConfig) -> Result<Self> {
         let mut client_builder = Client::builder()
             .connect_timeout(config.connect_timeout)
@@ -78,10 +91,6 @@ impl WreqFetcher {
 
         Ok(Self { client, config })
     }
-
-    pub fn config(&self) -> &WreqFetcherConfig {
-        &self.config
-    }
 }
 
 #[async_trait]
@@ -92,9 +101,12 @@ impl Fetcher for WreqFetcher {
     )]
     async fn fetch(&self, request: FetchRequest) -> Result<FetchResponse> {
         let kind_label = crate::classify::fetch_kind(&request.url);
-        let proxy_selection = self.config.proxy.resolve(&request).await?;
+        // Capture the clocks before proxy resolution so the reported
+        // duration covers a resolver that does I/O (a rotating resolver
+        // may hit Redis), not just the transport.
         let started_at = chrono::Utc::now();
         let start_instant = Instant::now();
+        let proxy_selection = self.config.proxy.resolve(&request).await?;
 
         let mut request_builder = self
             .client
@@ -158,13 +170,46 @@ impl Fetcher for WreqFetcher {
                 if let Some(advertised_len) = response.content_length()
                     && advertised_len > self.config.max_body_bytes
                 {
+                    // The proxy delivered a complete response; our size
+                    // policy rejected it, so report the status outcome
+                    // rather than penalizing the proxy for our cap.
+                    if let Some(active_proxy) = &proxy_selection {
+                        let proxy_outcome = classify_outcome(status_code);
+                        self.config.proxy.report(active_proxy, proxy_outcome).await;
+                    }
+                    metrics::counter!(
+                        crate::metrics::FETCH_ERRORS_TOTAL,
+                        "kind" => kind_label,
+                        "reason" => crate::metrics::ERROR_CAP_EXCEEDED,
+                    )
+                    .increment(1);
                     return Err(Error::Fetch(format!(
                         "response body content-length {advertised_len} exceeds cap {}",
                         self.config.max_body_bytes
                     )));
                 }
 
-                let response_body = read_body(response, self.config.max_body_bytes).await?;
+                let response_body =
+                    match read_body(response, self.config.max_body_bytes, &request.url).await {
+                        Ok(body) => body,
+                        Err(read_error) => {
+                            // A failure mid-body is a transport-level signal
+                            // for the proxy, matching the send-error arm.
+                            if let Some(active_proxy) = &proxy_selection {
+                                self.config
+                                    .proxy
+                                    .report(active_proxy, ProxyOutcome::NetworkError)
+                                    .await;
+                            }
+                            metrics::counter!(
+                                crate::metrics::FETCH_ERRORS_TOTAL,
+                                "kind" => kind_label,
+                                "reason" => crate::metrics::ERROR_BODY_READ,
+                            )
+                            .increment(1);
+                            return Err(read_error);
+                        }
+                    };
                 let body_elapsed = body_started_at.elapsed();
                 metrics::histogram!(
                     crate::metrics::FETCH_STAGE_SECONDS,
@@ -218,7 +263,8 @@ impl Fetcher for WreqFetcher {
                 })
             }
             Err(send_error) => {
-                let proxy_outcome = if send_error.is_timeout() {
+                let is_timeout = send_error.is_timeout();
+                let proxy_outcome = if is_timeout {
                     ProxyOutcome::Timeout
                 } else {
                     ProxyOutcome::NetworkError
@@ -226,7 +272,20 @@ impl Fetcher for WreqFetcher {
                 if let Some(active_proxy) = &proxy_selection {
                     self.config.proxy.report(active_proxy, proxy_outcome).await;
                 }
-                Err(Error::Fetch(format!("{send_error}")))
+                metrics::counter!(
+                    crate::metrics::FETCH_ERRORS_TOTAL,
+                    "kind" => kind_label,
+                    "reason" => if is_timeout {
+                        crate::metrics::ERROR_TIMEOUT
+                    } else {
+                        crate::metrics::ERROR_NETWORK
+                    },
+                )
+                .increment(1);
+                Err(Error::Transport {
+                    kind: classify_wreq_error(&send_error),
+                    message: format!("request to {} failed: {send_error}", request.url),
+                })
             }
         };
 
@@ -265,6 +324,26 @@ fn classify_outcome(status: u16) -> ProxyOutcome {
     }
 }
 
+/// Categorise a transport-level `wreq` error into a general
+/// [`FailureKind`] using wreq's typed predicates, which inspect the
+/// error's kind and source chain rather than its rendered text. Ordered
+/// specific-before-generic: a timeout is checked before the connection
+/// shapes so a connect that also timed out lands in `Timeout`, and a
+/// reset is distinguished from a plain connect failure even though both
+/// map to `ConnectReset`. Categories wreq can't distinguish (DNS,
+/// unreachable, resource exhaustion) fall to `Other`.
+fn classify_wreq_error(err: &wreq::Error) -> FailureKind {
+    if err.is_timeout() {
+        FailureKind::Timeout
+    } else if err.is_tls() {
+        FailureKind::TlsError
+    } else if err.is_connection_reset() || err.is_connect() {
+        FailureKind::ConnectReset
+    } else {
+        FailureKind::Other
+    }
+}
+
 /// Read the response body via `bytes_stream`, aborting once
 /// cumulative bytes cross `cap`. Bounded memory regardless of whether
 /// the server advertised a Content-Length - chunked-transfer
@@ -276,7 +355,7 @@ fn classify_outcome(status: u16) -> ProxyOutcome {
 /// 4 -> 8 -> 16 -> ... realloc chain on every fetch (the standard
 /// growth strategy doubles capacity, freeing each intermediate
 /// allocation, which both costs CPU and fragments the heap).
-async fn read_body(response: wreq::Response, cap: u64) -> Result<Bytes> {
+async fn read_body(response: wreq::Response, cap: u64, url: &CanonicalUrl) -> Result<Bytes> {
     let preset = response
         .headers()
         .get(wreq::header::CONTENT_LENGTH)
@@ -287,10 +366,13 @@ async fn read_body(response: wreq::Response, cap: u64) -> Result<Bytes> {
     let mut stream = response.bytes_stream();
     let mut buf = BytesMut::with_capacity(preset);
     while let Some(chunk_result) = stream.next().await {
-        let chunk = chunk_result.map_err(|err| Error::Fetch(format!("body read failed: {err}")))?;
+        let chunk = chunk_result.map_err(|err| Error::Transport {
+            kind: classify_wreq_error(&err),
+            message: format!("body read from {url} failed: {err}"),
+        })?;
         if (buf.len() as u64).saturating_add(chunk.len() as u64) > cap {
             return Err(Error::Fetch(format!(
-                "response body exceeds cap of {cap} bytes during streaming"
+                "response body from {url} exceeds cap of {cap} bytes during streaming"
             )));
         }
         buf.extend_from_slice(&chunk);

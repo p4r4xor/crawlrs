@@ -7,7 +7,9 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use chrono::Utc;
-use crawlrs_core::{CanonicalUrl, FetchResponse, ParsedDocument, Store, StoreRecord, content_hash};
+use crawlrs_core::{
+    CanonicalUrl, FetchResponse, ParsedDocument, RunId, Store, StoreRecord, content_hash,
+};
 use crawlrs_fakes::InMemoryStore;
 use crawlrs_store::MultiStore;
 
@@ -22,10 +24,11 @@ async fn fans_out_to_all_inner_stores_and_returns_primary_path() {
     .unwrap();
 
     let (doc, resp) = fixture("https://example.com/x", b"<html>x</html>");
+    let run_id = RunId::new("multi-run");
     let record = StoreRecord {
         doc: &doc,
         resp: &resp,
-        run_id: "multi-run",
+        run_id: &run_id,
         shard: 0,
         depth: 0,
         content_hash: content_hash(&resp.body),

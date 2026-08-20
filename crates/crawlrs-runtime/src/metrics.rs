@@ -114,7 +114,7 @@ pub fn register() {
         PIPELINE_PHASE_SECONDS,
         Unit::Seconds,
         "Per-phase wall-clock duration within one URL pipeline. \
-         Labelled by `phase`: politeness, attempting, fetch, extract, \
+         Labelled by `phase`: politeness, mark, fetch, parse, \
          store, commit. Stack the rate-of-sum / rate-of-count for a \
          'where does pipeline time go' breakdown; heatmap each phase \
          for tail-latency drift."

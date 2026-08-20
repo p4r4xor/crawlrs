@@ -14,7 +14,9 @@ use std::time::Duration;
 use arrow::array::{BinaryArray, Int32Array, Int64Array, StringArray};
 use bytes::Bytes;
 use chrono::Utc;
-use crawlrs_core::{CanonicalUrl, FetchResponse, ParsedDocument, Store, StoreRecord, content_hash};
+use crawlrs_core::{
+    CanonicalUrl, FetchResponse, ParsedDocument, RunId, Store, StoreRecord, content_hash,
+};
 use crawlrs_store::{ParquetStore, PathBuilder, RotationPolicy};
 use object_store::local::LocalFileSystem;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
@@ -22,7 +24,7 @@ use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 fn store_record<'a>(
     doc: &'a ParsedDocument,
     resp: &'a FetchResponse,
-    run_id: &'a str,
+    run_id: &'a RunId,
     shard: u32,
     depth: u32,
 ) -> StoreRecord<'a> {
@@ -73,13 +75,14 @@ async fn write_then_read_back_one_shard() {
 
     let (doc1, resp1) = fixture("https://example.com/a", b"<html>a</html>", "Page A");
     let (doc2, resp2) = fixture("https://example.com/b", b"<html>b</html>", "Page B");
+    let run_id = RunId::new("run-test");
 
     store
-        .write(&store_record(&doc1, &resp1, "run-test", 3, 0))
+        .write(&store_record(&doc1, &resp1, &run_id, 3, 0))
         .await
         .unwrap();
     store
-        .write(&store_record(&doc2, &resp2, "run-test", 3, 1))
+        .write(&store_record(&doc2, &resp2, &run_id, 3, 1))
         .await
         .unwrap();
     store.flush().await.unwrap();
@@ -168,12 +171,13 @@ async fn write_to_two_shards_produces_two_files() {
 
     let (doc_a, resp_a) = fixture("https://a.example/page", b"<html>a</html>", "A");
     let (doc_b, resp_b) = fixture("https://b.example/page", b"<html>b</html>", "B");
+    let run_id = RunId::new("run-test");
     store
-        .write(&store_record(&doc_a, &resp_a, "run-test", 0, 0))
+        .write(&store_record(&doc_a, &resp_a, &run_id, 0, 0))
         .await
         .unwrap();
     store
-        .write(&store_record(&doc_b, &resp_b, "run-test", 7, 0))
+        .write(&store_record(&doc_b, &resp_b, &run_id, 7, 0))
         .await
         .unwrap();
     store.flush().await.unwrap();
@@ -201,7 +205,8 @@ async fn rotation_by_row_count_closes_file_eagerly() {
     let store = ParquetStore::new(backend.clone(), paths, rotation);
 
     let (doc, resp) = fixture("https://example.com/p", b"<html>p</html>", "P");
-    let record = store_record(&doc, &resp, "run-test", 0, 0);
+    let run_id = RunId::new("run-test");
+    let record = store_record(&doc, &resp, &run_id, 0, 0);
 
     // Two writes hit the row cap; the second triggers rotation and uploads.
     store.write(&record).await.unwrap();

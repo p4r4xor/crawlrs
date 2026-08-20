@@ -29,7 +29,7 @@ use async_trait::async_trait;
 use bb8::Pool;
 use bb8_redis::RedisConnectionManager;
 use crawlrs_core::{
-    AttemptId, ClaimOutcome, CrawlScope, Error, Frontier, Result, ShardKey, ShardingPolicy,
+    AttemptId, ClaimOutcome, CrawlScope, Error, Frontier, Result, RunId, ShardKey, ShardingPolicy,
     SubmitBatchOutcome, SubmitOutcome, UrlEntry, UrlId, WorkerIdentity,
 };
 use thiserror::Error as ThisError;
@@ -54,8 +54,8 @@ pub enum RedisFrontierError {
     #[error("redis error: {0}")]
     Redis(#[from] redis::RedisError),
 
-    #[error("connection pool error: {0}")]
-    Pool(String),
+    #[error("connection pool error")]
+    Pool(#[from] bb8::RunError<redis::RedisError>),
 
     #[error("shard {got} is not owned by this frontier instance (owns {owned:?})")]
     ShardNotOwned { got: ShardKey, owned: Vec<ShardKey> },
@@ -66,8 +66,8 @@ pub enum RedisFrontierError {
     #[error("url has no host: {0}")]
     NoHost(String),
 
-    #[error("bloom: {0}")]
-    Bloom(String),
+    #[error("bloom")]
+    Bloom(#[from] bloom::BloomError),
 
     #[error("host_queue: {0}")]
     HostQueue(#[from] HostQueueError),
@@ -93,11 +93,11 @@ pub struct RedisFrontier {
     scripts: Scripts,
     lease_timeout: Duration,
     tick_batch_limit: u64,
-    /// Crawl scope: per-host URL caps used by `submit_batch` to
-    /// thread `[crawl].max_urls` into the Lua script. Depth caps
-    /// are read by the worker (not by the frontier); we hold the
-    /// whole scope so future per-batch scope queries don't need a
-    /// constructor change.
+    /// Per-host URL caps, threaded into the submit Lua script by
+    /// `submit_batch`. `CrawlScope` is the domain type that owns the
+    /// per-host cap resolution rule; the frontier reads it via
+    /// `max_urls_for` rather than reimplementing that lookup. Depth
+    /// caps live on the same type but are read by the worker, not here.
     crawl_scope: CrawlScope,
     /// Round-robin cursor for `claim` across owned shards.
     claim_cursor: AtomicUsize,
@@ -113,22 +113,42 @@ impl std::fmt::Debug for RedisFrontier {
     }
 }
 
+/// Construction inputs for [`RedisFrontier::new`].
+///
+/// Grouped into one struct so callers name each field at the call
+/// site; a flat positional argument list of the same width is easy to
+/// transpose (pool / policy / shards / run_id / bloom / scope).
+pub struct RedisFrontierParams {
+    pub pool: Pool<RedisConnectionManager>,
+    pub sharding_policy: Arc<dyn ShardingPolicy>,
+    pub owned_shards: Vec<ShardKey>,
+    pub run_id: RunId,
+    pub bloom_config: BloomConfig,
+    pub crawl_scope: CrawlScope,
+}
+
 impl RedisFrontier {
     /// Build a frontier bound to a specific run, sharding policy, and
     /// owned-shard list. Reserves the per-shard bloom filter via
     /// `BF.RESERVE` (idempotent across processes); a missing
     /// RedisBloom module surfaces a clear error here so deployments
     /// fail fast.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn new(
-        pool: Pool<RedisConnectionManager>,
-        sharding_policy: Arc<dyn ShardingPolicy>,
-        owned_shards: Vec<ShardKey>,
-        run_id: impl Into<String>,
-        bloom_config: BloomConfig,
-        crawl_scope: CrawlScope,
-    ) -> Result<Self> {
-        let keys = KeyPrefix::new(run_id);
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if an owned shard is out of range for the
+    /// policy's shard count, or if a per-shard bloom filter cannot be
+    /// reserved (for example the RedisBloom module is not loaded).
+    pub async fn new(params: RedisFrontierParams) -> Result<Self> {
+        let RedisFrontierParams {
+            pool,
+            sharding_policy,
+            owned_shards,
+            run_id,
+            bloom_config,
+            crawl_scope,
+        } = params;
+        let keys = KeyPrefix::new(run_id.as_str());
         let count = sharding_policy.shard_count();
         for &shard in &owned_shards {
             if shard >= count {
@@ -136,9 +156,10 @@ impl RedisFrontier {
             }
         }
         for &shard in &owned_shards {
-            bloom::reserve(&pool, &keys.seen(shard), bloom_config)
-                .await
-                .map_err(RedisFrontierError::Bloom)?;
+            match bloom::reserve(&pool, &keys.seen(shard), bloom_config).await {
+                Ok(()) | Err(bloom::BloomError::AlreadyExists) => {}
+                Err(e) => return Err(RedisFrontierError::Bloom(e).into()),
+            }
         }
         Ok(Self {
             pool,
@@ -153,11 +174,13 @@ impl RedisFrontier {
         })
     }
 
+    #[must_use]
     pub fn with_lease_timeout(mut self, lease: Duration) -> Self {
         self.lease_timeout = lease;
         self
     }
 
+    #[must_use]
     pub fn with_tick_batch_limit(mut self, limit: u64) -> Self {
         self.tick_batch_limit = limit;
         self
@@ -169,12 +192,13 @@ impl RedisFrontier {
 
     /// Refresh the per-shard `ready` / `inflight` length gauges +
     /// pool-pending gauge. Called by the bin's maintenance loop.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a Redis connection cannot be acquired or a
+    /// gauge-refresh command (`LLEN` / `ZCARD`) fails.
     pub async fn record_pending_metrics(&self) -> Result<()> {
-        let mut conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| RedisFrontierError::Pool(format!("{e:?}")))?;
+        let mut conn = self.pool.get().await.map_err(RedisFrontierError::Pool)?;
         for &shard in &self.owned_shards {
             let ready_len: i64 = redis::cmd("LLEN")
                 .arg(self.keys.ready(shard))
@@ -214,7 +238,10 @@ impl RedisFrontier {
         }
     }
 
-    fn shard_of(&self, entry: &UrlEntry) -> LocalResult<(ShardKey, String, UrlId)> {
+    /// Resolve `(shard, host, url_id)` for an entry, borrowing the host
+    /// from the entry so batch callers avoid one `String` allocation
+    /// per URL on the outbound-dispatch hot path.
+    fn shard_of<'e>(&self, entry: &'e UrlEntry) -> LocalResult<(ShardKey, &'e str, UrlId)> {
         let shard = self.sharding_policy.shard_key(&entry.url);
         if !self.owned_shards.contains(&shard) {
             return Err(RedisFrontierError::ShardNotOwned {
@@ -225,8 +252,7 @@ impl RedisFrontier {
         let host = entry
             .url
             .host()
-            .ok_or_else(|| RedisFrontierError::NoHost(entry.url.as_str().into()))?
-            .to_string();
+            .ok_or_else(|| RedisFrontierError::NoHost(entry.url.as_str().into()))?;
         let url_id = UrlId::from_canonical(&entry.url);
         Ok((shard, host, url_id))
     }
@@ -240,7 +266,7 @@ impl Frontier for RedisFrontier {
         let (shard, host, url_id) = self.shard_of(&entry).map_err(Error::from)?;
         let outcome = self
             .ops()
-            .submit(shard, url_id, &entry, &host, now_ms())
+            .submit(shard, url_id, &entry, host, now_ms())
             .await
             .map_err(RedisFrontierError::from)?;
         record_submit_outcome(outcome);
@@ -276,7 +302,7 @@ impl Frontier for RedisFrontier {
         // the map than we own. Pre-sizing skips the 0->4->8 grow chain.
         let mut shard_to_indices: std::collections::HashMap<ShardKey, Vec<usize>> =
             std::collections::HashMap::with_capacity(self.owned_shards.len().min(entries.len()));
-        let mut shard_hosts: Vec<String> = Vec::with_capacity(entries.len());
+        let mut shard_hosts: Vec<&str> = Vec::with_capacity(entries.len());
         let mut shard_url_ids: Vec<UrlId> = Vec::with_capacity(entries.len());
         for (i, entry) in entries.iter().enumerate() {
             let (shard, host, url_id) = self.shard_of(entry).map_err(Error::from)?;
@@ -290,7 +316,7 @@ impl Frontier for RedisFrontier {
         for (shard, indices) in &shard_to_indices {
             let mut items: Vec<SubmitItem<'_>> = Vec::with_capacity(indices.len());
             for &i in indices {
-                let host_str = shard_hosts[i].as_str();
+                let host_str = shard_hosts[i];
                 let max_urls = self
                     .crawl_scope
                     .max_urls_for(host_str)
@@ -354,11 +380,14 @@ impl Frontier for RedisFrontier {
         }
         let start = self.claim_cursor.fetch_add(1, Ordering::Relaxed) % n;
         let lease_ms = self.lease_timeout.as_millis() as i64;
+        // One timestamp for the whole sweep: fewer syscalls and a
+        // consistent lease-expiry basis across all shards in this claim.
+        let now = now_ms();
 
         let mut soonest_hint: Option<u64> = None;
         for offset in 0..n {
             let shard = self.owned_shards[(start + offset) % n];
-            match self.ops().claim(shard, now_ms(), lease_ms).await {
+            match self.ops().claim(shard, now, lease_ms).await {
                 Ok(ClaimRaw::Claimed {
                     url_id,
                     entry,
@@ -436,7 +465,7 @@ impl Frontier for RedisFrontier {
             .pool
             .get()
             .await
-            .map_err(|e| RedisFrontierError::Pool(format!("{e:?}")))
+            .map_err(RedisFrontierError::Pool)
             .map_err(Error::from)?;
         let mut total = 0usize;
         for &shard in &self.owned_shards {
@@ -472,7 +501,7 @@ impl Frontier for RedisFrontier {
     }
 
     #[tracing::instrument(skip(self), fields(host))]
-    async fn advance_wake(&self, host: &str, until: Instant) -> Result<()> {
+    async fn advance_wake(&self, host: &str, until_ms: u64) -> Result<()> {
         let started_at = Instant::now();
         // Resolve which shard owns this host. The trait surface
         // doesn't carry a shard parameter; we apply to every shard
@@ -484,9 +513,8 @@ impl Frontier for RedisFrontier {
             debug!(host, shard, "advance_wake on unowned shard; skipping");
             return Ok(());
         }
-        let until_ms = instant_to_ms(until);
         self.ops()
-            .advance_wake(shard, host, until_ms)
+            .advance_wake(shard, host, until_ms as i64)
             .await
             .map_err(RedisFrontierError::from)?;
         metrics::histogram!(
@@ -599,19 +627,6 @@ fn now_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as i64
-}
-
-fn instant_to_ms(when: Instant) -> i64 {
-    let now_inst = Instant::now();
-    let now_wall = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64;
-    if when <= now_inst {
-        return now_wall;
-    }
-    let delta_ms = when.duration_since(now_inst).as_millis() as i64;
-    now_wall.saturating_add(delta_ms)
 }
 
 fn ms_to_instant(target_wall_ms: u64) -> Instant {

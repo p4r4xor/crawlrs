@@ -32,16 +32,21 @@
 pub mod bloom;
 pub(crate) mod codec;
 pub mod frontier;
-pub mod host_queue;
+pub(crate) mod host_queue;
 pub mod keys;
 pub mod metrics;
 pub mod pool;
-pub mod promoter;
+pub(crate) mod promoter;
 
-pub use bloom::BloomConfig;
+pub use bloom::{BloomConfig, BloomError};
 pub use frontier::{
     DEFAULT_LEASE_TIMEOUT, DEFAULT_TICK_BATCH_LIMIT, RedisFrontier, RedisFrontierError,
+    RedisFrontierParams,
 };
+// `HostQueueError` is the `#[from]` source of `RedisFrontierError::HostQueue`,
+// so it is part of the public error contract even though its module is
+// crate-private.
+pub use host_queue::HostQueueError;
 pub use keys::KeyPrefix;
 pub use pool::{PoolSizeError, validate_pool_size};
 

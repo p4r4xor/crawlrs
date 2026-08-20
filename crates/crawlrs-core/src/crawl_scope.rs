@@ -45,9 +45,10 @@ impl CrawlScope {
 
     /// Effective depth cap for the host: per-domain override if
     /// set, else the global default, else `None` (unbounded).
+    #[must_use]
     pub fn depth_cap(&self, host: &str) -> Option<u32> {
-        if let Some(override_) = self.per_domain.get(host)
-            && let Some(d) = override_.max_depth
+        if let Some(domain_override) = self.per_domain.get(host)
+            && let Some(d) = domain_override.max_depth
         {
             return Some(d);
         }
@@ -59,9 +60,10 @@ impl CrawlScope {
     /// by the frontier (a per-host counter incremented in the
     /// submit Lua script); the runtime only reads the cap to
     /// pass it through.
+    #[must_use]
     pub fn max_urls_for(&self, host: &str) -> Option<u64> {
-        if let Some(override_) = self.per_domain.get(host)
-            && let Some(n) = override_.max_urls
+        if let Some(domain_override) = self.per_domain.get(host)
+            && let Some(n) = domain_override.max_urls
         {
             return Some(n);
         }

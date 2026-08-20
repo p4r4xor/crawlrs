@@ -168,6 +168,7 @@ impl CompositePoliteness {
 
     /// Snapshot of the bb8 pool state. Returns `None` when the
     /// composite was built with all-noop sub-impls (no Redis).
+    #[must_use]
     pub fn pool_state(&self) -> Option<bb8::State> {
         self.pool.as_ref().map(|p| p.state())
     }

@@ -5,12 +5,24 @@ resolver = "3"
 [profile.dev]
 debug = "line-tables-only"
 
+[profile.release]
+opt-level      = 3
+lto            = "fat"
+codegen-units  = 1
+strip          = true
+# No `panic = "abort"`: the runtime supervisor catches worker-task
+# panics via JoinSet and respawns them; aborting would escalate one
+# worker panic into a whole-process kill.
+
 [workspace.lints.rust]
 unsafe_code      = "deny"
 unreachable_pub  = "warn"
 
 [workspace.lints.clippy]
-all = { level = "warn", priority = -1 }
+all         = { level = "warn", priority = -1 }
+# Correctness lints are almost always real bugs; deny them outright.
+# (Default priority 0 overrides the `all = warn` group above.)
+correctness = "deny"
 
 [workspace.package]
 version     = "0.0.1"

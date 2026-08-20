@@ -178,9 +178,9 @@ mod tests {
 
     #[test]
     fn host_count_is_run_scoped() {
-        // Per-host quota counters reset between runs (the ADR's
-        // "counter is per-run" tradeoff); two run_ids must produce
-        // distinct keys for the same (shard, host).
+        // Per-host quota counters are per-run by design; quota does not
+        // carry across runs, so two run_ids must produce distinct keys
+        // for the same (shard, host).
         let a = KeyPrefix::new("run-a");
         let b = KeyPrefix::new("run-b");
         assert_ne!(a.host_count(0, "x.test"), b.host_count(0, "x.test"));

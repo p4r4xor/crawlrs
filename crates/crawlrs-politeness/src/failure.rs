@@ -31,6 +31,7 @@ use crate::config::BackoffPolicy;
 /// repeated. Capping at `max_backoff` is also applied to the
 /// server hint to bound malicious or buggy servers that send
 /// `Retry-After: 99999`.
+#[must_use]
 pub fn compute_backoff(
     consecutive_failures: u32,
     kind: FailureKind,

@@ -90,12 +90,18 @@ pub async fn crawl(args: CrawlArgs) -> Result<()> {
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
+    // Separate signal for retiring the HTTP listener. It fires only
+    // after the drain window (see the bridge task below) so the health
+    // probes keep answering during shutdown instead of the listener
+    // tearing down the instant SIGTERM lands.
+    let (http_shutdown_tx, http_shutdown_rx) = watch::channel(false);
+
     // HTTP host (axum) - separate task. Stops cleanly on shutdown.
     let http_handle = tokio::spawn(http::serve(
         config.server.listen.clone(),
         prom_handle,
         probes.clone(),
-        shutdown_rx.clone(),
+        http_shutdown_rx,
     ));
 
     // Maintenance loop - periodic gauge refresh.
@@ -118,12 +124,18 @@ pub async fn crawl(args: CrawlArgs) -> Result<()> {
     let bridge_handle = tokio::spawn(async move {
         let _ = shutdown_rx_for_bridge.changed().await;
         // Mark not-ready *before* draining: lets scrapers and load
-        // balancers stop hitting this pod while in-flight URLs finish.
+        // balancers observe /readyz = 503 and stop hitting this pod
+        // while in-flight URLs finish. The HTTP listener deliberately
+        // stays up through the drain window so those probes still get
+        // an answer.
         probes_for_shutdown.mark_not_ready();
         // 5s drain delay before signaling the worker pool to stop.
         // Lets in-flight scrapes / probe checks land.
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
         crawler_for_signal.shutdown();
+        // Drain window elapsed and workers signalled; now retire the
+        // HTTP listener.
+        let _ = http_shutdown_tx.send(true);
     });
 
     info!("worker pool starting");

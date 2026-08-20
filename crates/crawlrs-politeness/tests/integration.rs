@@ -12,7 +12,7 @@
 //! live in the frontier crate; tests for that behaviour live there.
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bb8::Pool;
 use bb8_redis::RedisConnectionManager;
@@ -82,9 +82,14 @@ async fn build(
         .unwrap()
 }
 
-/// Helper: extract `until` as a Duration-from-now from a `NextWake`.
-fn delay_from_now(until: Instant) -> Duration {
-    until.saturating_duration_since(Instant::now())
+/// Helper: express a `NextWake.until_ms` (wall-clock epoch-ms) as a
+/// Duration-from-now, saturating at zero for past wake times.
+fn delay_from_now(until_ms: u64) -> Duration {
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    Duration::from_millis(until_ms.saturating_sub(now_ms))
 }
 
 // ---------------------------------------------------------------------------
@@ -112,9 +117,11 @@ async fn circuit_opens_after_threshold_consecutive_failures() {
     let fx = fixture().await;
     let fake = Arc::new(FakeFetcher::default());
     let mut config = config_with(Duration::from_millis(100), false);
+    // Long backoff window so the breaker is still open when we check
+    // immediately after crossing the threshold.
     config.backoff = BackoffPolicy {
-        initial_backoff: Duration::from_millis(1),
-        max_backoff: Duration::from_millis(100),
+        initial_backoff: Duration::from_millis(60_000),
+        max_backoff: Duration::from_millis(60_000),
         multiplier: 1.0,
         failure_threshold: 3,
     };
@@ -130,6 +137,38 @@ async fn circuit_opens_after_threshold_consecutive_failures() {
         p.check(&u).await.unwrap(),
         PoliteDecision::Disallow(DisallowReason::Circuit),
     );
+}
+
+#[tokio::test]
+async fn circuit_half_opens_after_backoff_window_elapses() {
+    // Once the recorded backoff window passes, a tripped breaker allows
+    // a half-open probe fetch even without a success resetting the
+    // counter; recovery does not depend on an external reset.
+    let fx = fixture().await;
+    let fake = Arc::new(FakeFetcher::default());
+    let mut config = config_with(Duration::from_millis(100), false);
+    config.backoff = BackoffPolicy {
+        initial_backoff: Duration::from_millis(50),
+        max_backoff: Duration::from_millis(50),
+        multiplier: 1.0,
+        failure_threshold: 3,
+    };
+    let p = build(&fx.pool, fake.clone(), config).await;
+
+    let u = url("https://recovers.test/");
+    for _ in 0..3 {
+        p.record_failure(&u, FailureKind::TooManyRequests, None)
+            .await
+            .unwrap();
+    }
+    // Within the 50ms window the breaker is open.
+    assert_eq!(
+        p.check(&u).await.unwrap(),
+        PoliteDecision::Disallow(DisallowReason::Circuit),
+    );
+    // After it elapses, the probe is allowed.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(p.check(&u).await.unwrap(), PoliteDecision::Allow);
 }
 
 // ---------------------------------------------------------------------------
@@ -149,7 +188,7 @@ async fn record_fetch_returns_next_wake_at_now_plus_host_delay() {
 
     let plan = p.record_fetch(&url("https://a.test/")).await.unwrap();
     assert_eq!(plan.host, "a.test");
-    let delay = delay_from_now(plan.until);
+    let delay = delay_from_now(plan.until_ms);
     assert!(
         delay >= Duration::from_millis(4_500) && delay <= Duration::from_millis(5_000),
         "expected NextWake ~5s out; got {delay:?}",
@@ -172,7 +211,7 @@ async fn per_domain_override_uses_custom_host_delay() {
 
     let p = build(&fx.pool, fake.clone(), config).await;
     let plan = p.record_fetch(&url("https://slow.test/")).await.unwrap();
-    let delay = delay_from_now(plan.until);
+    let delay = delay_from_now(plan.until_ms);
     assert!(
         delay >= Duration::from_millis(4_500),
         "override should produce ~5s delay, not the default 100ms; got {delay:?}",
@@ -237,7 +276,7 @@ async fn record_failure_returns_next_wake_with_backoff() {
         )
         .await
         .unwrap();
-    let delay = delay_from_now(plan.until);
+    let delay = delay_from_now(plan.until_ms);
     assert!(
         delay >= Duration::from_millis(500) && delay <= Duration::from_millis(1_500),
         "first 429 should produce ~1s backoff; got {delay:?}",
@@ -266,8 +305,8 @@ async fn consecutive_failures_grow_next_wake() {
         .record_failure(&u, FailureKind::TooManyRequests, None)
         .await
         .unwrap();
-    let first_ms = delay_from_now(first.until).as_millis() as u64;
-    let second_ms = delay_from_now(second.until).as_millis() as u64;
+    let first_ms = delay_from_now(first.until_ms).as_millis() as u64;
+    let second_ms = delay_from_now(second.until_ms).as_millis() as u64;
     assert!(
         second_ms > first_ms,
         "backoff should grow across consecutive failures; first={first_ms}ms second={second_ms}ms",
@@ -297,7 +336,7 @@ async fn record_failure_honors_retry_after_as_floor() {
         )
         .await
         .unwrap();
-    let delay = delay_from_now(plan.until);
+    let delay = delay_from_now(plan.until_ms);
     assert!(
         delay >= Duration::from_secs(9) && delay <= Duration::from_secs(11),
         "server Retry-After 10s should be honored as the floor; got {delay:?}",

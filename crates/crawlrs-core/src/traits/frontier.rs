@@ -57,6 +57,11 @@ pub enum ClaimOutcome {
     Empty,
 }
 
+// Lock the boxed-`Claimed`-variant size optimization: the enum rides
+// in every `Result<ClaimOutcome>` on the hot claim path, so a future
+// change that regresses its footprint fails the build.
+const _: () = assert!(std::mem::size_of::<ClaimOutcome>() <= 48);
+
 /// Outcome of one `Frontier::submit` call.
 ///
 /// Two states mirror the Lua-script return: "URL accepted into the
@@ -110,6 +115,7 @@ impl SubmitBatchOutcome {
     /// Count of URLs rejected by the per-host quota. Sugar over
     /// `self.rejected_urls.len()`; lets count-only consumers
     /// (dashboards, seed-load progress) ignore the per-URL payload.
+    #[must_use]
     pub fn rejected_count(&self) -> usize {
         self.rejected_urls.len()
     }
@@ -161,17 +167,18 @@ pub trait Frontier: Send + Sync {
     /// details in the metrics surface).
     async fn len(&self) -> Result<usize>;
 
-    /// Update a host's wake time. Idempotent under XX|GT semantics:
-    /// only writes if the new `until` is strictly later than any
-    /// existing value, so the runtime can apply politeness plans
-    /// without worrying about concurrent worker writes from a fan-out
-    /// of the same host.
+    /// Update a host's wake time. `until_ms` is wall-clock ms since
+    /// the Unix epoch (same domain as `Clock::now_ms`). Idempotent
+    /// under XX|GT semantics: only writes if the new `until_ms` is
+    /// strictly later than any existing value, so the runtime can
+    /// apply politeness plans without worrying about concurrent worker
+    /// writes from a fan-out of the same host.
     ///
     /// Called by the runtime after `Politeness::record_fetch` and
     /// `Politeness::record_failure` return a [`NextWake`].
     ///
     /// [`NextWake`]: crate::types::NextWake
-    async fn advance_wake(&self, host: &str, until: Instant) -> Result<()>;
+    async fn advance_wake(&self, host: &str, until_ms: u64) -> Result<()>;
 
     /// Confirm a previously-claimed URL has been fully processed.
     ///

@@ -24,7 +24,10 @@ pub fn register() {
     describe_gauge!(
         METADATA_POOL_PENDING,
         Unit::Count,
-        "Number of bb8/sqlx connection-acquire requests waiting for a free connection."
+        "Currently-outstanding (checked-out) sqlx pool connections: pool \
+         size minus idle. sqlx does not expose the waiter count, so this \
+         is the closest available proxy for pool pressure. (The metric \
+         name is retained for dashboard compatibility.)"
     );
     describe_gauge!(
         DLQ_SIZE,

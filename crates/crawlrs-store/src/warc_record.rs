@@ -22,7 +22,7 @@
 
 use std::io::Write;
 
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use crawlrs_core::StoreRecord;
 use flate2::Compression;
 use flate2::write::GzEncoder;
@@ -37,9 +37,14 @@ pub(crate) fn encode_warcinfo(run_id: &str) -> Vec<u8> {
     let now = Utc::now();
 
     let body = format!(
-        "software: crawlrs/0.0.1\r\n\
-         format: WARC File Format 1.1\r\n\
-         run-id: {run_id}\r\n",
+        concat!(
+            "software: crawlrs/",
+            env!("CARGO_PKG_VERSION"),
+            "\r\n\
+             format: WARC File Format 1.1\r\n\
+             run-id: {run_id}\r\n",
+        ),
+        run_id = run_id,
     );
     let header = format!(
         "WARC/1.1\r\n\
@@ -116,11 +121,4 @@ fn gzip(bytes: &[u8]) -> Vec<u8> {
 /// fully spec-conformant.
 fn new_record_id() -> String {
     format!("<urn:crawlrs:{}>", cuid2::create_id())
-}
-
-/// Unused outside tests today; exposed so a future revisit-record
-/// builder has the same date format helper.
-#[allow(dead_code)]
-pub fn warc_date(ts: DateTime<Utc>) -> String {
-    ts.format(WARC_DATE_FMT).to_string()
 }

@@ -25,7 +25,7 @@ async fn env_resolver_reads_https_proxy() {
     unsafe {
         std::env::set_var("HTTPS_PROXY", "http://proxy.example:8080");
     }
-    let r = EnvProxyResolver::new();
+    let r = EnvProxyResolver::new().unwrap();
     let sel = r.resolve(&req()).await.unwrap();
     assert_eq!(sel.unwrap().url, "http://proxy.example:8080");
     unsafe {
@@ -38,11 +38,13 @@ async fn env_resolver_reads_https_proxy() {
 
 #[tokio::test]
 async fn gateway_returns_url_and_headers() {
-    let r = GatewayProxyResolver::new("http://gw.example:8123").with_header_fn(|_req| {
-        let mut h = HashMap::new();
-        h.insert("x-hma-algorithm".into(), "random".into());
-        h
-    });
+    let r = GatewayProxyResolver::new("http://gw.example:8123")
+        .unwrap()
+        .with_header_fn(|_req| {
+            let mut h = HashMap::new();
+            h.insert("x-hma-algorithm".into(), "random".into());
+            h
+        });
     let sel = r.resolve(&req()).await.unwrap().unwrap();
     assert_eq!(sel.url, "http://gw.example:8123");
     assert_eq!(sel.extra_headers.get("x-hma-algorithm").unwrap(), "random");
@@ -51,6 +53,8 @@ async fn gateway_returns_url_and_headers() {
 #[tokio::test]
 async fn gateway_exposes_ca_pem() {
     let pem = b"-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----\n";
-    let r = GatewayProxyResolver::new("http://gw:1").with_ca_pem(pem.to_vec());
+    let r = GatewayProxyResolver::new("http://gw:1")
+        .unwrap()
+        .with_ca_pem(pem.to_vec());
     assert_eq!(r.trusted_ca_pem().unwrap(), pem);
 }

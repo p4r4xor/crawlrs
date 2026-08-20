@@ -34,7 +34,6 @@ pub mod backoff_tracker;
 pub mod composite;
 pub mod config;
 pub mod failure;
-pub mod keys;
 pub mod metrics;
 pub mod noop;
 pub mod robots;
@@ -42,9 +41,9 @@ pub mod robots_checker;
 pub mod wake_planner;
 
 pub(crate) mod error;
+pub(crate) mod keys;
 
 pub use composite::CompositePoliteness;
 pub use config::{BackoffPolicy, PolitenessConfig, PolitenessOverride};
 pub use failure::compute_backoff;
-pub use keys::KeyPrefix;
 pub use noop::{NoopBackoffTracker, NoopRobotsChecker, NoopWakePlanner};

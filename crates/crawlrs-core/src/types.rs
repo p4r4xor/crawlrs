@@ -17,7 +17,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, SystemTime};
 
 use smallvec::SmallVec;
 
@@ -25,6 +25,7 @@ use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::run_id::RunId;
 use crate::url::CanonicalUrl;
 
 /// Stable identity for one worker.
@@ -174,7 +175,10 @@ impl fmt::Display for UrlId {
 #[derive(Debug, Clone)]
 pub struct NextWake {
     pub host: String,
-    pub until: Instant,
+    /// Wall-clock ms since the Unix epoch; same domain as
+    /// `Clock::now_ms`. Portable across processes and serializable,
+    /// unlike a process-local `Instant`.
+    pub until_ms: u64,
 }
 
 /// One item in the frontier: "this URL is queued to be fetched."
@@ -255,6 +259,11 @@ pub struct FetchResponse {
     pub duration: Duration,
 }
 
+// Lock the boxed-headers size optimization: a future field addition
+// that regresses the struct's footprint (and every future capturing it
+// across awaits) fails the build instead of silently bloating.
+const _: () = assert!(std::mem::size_of::<FetchResponse>() <= 912);
+
 /// Output of `Parser::parse`.
 ///
 /// `text` is the extracted readable text (LanceDB-bound). `outbound_links`
@@ -279,6 +288,11 @@ pub struct ParsedDocument {
     pub fetched_at: DateTime<Utc>,
 }
 
+// Lock the boxed text/links size optimization: regressing the
+// footprint fails the build rather than quietly enlarging every future
+// that captures a `ParsedDocument`.
+const _: () = assert!(std::mem::size_of::<ParsedDocument>() <= 144);
+
 /// Input to `Store::write`. Bundles fetch + parse output + per-run
 /// context into one parameter object so the trait surface is one
 /// argument and impls can populate any column they need.
@@ -297,7 +311,7 @@ pub struct ParsedDocument {
 pub struct StoreRecord<'a> {
     pub doc: &'a ParsedDocument,
     pub resp: &'a FetchResponse,
-    pub run_id: &'a str,
+    pub run_id: &'a RunId,
     pub shard: u32,
     pub depth: u32,
     pub content_hash: u64,

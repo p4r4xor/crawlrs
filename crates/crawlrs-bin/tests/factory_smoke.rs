@@ -53,11 +53,11 @@ async fn factory_builds_against_real_backends() {
     let config = CrawlrsConfig {
         run_id: "factory-test".to_string(),
         redis: RedisConfig {
-            url: format!("redis://127.0.0.1:{redis_port}"),
+            url: format!("redis://127.0.0.1:{redis_port}").into(),
             pool_size: 8,
         },
         postgres: PostgresConfig {
-            url: format!("postgres://postgres:postgres@127.0.0.1:{pg_port}/postgres"),
+            url: format!("postgres://postgres:postgres@127.0.0.1:{pg_port}/postgres").into(),
             pool_size: 4,
         },
         fetch: FetchConfig {

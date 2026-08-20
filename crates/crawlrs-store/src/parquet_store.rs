@@ -2,12 +2,14 @@
 //! RecordBatch → Parquet file (zstd, default row groups) → object_store
 //! backend.
 //!
-//! Concurrency model: one `Mutex<HashMap<shard, ActiveFile>>`. Writes
-//! buffer rows under the lock (cheap), then check rotation triggers.
-//! When rotation fires, the active file is removed from the map, the
-//! lock is released, and the heavy work (build columnar arrays, encode
-//! Parquet, upload to object_store) happens off-lock. Per-shard state
-//! means the path layout's `shard=` partition stays coherent.
+//! Concurrency model: one `std::sync::Mutex<HashMap<shard, ActiveFile>>`.
+//! Writes buffer rows under the lock (cheap), then check rotation
+//! triggers. The guard is always dropped before any `.await`, so a
+//! synchronous mutex is the right fit; a `tokio` mutex would only add
+//! cost. When rotation fires, the active file is removed from the map,
+//! the lock is released, and the heavy work (build columnar arrays,
+//! encode Parquet, upload to object_store) happens off-lock. Per-shard
+//! state means the path layout's `shard=` partition stays coherent.
 //!
 //! Schema is built once at construction and reused. Headers are
 //! encoded as a JSON string column for v1 simplicity (DuckDB's
@@ -16,7 +18,7 @@
 //! it.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use arrow::array::{
@@ -32,7 +34,6 @@ use object_store::{ObjectStore, ObjectStoreExt};
 use parquet::arrow::ArrowWriter;
 use parquet::basic::{Compression, ZstdLevel};
 use parquet::file::properties::WriterProperties;
-use tokio::sync::Mutex;
 use tracing::{debug, instrument};
 
 use crate::error::StoreError;
@@ -52,7 +53,6 @@ pub struct ParquetStore {
 /// pre-encoded (as `OwnedRow`) so the lock-held path is O(push); the
 /// expensive Arrow / Parquet work happens after the lock is released.
 struct ActiveFile {
-    seq: u32,
     window_start_ms: u64,
     raw_bytes: usize,
     opened_at: Instant,
@@ -98,7 +98,7 @@ impl ParquetStore {
     }
 
     async fn flush_one(&self, shard: u32, file: ActiveFile) -> Result<Path> {
-        let path = self.paths.parquet(shard, file.window_start_ms, file.seq);
+        let path = self.paths.parquet(shard, file.window_start_ms);
         debug!(
             target = %path,
             rows = file.rows.len(),
@@ -123,51 +123,60 @@ impl Store for ParquetStore {
         let row = OwnedRow::from_record(record);
         let raw_bytes = row.body.len();
 
-        // Lock state, push the row, decide rotation.
-        let mut state = self.state.lock().await;
-        let entry = state.entry(record.shard).or_insert_with(|| ActiveFile {
-            seq: 0,
-            window_start_ms: chrono::Utc::now().timestamp_millis() as u64,
-            raw_bytes: 0,
-            opened_at: Instant::now(),
-            rows: Vec::new(),
-        });
-        entry.rows.push(row);
-        entry.raw_bytes += raw_bytes;
-
-        let planned_path = self
-            .paths
-            .parquet(record.shard, entry.window_start_ms, entry.seq);
-        let should_rotate =
-            self.rotation
-                .should_rotate(entry.rows.len(), entry.raw_bytes, entry.opened_at);
-        let buffer_bytes_now = entry.raw_bytes;
         let shard_label = record.shard.to_string();
 
-        let result = if should_rotate {
-            let active = state.remove(&record.shard).expect("just inserted");
-            drop(state);
-            metrics::counter!(
-                crate::metrics::STORE_ROTATION_TOTAL,
-                "format" => crate::metrics::FORMAT_PARQUET,
-                "shard" => shard_label.clone(),
-            )
-            .increment(1);
-            metrics::gauge!(
-                crate::metrics::STORE_BUFFER_BYTES,
-                "format" => crate::metrics::FORMAT_PARQUET,
-                "shard" => shard_label.clone(),
-            )
-            .set(0.0);
+        // Lock state, push the row, decide rotation, and emit the sync
+        // buffer/rotation metrics; the guard is dropped at the end of
+        // this block (before any `.await`, since it is a `!Send`
+        // synchronous mutex guard). The block yields the planned path
+        // plus the file to flush when rotation fires.
+        let (planned_path, file_to_flush) = {
+            let mut state = self.state.lock().expect("parquet state mutex poisoned");
+            let entry = state.entry(record.shard).or_insert_with(|| ActiveFile {
+                window_start_ms: chrono::Utc::now().timestamp_millis() as u64,
+                raw_bytes: 0,
+                opened_at: Instant::now(),
+                rows: Vec::new(),
+            });
+            entry.rows.push(row);
+            entry.raw_bytes += raw_bytes;
+
+            let planned_path = self.paths.parquet(record.shard, entry.window_start_ms);
+            let should_rotate =
+                self.rotation
+                    .should_rotate(entry.rows.len(), entry.raw_bytes, entry.opened_at);
+            let buffer_bytes_now = entry.raw_bytes;
+
+            let file_to_flush = if should_rotate {
+                let active = state.remove(&record.shard).expect("just inserted");
+                metrics::counter!(
+                    crate::metrics::STORE_ROTATION_TOTAL,
+                    "format" => crate::metrics::FORMAT_PARQUET,
+                    "shard" => shard_label.clone(),
+                )
+                .increment(1);
+                metrics::gauge!(
+                    crate::metrics::STORE_BUFFER_BYTES,
+                    "format" => crate::metrics::FORMAT_PARQUET,
+                    "shard" => shard_label.clone(),
+                )
+                .set(0.0);
+                Some(active)
+            } else {
+                metrics::gauge!(
+                    crate::metrics::STORE_BUFFER_BYTES,
+                    "format" => crate::metrics::FORMAT_PARQUET,
+                    "shard" => shard_label.clone(),
+                )
+                .set(buffer_bytes_now as f64);
+                None
+            };
+            (planned_path, file_to_flush)
+        };
+
+        let result = if let Some(active) = file_to_flush {
             self.flush_one(record.shard, active).await
         } else {
-            drop(state);
-            metrics::gauge!(
-                crate::metrics::STORE_BUFFER_BYTES,
-                "format" => crate::metrics::FORMAT_PARQUET,
-                "shard" => shard_label.clone(),
-            )
-            .set(buffer_bytes_now as f64);
             Ok(planned_path.clone())
         };
 
@@ -184,7 +193,7 @@ impl Store for ParquetStore {
     async fn flush(&self) -> Result<()> {
         // Drain all active files atomically, then upload after releasing the lock.
         let actives: Vec<(u32, ActiveFile)> = {
-            let mut state = self.state.lock().await;
+            let mut state = self.state.lock().expect("parquet state mutex poisoned");
             state.drain().collect()
         };
         for (shard, file) in actives {
@@ -202,8 +211,8 @@ impl OwnedRow {
             .iter()
             .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
             .map(|(_, v)| v.clone());
-        let headers_json =
-            serde_json::to_string(&record.resp.headers).unwrap_or_else(|_| "{}".to_string());
+        let headers_json = serde_json::to_string(&record.resp.headers)
+            .expect("BUG: header pairs always serialize");
         Self {
             url: record.doc.url.as_str().to_string(),
             final_url: record.resp.url.as_str().to_string(),
@@ -265,14 +274,13 @@ fn build_schema() -> Arc<Schema> {
 fn encode(rows: &[OwnedRow], schema: &Arc<Schema>, props: &WriterProperties) -> Result<Vec<u8>> {
     let batch = build_batch(rows, schema).map_err(StoreError::from)?;
 
-    let buffer = SharedBuffer::default();
-    let writer_buffer = buffer.clone();
-    let mut writer = ArrowWriter::try_new(writer_buffer, schema.clone(), Some(props.clone()))
+    // The writer owns a plain `Vec<u8>` sink; `into_inner` finalizes the
+    // Parquet footer and hands the buffer back. Encoding is synchronous
+    // and single-owner, so no shared/locked buffer is needed.
+    let mut writer = ArrowWriter::try_new(Vec::new(), schema.clone(), Some(props.clone()))
         .map_err(StoreError::from)?;
     writer.write(&batch).map_err(StoreError::from)?;
-    writer.close().map_err(StoreError::from)?;
-
-    let bytes = buffer.take_bytes();
+    let bytes = writer.into_inner().map_err(StoreError::from)?;
     Ok(bytes)
 }
 
@@ -346,32 +354,4 @@ fn build_batch(
             depth,
         ],
     )
-}
-
-/// Shared `Vec<u8>` adapter so an `ArrowWriter` can stream into a buffer
-/// the caller holds an Arc to. After `writer.close()` the bytes are
-/// retrievable via `take_bytes` (consuming the last Arc clone).
-#[derive(Clone, Default)]
-struct SharedBuffer(Arc<StdMutex<Vec<u8>>>);
-
-impl SharedBuffer {
-    fn take_bytes(self) -> Vec<u8> {
-        // Try to unwrap; if the Arc is still shared (writer didn't drop yet),
-        // fall back to cloning the contents. The fallback path goes
-        // through std `Mutex::into_inner` to drain the cloned bytes.
-        match Arc::try_unwrap(self.0) {
-            Ok(mutex) => mutex.into_inner().expect("SharedBuffer mutex was poisoned"),
-            Err(arc) => arc.lock().expect("SharedBuffer mutex was poisoned").clone(),
-        }
-    }
-}
-
-impl std::io::Write for SharedBuffer {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().unwrap().extend_from_slice(buf);
-        Ok(buf.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
 }

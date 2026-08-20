@@ -14,7 +14,9 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use chrono::Utc;
-use crawlrs_core::{CanonicalUrl, FetchResponse, ParsedDocument, Store, StoreRecord, content_hash};
+use crawlrs_core::{
+    CanonicalUrl, FetchResponse, ParsedDocument, RunId, Store, StoreRecord, content_hash,
+};
 use crawlrs_store::{PathBuilder, RotationPolicy, WarcStore};
 use flate2::read::MultiGzDecoder;
 use object_store::local::LocalFileSystem;
@@ -47,7 +49,7 @@ fn fixture(url_str: &str, body: &[u8]) -> (ParsedDocument, FetchResponse) {
 fn record<'a>(
     doc: &'a ParsedDocument,
     resp: &'a FetchResponse,
-    run_id: &'a str,
+    run_id: &'a RunId,
     shard: u32,
 ) -> StoreRecord<'a> {
     StoreRecord {
@@ -69,13 +71,14 @@ async fn warc_roundtrip_one_shard() {
 
     let (doc1, resp1) = fixture("https://example.com/alpha", b"<html>alpha</html>");
     let (doc2, resp2) = fixture("https://example.com/beta", b"<html>beta</html>");
+    let run_id = RunId::new("warc-run");
 
     store
-        .write(&record(&doc1, &resp1, "warc-run", 2))
+        .write(&record(&doc1, &resp1, &run_id, 2))
         .await
         .unwrap();
     store
-        .write(&record(&doc2, &resp2, "warc-run", 2))
+        .write(&record(&doc2, &resp2, &run_id, 2))
         .await
         .unwrap();
     store.flush().await.unwrap();
@@ -127,12 +130,13 @@ async fn warc_two_shards_two_files() {
 
     let (doc_a, resp_a) = fixture("https://a.example/", b"<html>a</html>");
     let (doc_b, resp_b) = fixture("https://b.example/", b"<html>b</html>");
+    let run_id = RunId::new("warc-run");
     store
-        .write(&record(&doc_a, &resp_a, "warc-run", 0))
+        .write(&record(&doc_a, &resp_a, &run_id, 0))
         .await
         .unwrap();
     store
-        .write(&record(&doc_b, &resp_b, "warc-run", 7))
+        .write(&record(&doc_b, &resp_b, &run_id, 7))
         .await
         .unwrap();
     store.flush().await.unwrap();
@@ -160,7 +164,8 @@ async fn warc_rotates_on_row_cap() {
     let store = WarcStore::new(backend, paths, rotation, "warc-run");
 
     let (doc, resp) = fixture("https://example.com/p", b"<html>p</html>");
-    let r = record(&doc, &resp, "warc-run", 0);
+    let run_id = RunId::new("warc-run");
+    let r = record(&doc, &resp, &run_id, 0);
     store.write(&r).await.unwrap();
     store.write(&r).await.unwrap();
 

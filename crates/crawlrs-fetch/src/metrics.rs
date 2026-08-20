@@ -12,6 +12,13 @@ pub const FETCH_SECONDS: &str = "crawlrs_fetch_seconds";
 pub const FETCH_STAGE_SECONDS: &str = "crawlrs_fetch_stage_seconds";
 pub const FETCH_RESPONSE_TOTAL: &str = "crawlrs_fetch_response_total";
 pub const FETCH_BODY_BYTES: &str = "crawlrs_fetch_body_bytes";
+pub const FETCH_ERRORS_TOTAL: &str = "crawlrs_fetch_errors_total";
+
+/// `reason` label values for [`FETCH_ERRORS_TOTAL`].
+pub const ERROR_TIMEOUT: &str = "timeout";
+pub const ERROR_NETWORK: &str = "network";
+pub const ERROR_CAP_EXCEEDED: &str = "cap_exceeded";
+pub const ERROR_BODY_READ: &str = "body_read";
 
 pub fn register() {
     describe_histogram!(
@@ -31,6 +38,13 @@ pub fn register() {
     describe_counter!(
         FETCH_RESPONSE_TOTAL,
         "HTTP responses received, bucketed by status class (2xx/3xx/4xx/5xx)."
+    );
+    describe_counter!(
+        FETCH_ERRORS_TOTAL,
+        "Failed fetches (no usable response), labelled by `kind` (page / \
+         robots) and `reason` (timeout / network / cap_exceeded / \
+         body_read). Distinguishes a failing fetcher from an idle one, \
+         which the success-only histograms cannot."
     );
     describe_histogram!(
         FETCH_BODY_BYTES,

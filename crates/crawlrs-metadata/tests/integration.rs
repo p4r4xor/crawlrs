@@ -7,7 +7,8 @@
 use std::sync::{Arc, Mutex};
 
 use crawlrs_core::{
-    AttemptId, CanonicalUrl, Error, FailureKind, MetadataStore, Outbox, SuccessRecord, UrlStatus,
+    AttemptId, CanonicalUrl, Error, FailureKind, MetadataStore, Outbox, RunId, SuccessRecord,
+    UrlStatus,
 };
 use crawlrs_metadata::PostgresMetadataStore;
 use sqlx::PgPool;
@@ -78,7 +79,10 @@ async fn mark_attempting_creates_row_with_in_progress_status() {
     let url = unique_url("attempting");
     let rid = run_id();
 
-    store.mark_attempting(&url, &rid, 0).await.unwrap();
+    store
+        .mark_attempting(&url, &RunId::new(rid.clone()), 0)
+        .await
+        .unwrap();
 
     let m = store
         .get(&url)
@@ -99,7 +103,10 @@ async fn mark_attempting_preserves_discovered_at_on_re_attempt() {
     let store = PostgresMetadataStore::with_pool(fx.pool.clone());
     let url = unique_url("rediscovery");
 
-    store.mark_attempting(&url, "run-1", 0).await.unwrap();
+    store
+        .mark_attempting(&url, &RunId::new("run-1"), 0)
+        .await
+        .unwrap();
     let first = store.get(&url).await.unwrap().unwrap();
     let original_discovered_at = first.discovered_at;
 
@@ -107,7 +114,10 @@ async fn mark_attempting_preserves_discovered_at_on_re_attempt() {
     // microsecond resolution.
     tokio::time::sleep(std::time::Duration::from_millis(5)).await;
 
-    store.mark_attempting(&url, "run-2", 1).await.unwrap();
+    store
+        .mark_attempting(&url, &RunId::new("run-2"), 1)
+        .await
+        .unwrap();
     let second = store.get(&url).await.unwrap().unwrap();
 
     assert_eq!(
@@ -127,7 +137,10 @@ async fn mark_succeeded_records_blob_and_content_hash() {
     let fx = fixture().await;
     let store = PostgresMetadataStore::with_pool(fx.pool.clone());
     let url = unique_url("succeeded");
-    store.mark_attempting(&url, "run-1", 0).await.unwrap();
+    store
+        .mark_attempting(&url, &RunId::new("run-1"), 0)
+        .await
+        .unwrap();
 
     let attempt = AttemptId::new("attempt-1");
     store
@@ -153,7 +166,10 @@ async fn mark_failed_increments_retry_count() {
     let fx = fixture().await;
     let store = PostgresMetadataStore::with_pool(fx.pool.clone());
     let url = unique_url("failing");
-    store.mark_attempting(&url, "run-1", 0).await.unwrap();
+    store
+        .mark_attempting(&url, &RunId::new("run-1"), 0)
+        .await
+        .unwrap();
 
     let count1 = store
         .mark_failed(&url, FailureKind::TooManyRequests)
@@ -182,7 +198,10 @@ async fn mark_succeeded_resets_retry_count() {
     let fx = fixture().await;
     let store = PostgresMetadataStore::with_pool(fx.pool.clone());
     let url = unique_url("recovers");
-    store.mark_attempting(&url, "run-1", 0).await.unwrap();
+    store
+        .mark_attempting(&url, &RunId::new("run-1"), 0)
+        .await
+        .unwrap();
     store.mark_failed(&url, FailureKind::Timeout).await.unwrap();
     store.mark_failed(&url, FailureKind::Timeout).await.unwrap();
 
@@ -208,7 +227,10 @@ async fn mark_permanently_failed_lands_in_dlq() {
     let fx = fixture().await;
     let store = PostgresMetadataStore::with_pool(fx.pool.clone());
     let url = unique_url("doomed");
-    store.mark_attempting(&url, "run-1", 0).await.unwrap();
+    store
+        .mark_attempting(&url, &RunId::new("run-1"), 0)
+        .await
+        .unwrap();
     store
         .mark_failed(&url, FailureKind::ConnectReset)
         .await
@@ -239,7 +261,10 @@ async fn get_returns_state_from_prior_run() {
     let url = unique_url("cross-run");
 
     // Run 1 finishes.
-    store.mark_attempting(&url, "run-1", 0).await.unwrap();
+    store
+        .mark_attempting(&url, &RunId::new("run-1"), 0)
+        .await
+        .unwrap();
     let attempt = AttemptId::new("attempt-1");
     store
         .mark_succeeded(&SuccessRecord {
@@ -265,7 +290,10 @@ async fn history_records_each_transition() {
     let store = PostgresMetadataStore::with_pool(fx.pool.clone());
     let url = unique_url("history");
 
-    store.mark_attempting(&url, "run-1", 0).await.unwrap();
+    store
+        .mark_attempting(&url, &RunId::new("run-1"), 0)
+        .await
+        .unwrap();
     store.mark_failed(&url, FailureKind::Timeout).await.unwrap();
     store.mark_failed(&url, FailureKind::Timeout).await.unwrap();
     let attempt = AttemptId::new("attempt-1");
@@ -286,7 +314,7 @@ async fn history_records_each_transition() {
             WHERE m.url = $1",
     )
     .bind(url.as_str())
-    .fetch_one(store.pool())
+    .fetch_one(&fx.pool)
     .await
     .unwrap();
     // attempted + failed + failed + succeeded = 4 events.
@@ -328,7 +356,10 @@ async fn publish_recording(
 /// not the outbox lease).
 async fn seed_outbox_rows(pool: &PgPool, store: &PostgresMetadataStore, n: usize) -> i64 {
     let parent = unique_url("publish-parent");
-    store.mark_attempting(&parent, &run_id(), 0).await.unwrap();
+    store
+        .mark_attempting(&parent, &RunId::new(run_id()), 0)
+        .await
+        .unwrap();
     let parent_url_id: i64 = sqlx::query_scalar("SELECT id FROM url_metadata WHERE url = $1")
         .bind(parent.as_str())
         .fetch_one(pool)

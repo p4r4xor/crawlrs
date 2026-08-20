@@ -10,20 +10,29 @@
 //! startup fails fast with a clear error.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bb8::Pool;
 use bb8_redis::RedisConnectionManager;
 use crawlrs_core::{
-    CanonicalUrl, ClaimOutcome, Frontier, HostHashShardPolicy, ShardingPolicy, SingleShardPolicy,
-    SubmitOutcome, UrlEntry, UrlId, WorkerIdentity,
+    CanonicalUrl, ClaimOutcome, Frontier, HostHashShardPolicy, RunId, ShardingPolicy,
+    SingleShardPolicy, SubmitOutcome, UrlEntry, UrlId, WorkerIdentity,
 };
-use crawlrs_frontier::{BloomConfig, RedisFrontier};
+use crawlrs_frontier::{BloomConfig, RedisFrontier, RedisFrontierParams};
 use testcontainers::core::WaitFor;
 use testcontainers::runners::AsyncRunner;
 use testcontainers::{ContainerAsync, GenericImage};
 
 const IDENTITY: WorkerIdentity = WorkerIdentity::new(0, 0);
+
+/// Current wall-clock ms since the Unix epoch; the domain
+/// `Frontier::advance_wake` now takes for its wake-time argument.
+fn now_epoch_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
+}
 
 // ---------------------------------------------------------------------------
 // Fixture
@@ -81,14 +90,14 @@ async fn single_shard_frontier_with_run_id(
     run_id: &str,
 ) -> RedisFrontier {
     let policy: Arc<dyn ShardingPolicy> = Arc::new(SingleShardPolicy);
-    RedisFrontier::new(
-        pool.clone(),
-        policy,
-        vec![0],
-        run_id,
-        BloomConfig::default(),
-        crawlrs_core::CrawlScope::default(),
-    )
+    RedisFrontier::new(RedisFrontierParams {
+        pool: pool.clone(),
+        sharding_policy: policy,
+        owned_shards: vec![0],
+        run_id: RunId::new(run_id),
+        bloom_config: BloomConfig::default(),
+        crawl_scope: crawlrs_core::CrawlScope::default(),
+    })
     .await
     .unwrap()
 }
@@ -167,14 +176,14 @@ async fn submit_batch_collapses_round_trips_per_shard() {
     // level: read `INFO commandstats` before and after.
     let fx = fixture().await;
     let policy: Arc<dyn ShardingPolicy> = Arc::new(HostHashShardPolicy::new(8));
-    let frontier = RedisFrontier::new(
-        fx.pool.clone(),
-        policy.clone(),
-        (0..8).collect(),
-        run_id(),
-        BloomConfig::default(),
-        crawlrs_core::CrawlScope::default(),
-    )
+    let frontier = RedisFrontier::new(RedisFrontierParams {
+        pool: fx.pool.clone(),
+        sharding_policy: policy.clone(),
+        owned_shards: (0..8).collect(),
+        run_id: RunId::new(run_id()),
+        bloom_config: BloomConfig::default(),
+        crawl_scope: crawlrs_core::CrawlScope::default(),
+    })
     .await
     .unwrap();
 
@@ -280,8 +289,8 @@ async fn claim_returns_empty_hint_when_only_wake_has_entries() {
 
     // Push the host's wake-time deliberately into the future so a
     // second claim must surface EmptyHint, not Claimed.
-    let until = std::time::Instant::now() + Duration::from_secs(30);
-    frontier.advance_wake("a.test", until).await.unwrap();
+    let until_ms = now_epoch_ms() + 30_000;
+    frontier.advance_wake("a.test", until_ms).await.unwrap();
     frontier.ack(&attempt).await.unwrap();
 
     let outcome = frontier.claim(&IDENTITY).await.unwrap();
@@ -309,8 +318,8 @@ async fn advance_wake_blocks_re_claim_until_promoted() {
     let (_, _, attempt) = unwrap_claimed(frontier.claim(&IDENTITY).await.unwrap());
 
     // Set the host's wake to 200ms out, ack the claim.
-    let until = std::time::Instant::now() + Duration::from_millis(200);
-    frontier.advance_wake("a.test", until).await.unwrap();
+    let until_ms = now_epoch_ms() + 200;
+    frontier.advance_wake("a.test", until_ms).await.unwrap();
     frontier.ack(&attempt).await.unwrap();
 
     // Immediately, the host is in wake; a tick now does not promote.
@@ -337,14 +346,14 @@ async fn advance_wake_blocks_re_claim_until_promoted() {
 async fn expired_lease_is_reclaimed_and_url_re_pushed() {
     let fx = fixture().await;
     let policy: Arc<dyn ShardingPolicy> = Arc::new(SingleShardPolicy);
-    let frontier = RedisFrontier::new(
-        fx.pool.clone(),
-        policy,
-        vec![0],
-        run_id(),
-        BloomConfig::default(),
-        crawlrs_core::CrawlScope::default(),
-    )
+    let frontier = RedisFrontier::new(RedisFrontierParams {
+        pool: fx.pool.clone(),
+        sharding_policy: policy,
+        owned_shards: vec![0],
+        run_id: RunId::new(run_id()),
+        bloom_config: BloomConfig::default(),
+        crawl_scope: crawlrs_core::CrawlScope::default(),
+    })
     .await
     .unwrap()
     .with_lease_timeout(Duration::from_millis(150));
@@ -406,14 +415,14 @@ async fn host_hash_policy_routes_urls_to_owned_shard() {
     let policy: Arc<dyn ShardingPolicy> = Arc::new(HostHashShardPolicy::new(4));
     // Compute which shard "example.com" falls into so we can own it.
     let shard = policy.shard_key_from_host("example.com");
-    let frontier = RedisFrontier::new(
-        fx.pool.clone(),
-        policy,
-        vec![shard],
-        run_id(),
-        BloomConfig::default(),
-        crawlrs_core::CrawlScope::default(),
-    )
+    let frontier = RedisFrontier::new(RedisFrontierParams {
+        pool: fx.pool.clone(),
+        sharding_policy: policy,
+        owned_shards: vec![shard],
+        run_id: RunId::new(run_id()),
+        bloom_config: BloomConfig::default(),
+        crawl_scope: crawlrs_core::CrawlScope::default(),
+    })
     .await
     .unwrap();
 
@@ -434,14 +443,14 @@ async fn submit_rejects_url_for_unowned_shard() {
     let policy: Arc<dyn ShardingPolicy> = Arc::new(HostHashShardPolicy::new(8));
     // Own only shard 0; submit a URL whose host hashes elsewhere.
     let owned = vec![0];
-    let frontier = RedisFrontier::new(
-        fx.pool.clone(),
-        policy.clone(),
-        owned,
-        run_id(),
-        BloomConfig::default(),
-        crawlrs_core::CrawlScope::default(),
-    )
+    let frontier = RedisFrontier::new(RedisFrontierParams {
+        pool: fx.pool.clone(),
+        sharding_policy: policy.clone(),
+        owned_shards: owned,
+        run_id: RunId::new(run_id()),
+        bloom_config: BloomConfig::default(),
+        crawl_scope: crawlrs_core::CrawlScope::default(),
+    })
     .await
     .unwrap();
 
@@ -487,14 +496,14 @@ async fn submit_batch_enforces_per_host_quota() {
     // counter unchanged + bloom NOT marked.
     let fx = fixture().await;
     let policy: Arc<dyn ShardingPolicy> = Arc::new(SingleShardPolicy);
-    let frontier = RedisFrontier::new(
-        fx.pool.clone(),
-        policy,
-        vec![0],
-        run_id(),
-        BloomConfig::default(),
-        scope_with_host_cap("capped.test", 50),
-    )
+    let frontier = RedisFrontier::new(RedisFrontierParams {
+        pool: fx.pool.clone(),
+        sharding_policy: policy,
+        owned_shards: vec![0],
+        run_id: RunId::new(run_id()),
+        bloom_config: BloomConfig::default(),
+        crawl_scope: scope_with_host_cap("capped.test", 50),
+    })
     .await
     .unwrap();
 
@@ -521,14 +530,14 @@ async fn quota_rejected_urls_remain_eligible_after_run_reset() {
     let policy: Arc<dyn ShardingPolicy> = Arc::new(SingleShardPolicy);
 
     let cap = scope_with_host_cap("capped.test", 5);
-    let frontier_a = RedisFrontier::new(
-        fx.pool.clone(),
-        policy.clone(),
-        vec![0],
-        run_id(),
-        BloomConfig::default(),
-        cap.clone(),
-    )
+    let frontier_a = RedisFrontier::new(RedisFrontierParams {
+        pool: fx.pool.clone(),
+        sharding_policy: policy.clone(),
+        owned_shards: vec![0],
+        run_id: RunId::new(run_id()),
+        bloom_config: BloomConfig::default(),
+        crawl_scope: cap.clone(),
+    })
     .await
     .unwrap();
 
@@ -544,14 +553,14 @@ async fn quota_rejected_urls_remain_eligible_after_run_reset() {
     // not per-run; we use a fresh fixture for the second run to
     // sidestep that).
     let fx_b = fixture().await;
-    let frontier_b = RedisFrontier::new(
-        fx_b.pool.clone(),
-        policy,
-        vec![0],
-        run_id(),
-        BloomConfig::default(),
-        cap,
-    )
+    let frontier_b = RedisFrontier::new(RedisFrontierParams {
+        pool: fx_b.pool.clone(),
+        sharding_policy: policy,
+        owned_shards: vec![0],
+        run_id: RunId::new(run_id()),
+        bloom_config: BloomConfig::default(),
+        crawl_scope: cap,
+    })
     .await
     .unwrap();
     let outcome_b = frontier_b.submit_batch(entries).await.unwrap();
@@ -565,14 +574,14 @@ async fn submit_batch_without_quota_accepts_all_unique() {
     // stays zero regardless of batch size.
     let fx = fixture().await;
     let policy: Arc<dyn ShardingPolicy> = Arc::new(SingleShardPolicy);
-    let frontier = RedisFrontier::new(
-        fx.pool.clone(),
-        policy,
-        vec![0],
-        run_id(),
-        BloomConfig::default(),
-        crawlrs_core::CrawlScope::default(),
-    )
+    let frontier = RedisFrontier::new(RedisFrontierParams {
+        pool: fx.pool.clone(),
+        sharding_policy: policy,
+        owned_shards: vec![0],
+        run_id: RunId::new(run_id()),
+        bloom_config: BloomConfig::default(),
+        crawl_scope: crawlrs_core::CrawlScope::default(),
+    })
     .await
     .unwrap();
     let entries: Vec<UrlEntry> = (0..50)

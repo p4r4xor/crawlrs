@@ -46,7 +46,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crawlrs_core::{Frontier, MetadataStore, Outbox, ShipFn, SkipReason};
+use crawlrs_core::{Frontier, MetadataStore, Outbox, RunId, ShipFn, SkipReason};
 use tokio::sync::watch;
 use tracing::{debug, warn};
 
@@ -71,7 +71,7 @@ pub async fn outbox_publisher(
     outbox: Arc<dyn Outbox>,
     frontier: Arc<dyn Frontier>,
     metadata: Arc<dyn MetadataStore>,
-    run_id: String,
+    run_id: RunId,
     mut shutdown: watch::Receiver<bool>,
     interval: Duration,
 ) {
@@ -115,12 +115,12 @@ async fn publish_one_batch(
     outbox: &Arc<dyn Outbox>,
     frontier: &Arc<dyn Frontier>,
     metadata: &Arc<dyn MetadataStore>,
-    run_id: &str,
+    run_id: &RunId,
     batch_size: usize,
 ) -> usize {
     let frontier = frontier.clone();
     let metadata = metadata.clone();
-    let run_id = run_id.to_string();
+    let run_id = run_id.clone();
     let ship: ShipFn = Box::new(move |entries| {
         Box::pin(async move {
             let outcome = frontier

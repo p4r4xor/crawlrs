@@ -85,8 +85,8 @@ pub enum HostQueueError {
     Redis(#[from] redis::RedisError),
     #[error("redis parse: {0}")]
     Parse(#[from] redis::ParsingError),
-    #[error("connection pool: {0}")]
-    Pool(String),
+    #[error("connection pool")]
+    Pool(#[from] bb8::RunError<redis::RedisError>),
     #[error("malformed url_id from claim.lua: {0}")]
     BadUrlId(String),
     #[error("codec: {0}")]
@@ -117,11 +117,7 @@ impl<'a> HostQueueOps<'a> {
     ) -> Result<SubmitOutcome, HostQueueError> {
         let payload = codec::encode(entry).map_err(|e| HostQueueError::Codec(e.to_string()))?;
 
-        let mut conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| HostQueueError::Pool(format!("{e:?}")))?;
+        let mut conn = self.pool.get().await.map_err(HostQueueError::Pool)?;
 
         let outcome: i64 = self
             .scripts
@@ -180,11 +176,7 @@ impl<'a> HostQueueOps<'a> {
                 .push(codec::encode(item.entry).map_err(|e| HostQueueError::Codec(e.to_string()))?);
         }
 
-        let mut conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| HostQueueError::Pool(format!("{e:?}")))?;
+        let mut conn = self.pool.get().await.map_err(HostQueueError::Pool)?;
 
         let mut invocation = self.scripts.submit_batch.prepare_invoke();
         invocation.key(self.keys.seen(shard));
@@ -217,11 +209,7 @@ impl<'a> HostQueueOps<'a> {
         now_ms: i64,
         lease_timeout_ms: i64,
     ) -> Result<ClaimRaw, HostQueueError> {
-        let mut conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| HostQueueError::Pool(format!("{e:?}")))?;
+        let mut conn = self.pool.get().await.map_err(HostQueueError::Pool)?;
 
         let value: Value = self
             .scripts
@@ -246,11 +234,7 @@ impl<'a> HostQueueOps<'a> {
         host: &str,
         until_ms: i64,
     ) -> Result<(), HostQueueError> {
-        let mut conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| HostQueueError::Pool(format!("{e:?}")))?;
+        let mut conn = self.pool.get().await.map_err(HostQueueError::Pool)?;
 
         let _: i64 = self
             .scripts
@@ -273,11 +257,7 @@ impl<'a> HostQueueOps<'a> {
         now_ms: i64,
         batch_limit: u64,
     ) -> Result<u64, HostQueueError> {
-        let mut conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| HostQueueError::Pool(format!("{e:?}")))?;
+        let mut conn = self.pool.get().await.map_err(HostQueueError::Pool)?;
         let n: i64 = self
             .scripts
             .promote
@@ -298,11 +278,7 @@ impl<'a> HostQueueOps<'a> {
         now_ms: i64,
         batch_limit: u64,
     ) -> Result<u64, HostQueueError> {
-        let mut conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| HostQueueError::Pool(format!("{e:?}")))?;
+        let mut conn = self.pool.get().await.map_err(HostQueueError::Pool)?;
         let n: i64 = self
             .scripts
             .reclaim
@@ -326,11 +302,7 @@ impl<'a> HostQueueOps<'a> {
         url_id: UrlId,
         host: &str,
     ) -> Result<(), HostQueueError> {
-        let mut conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| HostQueueError::Pool(format!("{e:?}")))?;
+        let mut conn = self.pool.get().await.map_err(HostQueueError::Pool)?;
         let member = format!("{}|{}", url_id.to_hex(), host);
         let _: i64 = redis::cmd("ZREM")
             .arg(self.keys.inflight(shard))

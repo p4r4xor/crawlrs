@@ -6,7 +6,7 @@
 //! trio to produce a `Politeness` that disables the politeness
 //! layer end-to-end without any other code knowing.
 
-use std::time::{Duration, Instant};
+use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
 use crawlrs_core::{
@@ -21,7 +21,7 @@ impl WakePlanner for NoopWakePlanner {
     async fn record_fetch(&self, host: &str) -> Result<NextWake> {
         Ok(NextWake {
             host: host.to_string(),
-            until: Instant::now(),
+            until_ms: now_ms(),
         })
     }
 }
@@ -53,7 +53,17 @@ impl BackoffTracker for NoopBackoffTracker {
     ) -> Result<NextWake> {
         Ok(NextWake {
             host: url.host().unwrap_or("").to_string(),
-            until: Instant::now(),
+            until_ms: now_ms(),
         })
     }
+}
+
+/// Current wall-clock ms since the Unix epoch. The no-op planner and
+/// tracker return an immediate (now) wake so the runtime skips the
+/// frontier write entirely.
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }

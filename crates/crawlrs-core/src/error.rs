@@ -7,13 +7,23 @@
 
 use thiserror::Error;
 
+use crate::traits::politeness::FailureKind;
+
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum Error {
     #[error("invalid url: {0}")]
     InvalidUrl(#[from] crate::url::UrlError),
 
     #[error("fetch error: {0}")]
     Fetch(String),
+
+    /// A transport-level fetch failure the fetcher already classified
+    /// into a general failure category. Carrying the `kind` here lets
+    /// the runtime record the right backoff without re-deriving the
+    /// category from the error text.
+    #[error("transport error: {message}")]
+    Transport { kind: FailureKind, message: String },
 
     #[error("parse error: {0}")]
     Parse(String),

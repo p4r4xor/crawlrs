@@ -8,7 +8,7 @@
 //! no failure tracking." These tests pin that.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crawlrs_core::{
     BackoffTracker, CanonicalUrl, FailureKind, PoliteDecision, Politeness, RobotsChecker,
@@ -21,6 +21,16 @@ use crawlrs_politeness::{
 
 fn url(s: &str) -> CanonicalUrl {
     CanonicalUrl::parse(s).unwrap()
+}
+
+/// Express a `NextWake.until_ms` (wall-clock epoch-ms) as a
+/// Duration-from-now, saturating at zero for past wake times.
+fn delay_from_now(until_ms: u64) -> Duration {
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    Duration::from_millis(until_ms.saturating_sub(now_ms))
 }
 
 fn noop_composite_with_config(config: PolitenessConfig) -> CompositePoliteness {
@@ -71,9 +81,7 @@ async fn noop_composite_record_fetch_returns_immediate_wake() {
     assert_eq!(plan.host, "example.test");
     // Immediate next-wake: the noop rate limiter returns now() so
     // the duration-from-now should be effectively zero.
-    let delta = plan
-        .until
-        .saturating_duration_since(std::time::Instant::now());
+    let delta = delay_from_now(plan.until_ms);
     assert!(
         delta <= Duration::from_millis(100),
         "noop should produce ~0 delay; got {delta:?}",
@@ -95,9 +103,7 @@ async fn noop_composite_record_failure_returns_immediate_wake() {
     // Noop backoff tracker ignores the server hint; the composite
     // is "off," so the operator does not pay backoff. The plan
     // is immediate-wake.
-    let delta = plan
-        .until
-        .saturating_duration_since(std::time::Instant::now());
+    let delta = delay_from_now(plan.until_ms);
     assert!(
         delta <= Duration::from_millis(100),
         "noop backoff should ignore server hint and return ~0; got {delta:?}",
@@ -130,9 +136,7 @@ async fn noop_composite_ignores_per_domain_overrides() {
         .record_fetch(&url("https://slow-host.example/"))
         .await
         .unwrap();
-    let delta = plan
-        .until
-        .saturating_duration_since(std::time::Instant::now());
+    let delta = delay_from_now(plan.until_ms);
     assert!(
         delta <= Duration::from_millis(100),
         "per_domain override is dead config under noop; got {delta:?}",
@@ -148,9 +152,7 @@ async fn noop_wake_planner_returns_immediate_wake() {
     let r = NoopWakePlanner;
     let plan = r.record_fetch("anywhere.test").await.unwrap();
     assert_eq!(plan.host, "anywhere.test");
-    let delta = plan
-        .until
-        .saturating_duration_since(std::time::Instant::now());
+    let delta = delay_from_now(plan.until_ms);
     assert!(delta <= Duration::from_millis(100));
 }
 

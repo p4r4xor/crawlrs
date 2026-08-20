@@ -34,13 +34,18 @@ pub fn classify_status(status: u16) -> Option<FailureKind> {
     }
 }
 
-/// Map a transport-level fetch error to a `FailureKind`.
+/// Fallback mapping from a fetch error to a `FailureKind` by matching
+/// the error's `Display` text.
 ///
-/// String-matching on the error's `Display` form is rough, but our
-/// `crawlrs_core::Error` deliberately wraps each crate's error in a
-/// string at the boundary; the alternative is a richer error enum,
-/// which is a future refactor. Until then, this keeps the
-/// classification logic in one place.
+/// This is now the fallback path: typed transport failures are
+/// classified upstream in the fetcher (which has the backend's typed
+/// error predicates) and arrive as `Error::Transport` carrying their
+/// `FailureKind` directly. This function still handles fetch errors
+/// that aren't transport-typed, e.g. a body-cap policy rejection
+/// surfaced as `Error::Fetch`, where only the text is available.
+///
+/// String-matching on the `Display` form is rough, which is exactly
+/// why the transport path no longer relies on it.
 ///
 /// Match order matters: specific local-side / protocol failures are
 /// checked before generic network-shaped ones, so e.g. a TLS error

@@ -71,6 +71,7 @@ pub enum DisallowReason {
 /// known signature. A growing `Other` count is a signal to inspect raw
 /// error strings and extend the classifiers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum FailureKind {
     /// HTTP 429. Server is explicitly rate-limiting; honor `Retry-After`
     /// if present, otherwise apply exponential backoff per host.
@@ -170,7 +171,8 @@ pub trait Politeness: Send + Sync {
     /// `retry_after` carries a server-supplied hint when one was
     /// present (HTTP `Retry-After` header, RFC 9110 §10.2.3). When
     /// present, implementations honor it as a *floor*: the returned
-    /// `NextWake.until` is `max(server_hint, computed_backoff)`.
+    /// `NextWake.until_ms` corresponds to `max(server_hint,
+    /// computed_backoff)` from now.
     /// Servers know best how long they need to recover; we don't
     /// undercut them, but we still apply our own backoff if it's
     /// harsher (e.g., after the 5th consecutive 503 we may want

@@ -6,8 +6,9 @@
 //!
 //! **Zero-delay short-circuit.** When `PolitenessConfig::has_host_delay`
 //! is `false` (every effective `host_delay` resolves to zero),
-//! `record_fetch` returns `NextWake.until = Instant::now()`
-//! without consulting the per-host override map. The worker's
+//! `record_fetch` returns `NextWake.until_ms` at the current
+//! wall-clock time without consulting the per-host override map. The
+//! worker's
 //! wake-application path uses that signal to skip the
 //! `Frontier::advance_wake` round-trip (no point writing a wake
 //! that's already in the past). The verdict is cached at
@@ -18,7 +19,7 @@
 //! impl does not touch the per-host fetch counter.
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
 use crawlrs_core::{NextWake, Result, ShardKey, ShardingPolicy, WakePlanner};
@@ -83,9 +84,16 @@ impl WakePlanner for RedisWakePlanner {
         } else {
             Duration::ZERO
         };
+        // Epoch-ms wake time from the same wall-clock source the
+        // frontier's wake ZSET is scored against.
+        let until_ms = SystemTime::now()
+            .checked_add(delay)
+            .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
         Ok(NextWake {
             host: host.to_string(),
-            until: Instant::now() + delay,
+            until_ms,
         })
     }
 }

@@ -135,5 +135,12 @@ pub trait Outbox: Send + Sync {
     /// total, which under SKIP LOCKED translates to "no available
     /// rows for me right now"); the caller should sleep before
     /// retrying.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the outbox cannot be read or leased, or
+    /// when marking the shipped batch as published fails. A `ship`
+    /// closure that resolves `Err` is not an error here; those rows are
+    /// simply left unpublished for the next caller.
     async fn publish(&self, max: usize, ship: ShipFn) -> Result<usize>;
 }

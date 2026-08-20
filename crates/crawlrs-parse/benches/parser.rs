@@ -8,8 +8,9 @@
 //! - **synthetic_links_heavy**: 4 KB with 200 outbound anchors but
 //!   little body text; stresses link extraction + canonicalization.
 //! - **synthetic_text_heavy**: 256 KB of paragraphs with few links;
-//!   stresses the visible-text accumulator (Pattern 3.2 in
-//!   ADR-0024 sized this).
+//!   stresses the visible-text accumulator. 256 KB is a deliberately
+//!   large body: big enough to make the accumulator's allocation and
+//!   whitespace-collapse passes dominate the sample.
 //!
 //! Throughput is reported per byte (so different sizes are
 //! comparable). Run with:

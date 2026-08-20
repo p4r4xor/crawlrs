@@ -9,5 +9,11 @@ use crate::types::{FetchResponse, ParsedDocument};
 
 #[async_trait]
 pub trait Parser: Send + Sync {
+    /// Extract structured content from a fetched response.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the response body cannot be decoded or
+    /// parsed as the expected content type.
     async fn parse(&self, resp: &FetchResponse) -> Result<ParsedDocument>;
 }

@@ -21,6 +21,32 @@
 
 use bb8::Pool;
 use bb8_redis::RedisConnectionManager;
+use thiserror::Error;
+
+/// Failure modes of [`reserve`].
+///
+/// `AlreadyExists` is not a fault: `BF.RESERVE` is idempotent across
+/// processes, so a peer winning the race is the caller's success case.
+/// It is surfaced as a distinct variant (rather than folded into `Ok`)
+/// so the caller decides how to treat it, and so a real backend error
+/// can never be silently reclassified as "already reserved".
+#[derive(Debug, Error)]
+pub enum BloomError {
+    /// The filter already exists; a concurrent peer reserved it first.
+    #[error("bloom filter already exists")]
+    AlreadyExists,
+    /// `BF.RESERVE` was rejected as an unknown command: the RedisBloom
+    /// module is not loaded. The frontier requires Redis Stack or stock
+    /// Redis with the redisbloom module.
+    #[error("RedisBloom module not loaded (BF.RESERVE rejected as unknown command)")]
+    ModuleMissing(#[source] redis::RedisError),
+    /// A Redis connection could not be checked out of the pool.
+    #[error("bloom reserve connection checkout failed")]
+    Pool(#[source] bb8::RunError<redis::RedisError>),
+    /// `BF.RESERVE` failed for any other reason.
+    #[error("BF.RESERVE failed")]
+    Backend(#[source] redis::RedisError),
+}
 
 /// Configuration for the per-shard bloom filter.
 #[derive(Debug, Clone, Copy)]
@@ -46,16 +72,21 @@ impl Default for BloomConfig {
 
 /// Ensure the bloom filter exists at `key`. Idempotent across
 /// processes: a peer racing the `BF.RESERVE` loses with "ERR item
-/// exists", which we treat as success.
+/// exists", surfaced here as [`BloomError::AlreadyExists`].
+///
+/// # Errors
+///
+/// Returns [`BloomError::AlreadyExists`] if the filter is already
+/// reserved (the caller treats this as success),
+/// [`BloomError::ModuleMissing`] if RedisBloom is not loaded,
+/// [`BloomError::Pool`] if a connection cannot be checked out, and
+/// [`BloomError::Backend`] for any other `BF.RESERVE` failure.
 pub(crate) async fn reserve(
     pool: &Pool<RedisConnectionManager>,
     key: &str,
     config: BloomConfig,
-) -> Result<(), String> {
-    let mut conn = pool
-        .get()
-        .await
-        .map_err(|e| format!("bloom reserve checkout: {e:?}"))?;
+) -> Result<(), BloomError> {
+    let mut conn = pool.get().await.map_err(BloomError::Pool)?;
     let result: redis::RedisResult<()> = redis::cmd("BF.RESERVE")
         .arg(key)
         .arg(config.fpr)
@@ -65,19 +96,19 @@ pub(crate) async fn reserve(
     match result {
         Ok(()) => Ok(()),
         Err(e) => {
-            // RedisBloom returns "ERR item exists" when the filter
-            // already exists; treat as success. Anything else is real.
+            // RedisBloom does not expose distinct error codes for these
+            // cases, so the detail string is the only discriminator the
+            // module gives us. "item exists" means a peer reserved the
+            // filter first; "unknown command" means the module is not
+            // loaded. Anything else is a genuine backend failure and
+            // keeps the original error as its source.
             let msg = e.to_string();
             if msg.contains("item exists") {
-                Ok(())
+                Err(BloomError::AlreadyExists)
             } else if msg.contains("unknown command") {
-                Err(format!(
-                    "RedisBloom not available (BF.RESERVE rejected): {msg}. \
-                     The frontier requires Redis Stack or stock Redis with \
-                     the redisbloom module loaded."
-                ))
+                Err(BloomError::ModuleMissing(e))
             } else {
-                Err(format!("BF.RESERVE failed: {msg}"))
+                Err(BloomError::Backend(e))
             }
         }
     }

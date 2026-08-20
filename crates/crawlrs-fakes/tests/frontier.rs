@@ -1,10 +1,10 @@
 //! Tests for `InMemoryFrontier`.
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crawlrs_core::{
-    CanonicalUrl, ClaimOutcome, Frontier, ShardingPolicy, SingleShardPolicy, SubmitOutcome,
+    CanonicalUrl, ClaimOutcome, Clock, Frontier, ShardingPolicy, SingleShardPolicy, SubmitOutcome,
     UrlEntry, WorkerIdentity,
 };
 use crawlrs_fakes::{InMemoryFrontier, ManualClock};
@@ -97,9 +97,9 @@ async fn advance_wake_blocks_re_claim_until_promoted() {
         panic!("expected Claimed for the first URL");
     };
 
-    // Worker reports the host's wake-time 5s out.
-    let now = Instant::now();
-    f.advance_wake("a.test", now + Duration::from_secs(5))
+    // Worker reports the host's wake-time 5s out, in the clock's
+    // epoch-ms domain.
+    f.advance_wake("a.test", clock.now_ms() + 5_000)
         .await
         .unwrap();
     f.ack(&attempt_id).await.unwrap();

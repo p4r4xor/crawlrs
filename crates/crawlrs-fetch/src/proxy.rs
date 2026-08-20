@@ -4,8 +4,9 @@
 //!
 //! - [`NoProxyResolver`]: no proxy (default).
 //! - [`EnvProxyResolver`]: read one URL from `HTTPS_PROXY`/`HTTP_PROXY`.
-//! - [`GatewayProxyResolver`]: one fixed gateway URL plus per-request
-//!   routing headers (HMA-style).
+//! - [`GatewayProxyResolver`]: one fixed gateway URL plus a per-request
+//!   routing-hint header callback (as used by TLS-intercepting proxy
+//!   gateways).
 //!
 //! Multi-URL rotation isn't built in. The [`ProxyResolver`] trait is the
 //! extension point: write a `RotatingProxyResolver` impl when the need
@@ -17,7 +18,17 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use crawlrs_core::{FetchRequest, ProxyResolver, ProxySelection, Result};
+use crawlrs_core::{Error, FetchRequest, ProxyResolver, ProxySelection, Result};
+
+/// Reject a proxy URL that `wreq` will not accept, so a misconfigured
+/// URL surfaces at construction rather than on the first fetch. The
+/// URL is constant for the lifetime of these resolvers, so validating
+/// it once here is sufficient.
+fn validate_proxy_url(url: &str) -> Result<()> {
+    wreq::Proxy::all(url)
+        .map(|_| ())
+        .map_err(|err| Error::Fetch(format!("invalid proxy url {url}: {err}")))
+}
 
 /// Always returns `None`, fetch direct.
 #[derive(Debug, Default, Clone, Copy)]
@@ -39,7 +50,13 @@ pub struct EnvProxyResolver {
 }
 
 impl EnvProxyResolver {
-    pub fn new() -> Self {
+    /// Read the proxy URL from the environment once and validate it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Fetch`] when the environment holds a proxy URL
+    /// that `wreq` cannot parse.
+    pub fn new() -> Result<Self> {
         let url = std::env::var("HTTPS_PROXY")
             .or_else(|_| std::env::var("https_proxy"))
             .or_else(|_| std::env::var("HTTP_PROXY"))
@@ -48,13 +65,10 @@ impl EnvProxyResolver {
             .or_else(|_| std::env::var("all_proxy"))
             .ok()
             .filter(|raw| !raw.is_empty());
-        Self { url }
-    }
-}
-
-impl Default for EnvProxyResolver {
-    fn default() -> Self {
-        Self::new()
+        if let Some(raw) = &url {
+            validate_proxy_url(raw)?;
+        }
+        Ok(Self { url })
     }
 }
 
@@ -77,6 +91,7 @@ pub(crate) type HeaderFn = Arc<dyn Fn(&FetchRequest) -> HashMap<String, String> 
 /// **Gateway pattern**: a single fixed proxy URL plus a per-request
 /// callback that produces routing-hint headers. Optionally trusts a
 /// caller-supplied PEM CA bundle for gateways that perform TLS interception.
+#[derive(Clone)]
 pub struct GatewayProxyResolver {
     url: String,
     header_fn: Option<HeaderFn>,
@@ -94,15 +109,24 @@ impl std::fmt::Debug for GatewayProxyResolver {
 }
 
 impl GatewayProxyResolver {
-    pub fn new(url: impl Into<String>) -> Self {
-        Self {
-            url: url.into(),
+    /// Build a resolver that routes every request through `url`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Fetch`] when `url` is not a proxy URL `wreq`
+    /// can parse.
+    pub fn new(url: impl Into<String>) -> Result<Self> {
+        let url = url.into();
+        validate_proxy_url(&url)?;
+        Ok(Self {
+            url,
             header_fn: None,
             ca_pem: None,
-        }
+        })
     }
 
     /// Provide a callback that computes routing headers per request.
+    #[must_use]
     pub fn with_header_fn<F>(mut self, header_fn: F) -> Self
     where
         F: Fn(&FetchRequest) -> HashMap<String, String> + Send + Sync + 'static,
@@ -112,6 +136,7 @@ impl GatewayProxyResolver {
     }
 
     /// Trust a PEM-encoded CA bundle (e.g. the gateway's MITM root cert).
+    #[must_use]
     pub fn with_ca_pem(mut self, pem: impl Into<Vec<u8>>) -> Self {
         self.ca_pem = Some(pem.into());
         self

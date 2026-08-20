@@ -24,6 +24,7 @@ pub type ShardKey = u32;
 pub trait ShardingPolicy: Send + Sync {
     /// Map a URL to the shard that owns its queue, seen-set, and
     /// politeness state.
+    #[must_use]
     fn shard_key(&self, url: &CanonicalUrl) -> ShardKey;
 
     /// Map a host directly to its owning shard. Useful when the
@@ -35,6 +36,7 @@ pub trait ShardingPolicy: Send + Sync {
     /// Total number of shards this policy generates. Used by the
     /// frontier impl to size keyspaces and by deployment tools to
     /// validate ownership coverage.
+    #[must_use]
     fn shard_count(&self) -> u32;
 }
 
@@ -65,7 +67,9 @@ impl ShardingPolicy for SingleShardPolicy {
 /// cryptographic properties.
 #[derive(Debug, Clone, Copy)]
 pub struct HostHashShardPolicy {
-    pub num_shards: u32,
+    // Private so the `new()` invariant (>= 1) cannot be bypassed by a
+    // struct literal; `shard_key_from_host` divides by this value.
+    num_shards: u32,
 }
 
 impl HostHashShardPolicy {
@@ -73,6 +77,20 @@ impl HostHashShardPolicy {
         assert!(num_shards >= 1, "num_shards must be at least 1");
         Self { num_shards }
     }
+}
+
+/// Shards owned by replica `ordinal` out of `replicas` total, across
+/// `num_shards` shards. Each replica owns a strided subset: `ordinal`,
+/// `ordinal + replicas`, `ordinal + 2*replicas`, ... below `num_shards`.
+/// Distinct replicas own disjoint shard sets, so no shard is ever
+/// double-owned. Returns an empty `Vec` when the replica owns nothing
+/// (`ordinal >= num_shards`, or `replicas == 0`).
+#[must_use]
+pub fn owned_shards_for_replica(ordinal: u32, replicas: u32, num_shards: u32) -> Vec<ShardKey> {
+    if replicas == 0 {
+        return Vec::new();
+    }
+    (ordinal..num_shards).step_by(replicas as usize).collect()
 }
 
 impl ShardingPolicy for HostHashShardPolicy {

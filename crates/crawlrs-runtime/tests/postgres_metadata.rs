@@ -15,11 +15,11 @@ use std::time::Duration;
 use bb8::Pool;
 use bb8_redis::RedisConnectionManager;
 use crawlrs_core::{
-    CanonicalUrl, MetadataStore, ShardingPolicy, SingleShardPolicy, SiteAdapterRegistry, UrlEntry,
-    UrlStatus,
+    CanonicalUrl, MetadataStore, RunId, ShardingPolicy, SingleShardPolicy, SiteAdapterRegistry,
+    UrlEntry, UrlStatus,
 };
 use crawlrs_fakes::{FakeFetcher, InMemoryStore};
-use crawlrs_frontier::{BloomConfig, RedisFrontier};
+use crawlrs_frontier::{BloomConfig, RedisFrontier, RedisFrontierParams};
 use crawlrs_metadata::PostgresMetadataStore;
 use crawlrs_parse::LolHtmlParser;
 use crawlrs_politeness::{BackoffPolicy, CompositePoliteness, PolitenessConfig};
@@ -94,14 +94,14 @@ async fn end_to_end_against_postgres_metadata_store() {
     let rid = run_id();
 
     let frontier = Arc::new(
-        RedisFrontier::new(
-            fx.redis_pool.clone(),
-            policy.clone(),
-            vec![0],
-            rid.clone(),
-            BloomConfig::default(),
-            crawlrs_core::CrawlScope::default(),
-        )
+        RedisFrontier::new(RedisFrontierParams {
+            pool: fx.redis_pool.clone(),
+            sharding_policy: policy.clone(),
+            owned_shards: vec![0],
+            run_id: RunId::new(rid.clone()),
+            bloom_config: BloomConfig::default(),
+            crawl_scope: crawlrs_core::CrawlScope::default(),
+        })
         .await
         .unwrap()
         .with_lease_timeout(Duration::from_millis(200)),

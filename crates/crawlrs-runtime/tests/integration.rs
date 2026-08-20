@@ -15,11 +15,11 @@ use std::time::Duration;
 use bb8::Pool;
 use bb8_redis::RedisConnectionManager;
 use crawlrs_core::{
-    Blocklist, CanonicalUrl, CrawlScope, LinkDispatch, MetadataStore, ShardingPolicy,
+    Blocklist, CanonicalUrl, CrawlScope, LinkDispatch, MetadataStore, RunId, ShardingPolicy,
     SingleShardPolicy, SiteAdapterRegistry, UrlEntry, UrlStatus,
 };
 use crawlrs_fakes::{FakeFetcher, InMemoryMetadataStore, InMemoryStore};
-use crawlrs_frontier::{BloomConfig, RedisFrontier};
+use crawlrs_frontier::{BloomConfig, RedisFrontier, RedisFrontierParams};
 use crawlrs_parse::LolHtmlParser;
 use crawlrs_politeness::{CompositePoliteness, PolitenessConfig};
 use crawlrs_runtime::{Crawler, CrawlerConfig};
@@ -107,14 +107,14 @@ async fn build_crawler_with_scope(
     let rid = run_id();
 
     let frontier = Arc::new(
-        RedisFrontier::new(
-            fx.pool.clone(),
-            policy.clone(),
-            vec![0],
-            rid.clone(),
-            BloomConfig::default(),
-            crawl_scope.clone(),
-        )
+        RedisFrontier::new(RedisFrontierParams {
+            pool: fx.pool.clone(),
+            sharding_policy: policy.clone(),
+            owned_shards: vec![0],
+            run_id: RunId::new(rid.clone()),
+            bloom_config: BloomConfig::default(),
+            crawl_scope: crawl_scope.clone(),
+        })
         .await
         .unwrap()
         // Short lease: transient-failure paths rely on the reclaim

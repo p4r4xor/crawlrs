@@ -25,7 +25,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crawlrs_core::{
-    AttemptId, CanonicalUrl, ClaimOutcome, Frontier, MetadataStore, Outbox, ShardingPolicy,
+    AttemptId, CanonicalUrl, ClaimOutcome, Frontier, MetadataStore, Outbox, RunId, ShardingPolicy,
     SingleShardPolicy, SuccessRecord, UrlEntry, WorkerIdentity,
 };
 use crawlrs_fakes::ManualClock;
@@ -104,7 +104,10 @@ async fn duplicate_mark_succeeded_for_same_attempt_appends_one_history_row() {
     // (url, attempt_id) yields exactly one row in url_history.
     let store = InMemoryMetadataStore::new();
     let target = url("https://a.test/");
-    store.mark_attempting(&target, "run-1", 0).await.unwrap();
+    store
+        .mark_attempting(&target, &RunId::new("run-1"), 0)
+        .await
+        .unwrap();
 
     let attempt = AttemptId::new("s0|attempt-1|a.test");
     let record = SuccessRecord {
@@ -138,7 +141,10 @@ async fn outbox_dedupes_outbound_on_attempt_redelivery() {
     let metadata = InMemoryMetadataStore::new();
     let parent = url("https://parent.test/");
     let attempt = AttemptId::new("s0|attempt-1|parent.test");
-    metadata.mark_attempting(&parent, "run-1", 0).await.unwrap();
+    metadata
+        .mark_attempting(&parent, &RunId::new("run-1"), 0)
+        .await
+        .unwrap();
 
     let outbound: Vec<UrlEntry> = ["https://a.test/", "https://b.test/", "https://c.test/"]
         .into_iter()
@@ -180,7 +186,10 @@ async fn outbox_publisher_drains_into_frontier_atleast_once() {
     let outbox: Arc<dyn Outbox> = metadata.clone();
 
     let parent = url("https://parent.test/");
-    metadata.mark_attempting(&parent, "run-1", 0).await.unwrap();
+    metadata
+        .mark_attempting(&parent, &RunId::new("run-1"), 0)
+        .await
+        .unwrap();
     let outbound: Vec<UrlEntry> = ["https://a.test/", "https://b.test/", "https://c.test/"]
         .into_iter()
         .map(|u| UrlEntry::seed(url(u)))
@@ -203,7 +212,7 @@ async fn outbox_publisher_drains_into_frontier_atleast_once() {
         outbox.clone(),
         frontier.clone(),
         metadata_dyn,
-        "run-1".to_string(),
+        RunId::new("run-1"),
         rx,
         Duration::from_millis(20),
     ));

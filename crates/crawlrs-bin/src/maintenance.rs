@@ -9,8 +9,8 @@
 //!   and the bb8 pool gauge.
 //! - `politeness.record_pool_metrics()` - emits the bb8 pool gauge.
 //! - `metadata.record_pool_metrics()` - emits the sqlx pool gauge.
-//! - `metadata.dlq_size()` - emits the DLQ gauge (also returns the
-//!   value, but the side-effect is the metric).
+//! - `metadata.dlq_size()` - reads the DLQ count, which this loop then
+//!   publishes to the DLQ gauge.
 //!
 //! Errors are logged and swallowed; a transient Postgres / Redis
 //! blip shouldn't kill the maintenance loop.
@@ -48,8 +48,11 @@ pub async fn run(
         }
         politeness.record_pool_metrics();
         metadata.record_pool_metrics();
-        if let Err(e) = metadata.dlq_size().await {
-            warn!(error = %e, "metadata.dlq_size failed");
+        match metadata.dlq_size().await {
+            Ok(dlq_size) => {
+                metrics::gauge!(crawlrs_metadata::metrics::DLQ_SIZE).set(dlq_size as f64);
+            }
+            Err(e) => warn!(error = %e, "metadata.dlq_size failed"),
         }
     }
 }

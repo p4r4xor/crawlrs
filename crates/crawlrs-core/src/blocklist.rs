@@ -24,10 +24,12 @@ impl Blocklist {
     /// on the canonicalized host string; subdomain matching is
     /// not performed here (a future `[access]` pattern field
     /// would be a separate concern).
+    #[must_use]
     pub fn is_blocked(&self, host: &str) -> bool {
         self.hosts.contains(host)
     }
 
+    #[must_use]
     pub fn len(&self) -> usize {
         self.hosts.len()
     }

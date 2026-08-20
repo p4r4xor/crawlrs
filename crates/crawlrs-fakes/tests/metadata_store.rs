@@ -1,13 +1,16 @@
 //! Tests for `InMemoryMetadataStore`.
 
-use crawlrs_core::{AttemptId, CanonicalUrl, MetadataStore, SuccessRecord};
+use crawlrs_core::{AttemptId, CanonicalUrl, MetadataStore, RunId, SuccessRecord};
 use crawlrs_fakes::InMemoryMetadataStore;
 
 #[tokio::test]
 async fn mark_succeeded_dedupes_by_attempt_id() {
     let store = InMemoryMetadataStore::new();
     let url = CanonicalUrl::parse("https://a.test/").unwrap();
-    store.mark_attempting(&url, "run-1", 0).await.unwrap();
+    store
+        .mark_attempting(&url, &RunId::new("run-1"), 0)
+        .await
+        .unwrap();
 
     // First attempt: one history row.
     let first = AttemptId::new("attempt-1");

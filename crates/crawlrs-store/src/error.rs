@@ -13,10 +13,6 @@ pub enum StoreError {
     Parquet(#[from] parquet::errors::ParquetError),
     #[error("object_store error: {0}")]
     ObjectStore(#[from] object_store::Error),
-    #[error("io: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("serde_json: {0}")]
-    Json(#[from] serde_json::Error),
 }
 
 impl From<StoreError> for Error {

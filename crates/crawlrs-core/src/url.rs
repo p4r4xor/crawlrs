@@ -72,6 +72,11 @@ pub struct CanonicalUrl(::url::Url);
 impl CanonicalUrl {
     /// Parse an absolute URL string and apply canonicalization. Rejects
     /// inputs longer than [`MAX_URL_LEN`] before parsing.
+    ///
+    /// # Errors
+    ///
+    /// Returns `UrlError::TooLong` if `input` exceeds [`MAX_URL_LEN`],
+    /// or `UrlError::Parse` if `input` is not a valid absolute URL.
     pub fn parse(input: &str) -> Result<Self, UrlError> {
         if input.len() > MAX_URL_LEN {
             return Err(UrlError::TooLong {
@@ -103,6 +108,7 @@ impl CanonicalUrl {
 
     /// True if the scheme is `http` or `https`, i.e. crawlable.
     /// Returns false for `mailto:`, `javascript:`, `tel:`, `data:`, `ftp:`, etc.
+    #[must_use]
     pub fn is_http(&self) -> bool {
         matches!(self.0.scheme(), "http" | "https")
     }
@@ -123,6 +129,7 @@ impl CanonicalUrl {
         self.0
     }
 
+    #[must_use]
     pub fn as_str(&self) -> &str {
         self.0.as_str()
     }

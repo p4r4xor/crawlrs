@@ -9,25 +9,21 @@ use crawlrs_core::ShardKey;
 
 /// Builds Redis key strings for one crawl run's politeness state.
 #[derive(Debug, Clone)]
-pub struct KeyPrefix {
+pub(crate) struct KeyPrefix {
     run_id: String,
 }
 
 impl KeyPrefix {
-    pub fn new(run_id: impl Into<String>) -> Self {
+    pub(crate) fn new(run_id: impl Into<String>) -> Self {
         Self {
             run_id: run_id.into(),
         }
     }
 
-    pub fn run_id(&self) -> &str {
-        &self.run_id
-    }
-
     /// `crawlrs:{run_id}:s{shard}:hoststate:{host}`. Hash with failure
     /// state for one host: `consecutive_failures`, `backoff_until_ms`,
     /// `last_kind`. Drives circuit-breaker behaviour.
-    pub fn hoststate(&self, shard: ShardKey, host: &str) -> String {
+    pub(crate) fn hoststate(&self, shard: ShardKey, host: &str) -> String {
         format!("crawlrs:{}:s{}:hoststate:{}", self.run_id, shard, host)
     }
 
@@ -35,7 +31,30 @@ impl KeyPrefix {
     /// robots.txt body and its expiry; TTL is also applied via `EXPIRE`
     /// so stale entries clean themselves up if a host stops being
     /// crawled.
-    pub fn robots(&self, shard: ShardKey, host: &str) -> String {
+    pub(crate) fn robots(&self, shard: ShardKey, host: &str) -> String {
         format!("crawlrs:{}:s{}:robots:{}", self.run_id, shard, host)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // Inline because: visibility-forced. `KeyPrefix` is `pub(crate)`
+    // (the composite builds it internally; no external caller commits
+    // to it), so a `tests/*.rs` file compiled as a separate crate
+    // cannot see it. The key-format contract is asserted here.
+
+    use super::*;
+
+    #[test]
+    fn keys_are_run_and_shard_scoped() {
+        let prefix = KeyPrefix::new("run-x");
+        assert_eq!(
+            prefix.hoststate(2, "example.com"),
+            "crawlrs:run-x:s2:hoststate:example.com"
+        );
+        assert_eq!(
+            prefix.robots(0, "example.com"),
+            "crawlrs:run-x:s0:robots:example.com"
+        );
     }
 }

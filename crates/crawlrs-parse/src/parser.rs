@@ -2,8 +2,10 @@
 //!
 //! `lol_html` is a streaming HTML rewriter; it processes bytes as they
 //! arrive without building a DOM. We use it as an extractor by registering
-//! handlers that *accumulate* into shared cells (`Rc<RefCell<...>>`) and
-//! discarding the rewritten output.
+//! handlers that *accumulate* into owned locals borrowed by their one
+//! handler, and discarding the rewritten output. The lone exception is
+//! the `<script>`/`<style>` exclusion-depth counter, shared via
+//! `Rc<Cell<u32>>` because the exit handler must be `'static`.
 //!
 //! The handlers we register:
 //!
@@ -22,7 +24,7 @@
 //! known non-HTML targets (images, video, archives, office docs,
 //! scripts), and deduped.
 
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::collections::HashSet;
 use std::rc::Rc;
 
@@ -43,6 +45,7 @@ impl LolHtmlParser {
 
 #[async_trait]
 impl Parser for LolHtmlParser {
+    #[tracing::instrument(skip(self, response), fields(url = %response.url))]
     async fn parse(&self, response: &FetchResponse) -> Result<ParsedDocument> {
         let started_at = std::time::Instant::now();
 
@@ -67,8 +70,13 @@ impl Parser for LolHtmlParser {
         let extracted = extract_html(&response.body)?;
 
         let effective_base = match &extracted.base_href {
-            Some(href) => CanonicalUrl::parse_relative(&response.url, href)
-                .unwrap_or_else(|_| response.url.clone()),
+            Some(href) => match CanonicalUrl::parse_relative(&response.url, href) {
+                Ok(base) => base,
+                Err(_) => {
+                    metrics::counter!(crate::metrics::PARSE_BASE_HREF_INVALID_TOTAL).increment(1);
+                    response.url.clone()
+                }
+            },
             None => response.url.clone(),
         };
 
@@ -79,18 +87,17 @@ impl Parser for LolHtmlParser {
                 .increment(extension_denied as u64);
         }
 
-        let title = extracted
-            .title
-            .map(|raw| raw.trim().to_string())
-            .filter(|cleaned| !cleaned.is_empty());
+        let title = extracted.title.and_then(|mut raw| {
+            raw.truncate(raw.trim_end().len());
+            let leading = raw.len() - raw.trim_start().len();
+            raw.drain(..leading);
+            if raw.is_empty() { None } else { Some(raw) }
+        });
 
-        let text = {
-            let collapsed = collapse_whitespace(&extracted.visible_text);
-            if collapsed.is_empty() {
-                None
-            } else {
-                Some(collapsed)
-            }
+        let text = if extracted.collapsed_text.is_empty() {
+            None
+        } else {
+            Some(extracted.collapsed_text)
         };
 
         metrics::histogram!(crate::metrics::PARSE_SECONDS)
@@ -114,7 +121,7 @@ struct Extracted {
     title: Option<String>,
     base_href: Option<String>,
     raw_links: Vec<String>,
-    visible_text: String,
+    collapsed_text: String,
 }
 
 fn extract_html(body: &[u8]) -> Result<Extracted> {
@@ -122,46 +129,45 @@ fn extract_html(body: &[u8]) -> Result<Extracted> {
     // skip the doubling-growth chain on the parser's hot path.
     // - `raw_links`: most HTML pages have ~50-200 hrefs; 128 is a
     //   median that avoids realloc for ~80% of pages.
-    // - `visible_text`: assume ~1/3 of body bytes survive as visible
+    // - `collapsed_text`: assume ~1/3 of body bytes survive as visible
     //   text (markup stripped). Clamped at the body length so we
     //   never over-reserve on tiny pages.
     let text_capacity = body.len() / 3;
-    let title: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
-    let base_href: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
-    let raw_links: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::with_capacity(128)));
-    let visible_text: Rc<RefCell<String>> =
-        Rc::new(RefCell::new(String::with_capacity(text_capacity)));
+    let mut title: Option<String> = None;
+    let mut base_href: Option<String> = None;
+    let mut raw_links: Vec<String> = Vec::with_capacity(128);
+    let mut collapsed_text = String::with_capacity(text_capacity);
     let excluded_depth: Rc<Cell<u32>> = Rc::new(Cell::new(0));
 
-    let title_for_text = Rc::clone(&title);
-    let base_for_handler = Rc::clone(&base_href);
-    let links_for_handler = Rc::clone(&raw_links);
     let depth_for_enter = Rc::clone(&excluded_depth);
-    let text_buffer = Rc::clone(&visible_text);
     let depth_for_text = Rc::clone(&excluded_depth);
+    let text_buffer = &mut collapsed_text;
+    // Whitespace is collapsed as chunks stream in, so the accumulator
+    // never holds the raw (uncollapsed) body and no second pass is
+    // needed. `last_was_whitespace` starts true to drop leading space.
+    let mut last_was_whitespace = true;
 
     {
         let mut rewriter = HtmlRewriter::new(
             Settings {
                 element_content_handlers: vec![
-                    text!("title", move |chunk| {
+                    text!("title", |chunk| {
                         let chunk_text = chunk.as_str();
-                        let mut current = title_for_text.borrow_mut();
-                        match current.as_mut() {
+                        match title.as_mut() {
                             Some(existing) => existing.push_str(chunk_text),
-                            None => *current = Some(chunk_text.to_string()),
+                            None => title = Some(chunk_text.to_string()),
                         }
                         Ok(())
                     }),
-                    element!("base[href]", move |el| {
+                    element!("base[href]", |el| {
                         if let Some(href) = el.get_attribute("href") {
-                            *base_for_handler.borrow_mut() = Some(href);
+                            base_href = Some(href);
                         }
                         Ok(())
                     }),
-                    element!("a[href]", move |el| {
+                    element!("a[href]", |el| {
                         if let Some(href) = el.get_attribute("href") {
-                            links_for_handler.borrow_mut().push(href);
+                            raw_links.push(href);
                         }
                         Ok(())
                     }),
@@ -177,7 +183,17 @@ fn extract_html(body: &[u8]) -> Result<Extracted> {
                     }),
                     text!("body", move |chunk| {
                         if depth_for_text.get() == 0 {
-                            text_buffer.borrow_mut().push_str(chunk.as_str());
+                            for ch in chunk.as_str().chars() {
+                                if ch.is_whitespace() {
+                                    if !last_was_whitespace {
+                                        text_buffer.push(' ');
+                                        last_was_whitespace = true;
+                                    }
+                                } else {
+                                    text_buffer.push(ch);
+                                    last_was_whitespace = false;
+                                }
+                            }
                         }
                         Ok(())
                     }),
@@ -198,20 +214,15 @@ fn extract_html(body: &[u8]) -> Result<Extracted> {
             .map_err(|err| Error::Parse(format!("lol_html end failed: {err}")))?;
     }
 
-    // Closures are dropped here, so the only remaining Rc clones are ours.
+    if collapsed_text.ends_with(' ') {
+        collapsed_text.pop();
+    }
+
     Ok(Extracted {
-        title: Rc::try_unwrap(title)
-            .ok()
-            .and_then(|cell| cell.into_inner()),
-        base_href: Rc::try_unwrap(base_href)
-            .ok()
-            .and_then(|cell| cell.into_inner()),
-        raw_links: Rc::try_unwrap(raw_links)
-            .map(|cell| cell.into_inner())
-            .unwrap_or_default(),
-        visible_text: Rc::try_unwrap(visible_text)
-            .map(|cell| cell.into_inner())
-            .unwrap_or_default(),
+        title,
+        base_href,
+        raw_links,
+        collapsed_text,
     })
 }
 
@@ -222,7 +233,7 @@ fn extract_html(body: &[u8]) -> Result<Extracted> {
 /// don't allocate a parallel `Vec` for dropped URLs because the
 /// per-fetch metric only needs the cardinality, not the values.
 fn resolve_links(raw: &[String], base: &CanonicalUrl) -> (Vec<CanonicalUrl>, usize) {
-    let mut seen = HashSet::new();
+    let mut seen = HashSet::with_capacity(raw.len());
     // Pre-size: upper bound is `raw.len()` (some hrefs drop out for
     // empty / anchor-only / parse-failure / extension-deny reasons,
     // but allocating once up-front beats the doubling chain on link-
@@ -244,36 +255,12 @@ fn resolve_links(raw: &[String], base: &CanonicalUrl) -> (Vec<CanonicalUrl>, usi
             extension_denied += 1;
             continue;
         }
-        if seen.insert(resolved.clone()) {
+        if !seen.contains(&resolved) {
+            seen.insert(resolved.clone());
             out.push(resolved);
         }
     }
     (out, extension_denied)
-}
-
-/// Collapse runs of whitespace into a single space and trim.
-///
-/// HTML text content has a lot of incidental whitespace (newlines after
-/// tags, indentation). We don't preserve it because the downstream LanceDB
-/// embedding case wants a clean prose-like string.
-fn collapse_whitespace(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    let mut last_was_whitespace = true; // skip leading whitespace
-    for ch in input.chars() {
-        if ch.is_whitespace() {
-            if !last_was_whitespace {
-                out.push(' ');
-                last_was_whitespace = true;
-            }
-        } else {
-            out.push(ch);
-            last_was_whitespace = false;
-        }
-    }
-    if out.ends_with(' ') {
-        out.pop();
-    }
-    out
 }
 
 /// Two-gate filter before lol_html. Returns `Some(label)` if the response
@@ -303,34 +290,38 @@ fn skip_reason(response: &FetchResponse) -> Option<&'static str> {
     None
 }
 
+const BINARY_CONTENT_TYPES: &[&str] = &[
+    "application/pdf",
+    "application/zip",
+    "application/gzip",
+    "application/x-gzip",
+    "application/x-tar",
+    "application/x-7z-compressed",
+    "application/x-rar-compressed",
+    "application/x-bzip2",
+    "application/octet-stream",
+    "application/msword",
+    "application/vnd.ms-excel",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+];
+
+const BINARY_CONTENT_TYPE_PREFIXES: &[&str] = &["image/", "audio/", "video/", "font/"];
+
 fn is_binary_content_type(ct: &str) -> bool {
-    let trimmed = ct
-        .split(';')
-        .next()
-        .unwrap_or("")
-        .trim()
-        .to_ascii_lowercase();
+    let trimmed = ct.split(';').next().unwrap_or("").trim();
     if trimmed.is_empty() {
         return false;
     }
-    matches!(
-        trimmed.as_str(),
-        "application/pdf"
-            | "application/zip"
-            | "application/gzip"
-            | "application/x-gzip"
-            | "application/x-tar"
-            | "application/x-7z-compressed"
-            | "application/x-rar-compressed"
-            | "application/x-bzip2"
-            | "application/octet-stream"
-            | "application/msword"
-            | "application/vnd.ms-excel"
-            | "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-            | "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            | "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-    ) || trimmed.starts_with("image/")
-        || trimmed.starts_with("audio/")
-        || trimmed.starts_with("video/")
-        || trimmed.starts_with("font/")
+    if BINARY_CONTENT_TYPES
+        .iter()
+        .any(|candidate| trimmed.eq_ignore_ascii_case(candidate))
+    {
+        return true;
+    }
+    let bytes = trimmed.as_bytes();
+    BINARY_CONTENT_TYPE_PREFIXES.iter().any(|prefix| {
+        bytes.len() >= prefix.len() && bytes[..prefix.len()].eq_ignore_ascii_case(prefix.as_bytes())
+    })
 }

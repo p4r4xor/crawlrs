@@ -14,6 +14,6 @@
 //! [`PostgresMetadataStore::migrate`] before constructing a store.
 
 pub mod metrics;
-pub mod store;
+mod store;
 
 pub use store::PostgresMetadataStore;

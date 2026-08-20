@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use crawlrs_core::{
     Blocklist, Clock, CrawlScope, Fetcher, Frontier, HostHashShardPolicy, LinkDispatch,
-    MetadataStore, Outbox, Parser, Politeness, ShardingPolicy, SiteAdapterRegistry, Store,
+    MetadataStore, Outbox, Parser, Politeness, RunId, ShardingPolicy, SiteAdapterRegistry, Store,
     SystemClock,
 };
 use thiserror::Error;
@@ -175,6 +175,12 @@ impl Crawler {
     /// workers naturally complete (which only happens if the queue
     /// drains *and* shutdown was requested; without shutdown,
     /// workers loop forever waiting for new URLs).
+    ///
+    /// # Errors
+    /// Infallible in practice today: it returns `Ok(())` once the
+    /// worker pool drains. The `Result<(), CrawlerError>` reserves
+    /// space for future startup-validation failures without a later
+    /// signature break.
     pub async fn run(&self) -> Result<(), CrawlerError> {
         info!(workers = self.deps.config.workers, "Crawler starting",);
 
@@ -256,14 +262,24 @@ impl Crawler {
         let _ = self.shutdown_tx.send(true);
     }
 
-    /// Borrow the dep bag. Useful for tests that want to drive the
-    /// frontier directly (e.g. seed URLs before calling `run`).
+    /// Borrow the dep bag. Kept `pub` (not `pub(crate)`) because the
+    /// integration suites in `tests/` compile as separate crates and
+    /// drive the frontier directly through this accessor (e.g. seed
+    /// URLs before calling `run`).
     pub fn deps(&self) -> &WorkerDeps {
         &self.deps
     }
 }
 
 /// Builder. Each setter consumes self for ergonomic chaining.
+///
+/// `#[must_use]` on the type covers the whole fluent surface:
+/// [`Crawler::builder`] and every setter return a `CrawlerBuilder`
+/// (or `Self`), so dropping a chain without calling [`Self::build`]
+/// warns. `build`/`run` return `Result`, which is already
+/// `#[must_use]`, so ignoring their outcome warns too. Annotating
+/// those functions individually would trip `clippy::double_must_use`.
+#[must_use]
 #[derive(Default)]
 pub struct CrawlerBuilder {
     frontier: Option<Arc<dyn Frontier>>,
@@ -284,80 +300,89 @@ pub struct CrawlerBuilder {
     config: Option<CrawlerConfig>,
     crawl_scope: Option<CrawlScope>,
     blocklist: Option<Blocklist>,
-    run_id: Option<String>,
+    run_id: Option<RunId>,
 }
 
 impl CrawlerBuilder {
-    pub fn frontier(mut self, f: Arc<dyn Frontier>) -> Self {
-        self.frontier = Some(f);
+    pub fn frontier(mut self, frontier: Arc<dyn Frontier>) -> Self {
+        self.frontier = Some(frontier);
         self
     }
-    pub fn politeness(mut self, p: Arc<dyn Politeness>) -> Self {
-        self.politeness = Some(p);
+    pub fn politeness(mut self, politeness: Arc<dyn Politeness>) -> Self {
+        self.politeness = Some(politeness);
         self
     }
-    pub fn fetcher(mut self, f: Arc<dyn Fetcher>) -> Self {
-        self.fetcher = Some(f);
+    pub fn fetcher(mut self, fetcher: Arc<dyn Fetcher>) -> Self {
+        self.fetcher = Some(fetcher);
         self
     }
-    pub fn parser(mut self, p: Arc<dyn Parser>) -> Self {
-        self.parser = Some(p);
+    pub fn parser(mut self, parser: Arc<dyn Parser>) -> Self {
+        self.parser = Some(parser);
         self
     }
-    pub fn store(mut self, s: Arc<dyn Store>) -> Self {
-        self.store = Some(s);
+    pub fn store(mut self, store: Arc<dyn Store>) -> Self {
+        self.store = Some(store);
         self
     }
-    pub fn metadata(mut self, m: Arc<dyn MetadataStore>) -> Self {
-        self.metadata = Some(m);
+    pub fn metadata(mut self, metadata: Arc<dyn MetadataStore>) -> Self {
+        self.metadata = Some(metadata);
         self
     }
     /// Set the outbox reader. Production wiring usually passes the
     /// same `Arc` here as in `metadata()` (PostgresMetadataStore
     /// implements both traits).
-    pub fn outbox(mut self, o: Arc<dyn Outbox>) -> Self {
-        self.outbox = Some(o);
+    pub fn outbox(mut self, outbox: Arc<dyn Outbox>) -> Self {
+        self.outbox = Some(outbox);
         self
     }
-    pub fn adapters(mut self, a: Arc<SiteAdapterRegistry>) -> Self {
-        self.adapters = Some(a);
+    pub fn adapters(mut self, adapters: Arc<SiteAdapterRegistry>) -> Self {
+        self.adapters = Some(adapters);
         self
     }
-    pub fn sharding_policy(mut self, p: Arc<dyn ShardingPolicy>) -> Self {
-        self.sharding_policy = Some(p);
+    pub fn sharding_policy(mut self, sharding_policy: Arc<dyn ShardingPolicy>) -> Self {
+        self.sharding_policy = Some(sharding_policy);
         self
     }
     /// Inject a custom [`Clock`]. Defaults to [`SystemClock`]. Tests
     /// pass a `ManualClock` to drive supervisor restart-window math
     /// deterministically.
-    pub fn clock(mut self, c: Arc<dyn Clock>) -> Self {
-        self.clock = Some(c);
+    pub fn clock(mut self, clock: Arc<dyn Clock>) -> Self {
+        self.clock = Some(clock);
         self
     }
-    pub fn config(mut self, c: CrawlerConfig) -> Self {
-        self.config = Some(c);
+    pub fn config(mut self, config: CrawlerConfig) -> Self {
+        self.config = Some(config);
         self
     }
     /// Inject the `[crawl]` config table (per-host depth + URL
     /// caps). Defaults to an unbounded scope when omitted, which
     /// is appropriate for tests that don't exercise scope
     /// controls.
-    pub fn crawl_scope(mut self, s: CrawlScope) -> Self {
-        self.crawl_scope = Some(s);
+    pub fn crawl_scope(mut self, crawl_scope: CrawlScope) -> Self {
+        self.crawl_scope = Some(crawl_scope);
         self
     }
     /// Inject the `[access]` blocklist. Defaults to an empty
     /// blocklist when omitted. Checked by the worker's
     /// `politeness_allows` before delegating to `Politeness::check`.
-    pub fn blocklist(mut self, b: Blocklist) -> Self {
-        self.blocklist = Some(b);
+    pub fn blocklist(mut self, blocklist: Blocklist) -> Self {
+        self.blocklist = Some(blocklist);
         self
     }
-    pub fn run_id(mut self, id: impl Into<String>) -> Self {
+    pub fn run_id(mut self, id: impl Into<RunId>) -> Self {
         self.run_id = Some(id.into());
         self
     }
 
+    /// Assemble the [`Crawler`] from the injected dependencies.
+    ///
+    /// # Errors
+    /// Returns [`CrawlerError::MissingDep`] naming the first required
+    /// dependency that was not supplied. The required set is
+    /// `frontier`, `politeness`, `fetcher`, `parser`, `store`,
+    /// `metadata`, `outbox`, and `run_id`; `adapters`,
+    /// `sharding_policy`, `clock`, `config`, `crawl_scope`, and
+    /// `blocklist` fall back to defaults when omitted.
     pub fn build(self) -> Result<Crawler, CrawlerError> {
         let frontier = self.frontier.ok_or(CrawlerError::MissingDep("frontier"))?;
         let politeness = self

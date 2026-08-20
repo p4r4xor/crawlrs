@@ -2,11 +2,11 @@
 //! when tests explicitly call [`ManualClock::advance_ms`].
 //!
 //! The production [`Clock`] impl reads the OS monotonic clock; tests
-//! that need to drive time-dependent behavior (visibility timeouts,
-//! XAUTOCLAIM idle thresholds, supervisor reset windows) instead pin
-//! the clock to a known value, exercise the path, advance, and
-//! re-exercise. Backing storage is `AtomicU64` so the double is
-//! cheap to share across tasks via `Arc`.
+//! that need to drive time-dependent behavior (wake-times, lease-timeout
+//! reclaim, supervisor reset windows) instead pin the clock to a known
+//! value, exercise the path, advance, and re-exercise. Backing storage
+//! is `AtomicU64` so the double is cheap to share across tasks via
+//! `Arc`.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 

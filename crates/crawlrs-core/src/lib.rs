@@ -14,6 +14,7 @@
 //! - [`url`] - the `CanonicalUrl` newtype + canonicalization rules.
 //! - [`error`] - the crate-wide `Error` enum.
 //! - [`hash`] - pure helper functions for FNV-1a + content hashing.
+//! - [`run_id`] - the `RunId` newtype identifying one crawl run.
 //! - [`crawl_scope`] - operator-mandated per-host depth and URL caps.
 //! - [`blocklist`] - operator-mandated host exclusion set.
 
@@ -21,6 +22,7 @@ pub mod blocklist;
 pub mod crawl_scope;
 pub mod error;
 pub mod hash;
+pub mod run_id;
 pub mod traits;
 pub mod types;
 pub mod url;
@@ -29,6 +31,7 @@ pub use blocklist::Blocklist;
 pub use crawl_scope::{CrawlOverride, CrawlScope};
 pub use error::{Error, Result};
 pub use hash::{content_hash, fnv1a_64};
+pub use run_id::RunId;
 pub use traits::backoff_tracker::BackoffTracker;
 pub use traits::clock::{Clock, SystemClock};
 pub use traits::fetcher::Fetcher;
@@ -39,7 +42,9 @@ pub use traits::parser::Parser;
 pub use traits::politeness::{DisallowReason, FailureKind, PoliteDecision, Politeness};
 pub use traits::proxy::{ProxyOutcome, ProxyResolver, ProxySelection};
 pub use traits::robots_checker::RobotsChecker;
-pub use traits::sharding::{HostHashShardPolicy, ShardKey, ShardingPolicy, SingleShardPolicy};
+pub use traits::sharding::{
+    HostHashShardPolicy, ShardKey, ShardingPolicy, SingleShardPolicy, owned_shards_for_replica,
+};
 pub use traits::site_adapter::{SiteAdapter, SiteAdapterRegistry};
 pub use traits::store::Store;
 pub use traits::wake_planner::WakePlanner;

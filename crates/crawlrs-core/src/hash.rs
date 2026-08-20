@@ -8,6 +8,7 @@
 
 /// FNV-1a 64-bit hash. Deterministic, no per-process seed, no
 /// allocation, no dependency.
+#[must_use]
 pub fn fnv1a_64(bytes: &[u8]) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for &byte in bytes {
@@ -21,6 +22,7 @@ pub fn fnv1a_64(bytes: &[u8]) -> u64 {
 /// [`UrlMetadata::content_hash`](crate::types::UrlMetadata::content_hash).
 /// Wraps [`fnv1a_64`] so callers don't need to know the underlying
 /// hash function.
+#[must_use]
 pub fn content_hash(body: &[u8]) -> u64 {
     fnv1a_64(body)
 }

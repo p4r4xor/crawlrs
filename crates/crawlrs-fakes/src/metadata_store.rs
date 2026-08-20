@@ -19,7 +19,7 @@ use std::time::SystemTime;
 
 use async_trait::async_trait;
 use crawlrs_core::{
-    CanonicalUrl, Error, FailureKind, MetadataStore, Outbox, OutboxRowId, Result, ShipFn,
+    CanonicalUrl, Error, FailureKind, MetadataStore, Outbox, OutboxRowId, Result, RunId, ShipFn,
     SkipReason, SuccessRecord, UrlMetadata, UrlStatus,
 };
 
@@ -30,10 +30,10 @@ use crate::outbox::{self, OutboxState};
 ///
 /// `succeeded_attempts` mirrors the Postgres impl's
 /// `url_history.attempt_id` UNIQUE constraint: if the same
-/// `(url, attempt_id)` pair is `mark_succeeded`'d twice (e.g. because
-/// `XAUTOCLAIM` redelivered an attempt that got past the DB write but
-/// not the `XACK`), the second call is a no-op on the history side.
-/// `succeeded_history_count` exposes that fact for tests.
+/// `(url, attempt_id)` pair is `mark_succeeded`'d twice (e.g. because a
+/// lease-timeout reclaim redelivered an attempt that got past the DB
+/// write but not the `frontier.ack`), the second call is a no-op on the
+/// history side. `succeeded_history_count` exposes that fact for tests.
 #[derive(Default)]
 struct LedgerState {
     rows: HashMap<String, UrlMetadata>,
@@ -100,7 +100,7 @@ impl MetadataStore for InMemoryMetadataStore {
         Ok(self.ledger.lock().unwrap().rows.get(url.as_str()).cloned())
     }
 
-    async fn mark_attempting(&self, url: &CanonicalUrl, run_id: &str, depth: u32) -> Result<()> {
+    async fn mark_attempting(&self, url: &CanonicalUrl, run_id: &RunId, depth: u32) -> Result<()> {
         let mut ledger = self.ledger.lock().unwrap();
         let now = SystemTime::now();
         ledger
@@ -189,7 +189,7 @@ impl MetadataStore for InMemoryMetadataStore {
     async fn mark_discovered_skipped(
         &self,
         url: &CanonicalUrl,
-        run_id: &str,
+        run_id: &RunId,
         depth: u32,
         discovered_from: Option<&CanonicalUrl>,
         _reason: SkipReason,

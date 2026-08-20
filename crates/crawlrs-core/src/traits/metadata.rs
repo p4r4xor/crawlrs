@@ -5,6 +5,7 @@
 use async_trait::async_trait;
 
 use crate::error::Result;
+use crate::run_id::RunId;
 use crate::traits::politeness::FailureKind;
 use crate::types::{AttemptId, SkipReason, UrlEntry, UrlMetadata};
 use crate::url::CanonicalUrl;
@@ -21,7 +22,7 @@ use crate::url::CanonicalUrl;
 pub struct SuccessRecord<'a> {
     /// The URL that was fetched.
     pub url: &'a CanonicalUrl,
-    /// Correlation token from the [`crate::traits::frontier::ClaimedMessage`]
+    /// Correlation token from the [`crate::traits::frontier::ClaimOutcome`]
     /// that drove this attempt. Implementations use it to dedupe on
     /// redelivery.
     pub attempt_id: &'a AttemptId,
@@ -51,6 +52,11 @@ pub struct SuccessRecord<'a> {
 #[async_trait]
 pub trait MetadataStore: Send + Sync {
     /// Read the metadata ledger for `url`. `None` means "never seen."
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backing store is unreachable or the
+    /// stored row cannot be decoded.
     async fn get(&self, url: &CanonicalUrl) -> Result<Option<UrlMetadata>>;
 
     /// Mark the URL as in-flight. Creates the row if absent (with
@@ -58,18 +64,23 @@ pub trait MetadataStore: Send + Sync {
     /// `status -> InProgress`, `last_run_id`, `depth`, and
     /// `updated_at`. `retry_count` is preserved across attempts and
     /// only reset by `mark_succeeded`.
-    async fn mark_attempting(&self, url: &CanonicalUrl, run_id: &str, depth: u32) -> Result<()>;
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backing store cannot commit the
+    /// state transition.
+    async fn mark_attempting(&self, url: &CanonicalUrl, run_id: &RunId, depth: u32) -> Result<()>;
 
     /// Successful fetch + persist. `status -> Succeeded`,
     /// `retry_count` reset to 0, `blob_path` and `content_hash`
     /// recorded, `updated_at` advanced.
     ///
     /// `record.attempt_id` is the correlation token from the
-    /// [`crate::traits::frontier::ClaimedMessage`] that drove this
+    /// [`crate::traits::frontier::ClaimOutcome`] that drove this
     /// attempt. Implementations that maintain an append-only history
     /// MUST treat `(url, attempt_id)` as the uniqueness key on the
-    /// history row so that re-delivery of the same attempt (e.g. via
-    /// `XAUTOCLAIM` after a stall between this call and
+    /// history row so that re-delivery of the same attempt (e.g. via a
+    /// lease-timeout reclaim after a stall between this call and
     /// `frontier.ack`) does not duplicate ledger entries.
     ///
     /// `record.outbound` is the set of newly-discovered URLs to
@@ -83,11 +94,21 @@ pub trait MetadataStore: Send + Sync {
     /// the redelivery case. The same uniqueness rule applies: a
     /// redelivered `(url, attempt_id)` MUST NOT duplicate outbox
     /// rows.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the metadata + outbox transaction cannot
+    /// be committed to the backing store.
     async fn mark_succeeded(&self, record: &SuccessRecord<'_>) -> Result<()>;
 
     /// Transient failure: `status -> FailedTransient`, `retry_count`
     /// atomically incremented, `updated_at` advanced. Returns the new
     /// retry count so the caller can decide whether to give up.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backing store cannot commit the
+    /// increment.
     async fn mark_failed(&self, url: &CanonicalUrl, kind: FailureKind) -> Result<u32>;
 
     /// Give-up. `status -> PermanentlyFailed`, the URL is left in
@@ -95,6 +116,11 @@ pub trait MetadataStore: Send + Sync {
     /// `'permanently_failed'`); a `permanently_failed` event row
     /// carrying `reason` is appended to `url_history` so operators can
     /// inspect "what broke?" via SQL.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backing store cannot commit the
+    /// terminal state and history row.
     async fn mark_permanently_failed(&self, url: &CanonicalUrl, reason: &str) -> Result<()>;
 
     /// Record a URL that was discovered but will not be attempted.
@@ -110,10 +136,15 @@ pub trait MetadataStore: Send + Sync {
     ///
     /// No `url_history` row is written: skipped URLs never transition
     /// (the row enters in its terminal state).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backing store cannot commit the
+    /// skip row.
     async fn mark_discovered_skipped(
         &self,
         url: &CanonicalUrl,
-        run_id: &str,
+        run_id: &RunId,
         depth: u32,
         discovered_from: Option<&CanonicalUrl>,
         reason: SkipReason,

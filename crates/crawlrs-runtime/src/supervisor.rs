@@ -8,11 +8,11 @@
 //! Why this layer: panics in a worker task today are silently dropped
 //! by `tokio::spawn`, leaving the pool degraded at `W-1` workers
 //! permanently. A poison URL or transient parser bug would leak the
-//! entire fleet over time. With supervision, the worker reattaches to
-//! its own PEL via stable [`crawlrs_core::WorkerIdentity`] so respawn
-//! is correctness-preserving: any URL that was in flight at the moment
-//! of panic is still in the consumer's PEL on the Redis side and gets
-//! re-delivered on the restarted worker's next `claim()`.
+//! entire fleet over time. With supervision, the worker reattaches via
+//! its stable [`crawlrs_core::WorkerIdentity`] so respawn is
+//! correctness-preserving: any URL that was in flight at the moment of
+//! panic is still leased to this worker identity and gets re-delivered
+//! on the restarted worker's next `claim()`.
 //!
 //! The supervisor runs as a tokio task (one per worker), distinct
 //! from the worker task it manages. Supervisor lifecycle:
