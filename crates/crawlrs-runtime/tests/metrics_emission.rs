@@ -23,7 +23,6 @@ fn metric_name_contract_holds() {
     // putting this test in its own integration-test file isolates it.
     recorder.install().expect("install DebuggingRecorder");
 
-    // ---- runtime layer ----
     let w = crawlrs_runtime::metrics::LABEL_WORKER;
     metrics::counter!(crawlrs_runtime::metrics::URLS_FETCHED_TOTAL, w => "pod-0:0").increment(1);
     metrics::counter!(crawlrs_runtime::metrics::URLS_FAILED_TOTAL, "kind" => "other", w => "pod-0:0").increment(1);
@@ -42,7 +41,6 @@ fn metric_name_contract_holds() {
     metrics::gauge!(crawlrs_runtime::metrics::WORKERS_ACTIVE, w => "pod-0:0").set(0.0);
     metrics::histogram!(crawlrs_runtime::metrics::PIPELINE_SECONDS, w => "pod-0:0").record(0.1);
 
-    // ---- frontier layer ----
     metrics::counter!(
         crawlrs_frontier::metrics::FRONTIER_CLAIM_TOTAL,
         "shard" => "0",
@@ -78,7 +76,6 @@ fn metric_name_contract_holds() {
     .increment(0);
     metrics::counter!(crawlrs_frontier::metrics::FRONTIER_PROMOTED_TOTAL).increment(0);
 
-    // ---- politeness layer ----
     metrics::counter!(crawlrs_politeness::metrics::ROBOTS_CACHE_HITS_TOTAL).increment(1);
     metrics::counter!(crawlrs_politeness::metrics::ROBOTS_CACHE_MISSES_TOTAL).increment(1);
     metrics::histogram!(crawlrs_politeness::metrics::POLITENESS_BACKOFF_SECONDS).record(30.0);
@@ -95,7 +92,6 @@ fn metric_name_contract_holds() {
     .increment(1);
     metrics::gauge!(crawlrs_politeness::metrics::POLITENESS_POOL_PENDING).set(0.0);
 
-    // ---- fetch layer ----
     metrics::histogram!(
         crawlrs_fetch::metrics::FETCH_SECONDS,
         "kind" => crawlrs_fetch::classify::KIND_PAGE,
@@ -119,11 +115,9 @@ fn metric_name_contract_holds() {
     )
     .record(0.5);
 
-    // ---- parse layer ----
     metrics::histogram!(crawlrs_parse::metrics::PARSE_SECONDS).record(0.005);
     metrics::histogram!(crawlrs_parse::metrics::PARSE_LINKS_DISCOVERED).record(20.0);
 
-    // ---- metadata layer ----
     metrics::histogram!(
         crawlrs_metadata::metrics::METADATA_QUERY_SECONDS,
         "op" => crawlrs_metadata::metrics::OP_GET,
@@ -132,7 +126,6 @@ fn metric_name_contract_holds() {
     metrics::gauge!(crawlrs_metadata::metrics::METADATA_POOL_PENDING).set(0.0);
     metrics::gauge!(crawlrs_metadata::metrics::DLQ_SIZE).set(0.0);
 
-    // ---- store layer ----
     metrics::histogram!(
         crawlrs_store::metrics::STORE_WRITE_SECONDS,
         "format" => crawlrs_store::metrics::FORMAT_PARQUET,
@@ -151,7 +144,6 @@ fn metric_name_contract_holds() {
     )
     .set(0.0);
 
-    // ---- snapshot + assert ----
     let snapshot = snapshotter.snapshot();
     let captured: HashSet<String> = snapshot
         .into_vec()

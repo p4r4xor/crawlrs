@@ -14,7 +14,6 @@ fn fnv1a_known_vectors() {
 
 #[test]
 fn content_hash_is_stable() {
-    // Same body must produce the same value across calls.
     let body = b"the quick brown fox jumps over the lazy dog";
     let first = content_hash(body);
     for _ in 0..100 {

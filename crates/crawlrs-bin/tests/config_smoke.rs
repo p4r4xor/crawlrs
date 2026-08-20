@@ -40,12 +40,10 @@ fn summary_format_is_stable() {
     assert!(summary.contains("listen="));
 }
 
-// ---------------------------------------------------------------------------
 // Hard-break migration: keys that previously lived under `[politeness]` now
 // live under `[crawl]` (max_depth, max_urls) or `[access]` (blocklist). The
 // slimmed `PolitenessConfig` carries `deny_unknown_fields`, so any legacy
 // TOML produces a parse-time error that names the offending key.
-// ---------------------------------------------------------------------------
 
 fn parse_inline(toml_str: &str) -> anyhow::Result<CrawlrsConfig> {
     // Build a complete config by overlaying `toml_str` on top of the

@@ -34,10 +34,6 @@ fn now_epoch_ms() -> u64 {
         .as_millis() as u64
 }
 
-// ---------------------------------------------------------------------------
-// Fixture
-// ---------------------------------------------------------------------------
-
 /// Owns the testcontainers Redis Stack container and a bb8 pool wired
 /// to it. Dropping the fixture stops the container.
 struct RedisFixture {
@@ -113,10 +109,6 @@ fn unwrap_claimed(outcome: ClaimOutcome) -> (UrlId, UrlEntry, crawlrs_core::Atte
         other => panic!("expected Claimed, got {other:?}"),
     }
 }
-
-// ---------------------------------------------------------------------------
-// Submit
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn submit_first_url_returns_queued() {
@@ -248,10 +240,6 @@ async fn submit_dedups_across_runs() {
     ));
 }
 
-// ---------------------------------------------------------------------------
-// Claim / Promote / Empty
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn claim_returns_empty_when_no_urls_submitted() {
     let fx = fixture().await;
@@ -317,7 +305,6 @@ async fn advance_wake_blocks_re_claim_until_promoted() {
 
     let (_, _, attempt) = unwrap_claimed(frontier.claim(&IDENTITY).await.unwrap());
 
-    // Set the host's wake to 200ms out, ack the claim.
     let until_ms = now_epoch_ms() + 200;
     frontier.advance_wake("a.test", until_ms).await.unwrap();
     frontier.ack(&attempt).await.unwrap();
@@ -337,10 +324,6 @@ async fn advance_wake_blocks_re_claim_until_promoted() {
     let (_, entry, _) = unwrap_claimed(claimed);
     assert_eq!(entry.url.as_str(), "https://a.test/2");
 }
-
-// ---------------------------------------------------------------------------
-// Lease + reclaim
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn expired_lease_is_reclaimed_and_url_re_pushed() {
@@ -381,10 +364,6 @@ async fn expired_lease_is_reclaimed_and_url_re_pushed() {
     assert_eq!(entry.url.as_str(), "https://a.test/");
 }
 
-// ---------------------------------------------------------------------------
-// AttemptId + ack
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn ack_removes_url_from_state() {
     let fx = fixture().await;
@@ -404,10 +383,6 @@ async fn ack_removes_url_from_state() {
     ));
     assert_eq!(frontier.len().await.unwrap(), 0);
 }
-
-// ---------------------------------------------------------------------------
-// Sharding
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn host_hash_policy_routes_urls_to_owned_shard() {
@@ -470,10 +445,6 @@ async fn submit_rejects_url_for_unowned_shard() {
         "expected ShardNotOwned error; got {msg}",
     );
 }
-
-// ---------------------------------------------------------------------------
-// Per-host quota (`[crawl].max_urls`) enforcement via submit_batch.lua
-// ---------------------------------------------------------------------------
 
 fn scope_with_host_cap(host: &str, max_urls: u64) -> crawlrs_core::CrawlScope {
     let per_domain: std::collections::HashMap<String, crawlrs_core::CrawlOverride> = [(

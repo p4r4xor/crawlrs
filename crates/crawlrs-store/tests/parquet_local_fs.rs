@@ -87,7 +87,6 @@ async fn write_then_read_back_one_shard() {
         .unwrap();
     store.flush().await.unwrap();
 
-    // Walk the tempdir and find the one Parquet file we expect.
     let parquet_files = walk_parquet_files(tmp.path());
     assert_eq!(
         parquet_files.len(),
@@ -103,7 +102,6 @@ async fn write_then_read_back_one_shard() {
     assert!(path_str.contains("worker=0"), "path: {path_str}");
     assert!(path_str.ends_with(".parquet"), "path: {path_str}");
 
-    // Read back via the parquet crate.
     let bytes = std::fs::read(file_path).unwrap();
     let reader = ParquetRecordBatchReaderBuilder::try_new(bytes::Bytes::from(bytes))
         .unwrap()

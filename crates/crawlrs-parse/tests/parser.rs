@@ -99,7 +99,6 @@ async fn dedupes_via_canonicalization() {
             <a href="/page#anchor">d</a>"##,
     );
     let doc = p.parse(&r).await.unwrap();
-    // All four collapse to https://example.com/page after canonicalization.
     let urls: Vec<&str> = doc.outbound_links.iter().map(|u| u.as_str()).collect();
     assert_eq!(urls, vec!["https://example.com/page"]);
 }

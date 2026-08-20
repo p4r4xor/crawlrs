@@ -96,7 +96,6 @@ pub async fn crawl(args: CrawlArgs) -> Result<()> {
     // tearing down the instant SIGTERM lands.
     let (http_shutdown_tx, http_shutdown_rx) = watch::channel(false);
 
-    // HTTP host (axum) - separate task. Stops cleanly on shutdown.
     let http_handle = tokio::spawn(http::serve(
         config.server.listen.clone(),
         prom_handle,
@@ -104,7 +103,6 @@ pub async fn crawl(args: CrawlArgs) -> Result<()> {
         http_shutdown_rx,
     ));
 
-    // Maintenance loop - periodic gauge refresh.
     let maintenance_handle = tokio::spawn(maintenance::run(
         built.frontier.clone(),
         built.politeness.clone(),
@@ -112,7 +110,6 @@ pub async fn crawl(args: CrawlArgs) -> Result<()> {
         shutdown_rx.clone(),
     ));
 
-    // Signal handler - flips the shutdown watch on SIGTERM/SIGINT.
     let signal_handle = tokio::spawn(shutdown::wait_for_signal(shutdown_tx));
 
     // Worker pool - runs until the shared CrawlerBuilder shutdown
@@ -133,8 +130,6 @@ pub async fn crawl(args: CrawlArgs) -> Result<()> {
         // Lets in-flight scrapes / probe checks land.
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
         crawler_for_signal.shutdown();
-        // Drain window elapsed and workers signalled; now retire the
-        // HTTP listener.
         let _ = http_shutdown_tx.send(true);
     });
 

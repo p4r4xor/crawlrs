@@ -334,10 +334,6 @@ impl MetadataStore for PostgresMetadataStore {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
-
 async fn update_url_to_succeeded(
     tx: &mut Transaction<'_, Postgres>,
     url: &CanonicalUrl,

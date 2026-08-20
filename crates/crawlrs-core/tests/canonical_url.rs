@@ -148,9 +148,7 @@ fn fragment_only_difference_collapses() {
     assert_eq!(a, b);
 }
 
-// -------------------------------------------------------------
 // Rules we own (canonicalization layered on top of the url crate).
-// -------------------------------------------------------------
 
 #[test]
 fn strips_utm_and_other_tracking_params() {
@@ -217,10 +215,8 @@ fn strips_userinfo_username_only() {
     assert_eq!(canon("http://user@e.test/page"), "http://e.test/page");
 }
 
-// -------------------------------------------------------------
 // Behaviors the `url` crate handles for us; locked here as
 // regression tests so an upstream change surfaces immediately.
-// -------------------------------------------------------------
 
 #[test]
 fn url_crate_lowercases_scheme() {
@@ -254,10 +250,6 @@ fn url_crate_treats_backslash_as_forward_slash_in_path() {
     assert_eq!(canon("http://e.test/a\\b"), "http://e.test/a/b");
 }
 
-// -------------------------------------------------------------
-// Percent-encoding handling.
-// -------------------------------------------------------------
-
 #[test]
 fn decodes_unreserved_percent_encoded_octets_in_path() {
     // RFC 3986 section 6.2.2.2 mandates this for normalization;
@@ -289,10 +281,6 @@ fn passes_through_invalid_percent_escapes_in_path() {
         "invalid escape should be preserved verbatim somewhere; got {canonical}",
     );
 }
-
-// -------------------------------------------------------------
-// Composite.
-// -------------------------------------------------------------
 
 #[test]
 fn all_rules_compose() {

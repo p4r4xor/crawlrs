@@ -27,10 +27,6 @@ use testcontainers::core::WaitFor;
 use testcontainers::runners::AsyncRunner;
 use testcontainers::{ContainerAsync, GenericImage};
 
-// ---------------------------------------------------------------------------
-// Fixture
-// ---------------------------------------------------------------------------
-
 struct Fixture {
     _container: ContainerAsync<GenericImage>,
     pool: Pool<RedisConnectionManager>,
@@ -193,10 +189,6 @@ fn fast_politeness() -> PolitenessConfig {
         ..Default::default()
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn rate_limit_response_records_failure_and_leaves_lease_to_expire() {
@@ -463,10 +455,6 @@ async fn retry_after_header_extends_politeness_wake_time() {
         "Retry-After: 2 should have parked the host past our 800ms window; got {attempts} attempts",
     );
 }
-
-// ---------------------------------------------------------------------------
-// LinkDispatch strategy
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn direct_mode_skips_outbox_and_enqueues_outbound_directly() {

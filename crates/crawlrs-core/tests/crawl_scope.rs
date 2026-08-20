@@ -28,10 +28,6 @@ fn scope_with_override(
     CrawlScope::new(global_max_depth, global_max_urls, per_domain)
 }
 
-// ---------------------------------------------------------------------------
-// depth_cap: per-domain wins; else global; else None
-// ---------------------------------------------------------------------------
-
 #[test]
 fn depth_cap_returns_none_when_neither_global_nor_per_domain_set() {
     let s = scope(None, None);
@@ -104,10 +100,6 @@ fn depth_cap_none_override_inherits_global() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// max_urls_for: same resolution rule
-// ---------------------------------------------------------------------------
-
 #[test]
 fn max_urls_for_returns_none_when_neither_global_nor_per_domain_set() {
     let s = scope(None, None);
@@ -164,14 +156,8 @@ fn max_urls_for_none_override_inherits_global() {
     assert_eq!(s.max_urls_for("partial.test"), Some(1000));
 }
 
-// ---------------------------------------------------------------------------
-// Partial-override: each field resolves independently
-// ---------------------------------------------------------------------------
-
 #[test]
 fn partial_override_resolves_each_field_independently() {
-    // Global has both; override has only one. The set field wins
-    // for that host; the unset field falls back to global.
     let s = scope_with_override(
         Some(5),
         Some(1000),

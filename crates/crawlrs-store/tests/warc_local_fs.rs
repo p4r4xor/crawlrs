@@ -94,7 +94,6 @@ async fn warc_roundtrip_one_shard() {
     assert!(path_str.contains("/warc/"));
     assert!(path_str.ends_with(".warc.gz"));
 
-    // Decompress concatenated gzip streams and grep for expected WARC records.
     let raw = std::fs::read(path).unwrap();
     let mut decoded = String::new();
     MultiGzDecoder::new(raw.as_slice())

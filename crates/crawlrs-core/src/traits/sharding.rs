@@ -79,20 +79,6 @@ impl HostHashShardPolicy {
     }
 }
 
-/// Shards owned by replica `ordinal` out of `replicas` total, across
-/// `num_shards` shards. Each replica owns a strided subset: `ordinal`,
-/// `ordinal + replicas`, `ordinal + 2*replicas`, ... below `num_shards`.
-/// Distinct replicas own disjoint shard sets, so no shard is ever
-/// double-owned. Returns an empty `Vec` when the replica owns nothing
-/// (`ordinal >= num_shards`, or `replicas == 0`).
-#[must_use]
-pub fn owned_shards_for_replica(ordinal: u32, replicas: u32, num_shards: u32) -> Vec<ShardKey> {
-    if replicas == 0 {
-        return Vec::new();
-    }
-    (ordinal..num_shards).step_by(replicas as usize).collect()
-}
-
 impl ShardingPolicy for HostHashShardPolicy {
     fn shard_key(&self, url: &CanonicalUrl) -> ShardKey {
         self.shard_key_from_host(url.host().unwrap_or(""))

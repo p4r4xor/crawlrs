@@ -245,7 +245,6 @@ impl Crawler {
             tasks.spawn(supervise_worker(identity, deps, w_shutdown, policy));
         }
 
-        // Drain.
         while let Some(joined) = tasks.join_next().await {
             if let Err(e) = joined {
                 warn!(error = %e, "worker / maintenance task panicked");

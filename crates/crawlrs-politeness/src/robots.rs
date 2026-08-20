@@ -155,19 +155,16 @@ impl RobotsCache {
     /// absent). On miss in either lower tier, populates the upper
     /// tier on the way back up.
     async fn body_for(&self, host: &str, source_url: &CanonicalUrl) -> LocalResult<Bytes> {
-        // Tier 1: in-process LRU.
         if let Some(cached) = self.in_process.get(host) {
             metrics::counter!(crate::metrics::ROBOTS_CACHE_HITS_TOTAL).increment(1);
             return Ok(cached);
         }
-        // Tier 2: Redis.
         if let Some(redis_cached) = self.read_cache(host, source_url).await? {
             self.in_process
                 .insert(host.to_string(), redis_cached.clone());
             metrics::counter!(crate::metrics::ROBOTS_CACHE_HITS_TOTAL).increment(1);
             return Ok(redis_cached);
         }
-        // Tier 3: network fetch.
         metrics::counter!(crate::metrics::ROBOTS_CACHE_MISSES_TOTAL).increment(1);
         let body = self.fetch_and_cache(host, source_url).await?;
         self.in_process.insert(host.to_string(), body.clone());

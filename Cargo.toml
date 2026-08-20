@@ -48,7 +48,7 @@ simdutf8    = "0.1"
 moka        = { version = "0.12", features = ["sync"] }
 arrow       = { version = "58", default-features = false }
 parquet     = { version = "58", default-features = false, features = ["arrow", "zstd"] }
-object_store = { version = "0.13", default-features = false, features = ["aws", "fs"] }
+object_store = { version = "0.14", default-features = false, features = ["aws", "fs"] }
 flate2      = "1"
 metrics     = "0.24"
 metrics-util = { version = "0.20", features = ["debugging"] }

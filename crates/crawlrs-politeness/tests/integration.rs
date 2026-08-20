@@ -28,10 +28,6 @@ use testcontainers_modules::redis::Redis;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
 use testcontainers_modules::testcontainers::{ContainerAsync, ImageExt};
 
-// ---------------------------------------------------------------------------
-// Fixtures
-// ---------------------------------------------------------------------------
-
 struct RedisFixture {
     _container: ContainerAsync<Redis>,
     pool: Pool<RedisConnectionManager>,
@@ -91,10 +87,6 @@ fn delay_from_now(until_ms: u64) -> Duration {
         .as_millis() as u64;
     Duration::from_millis(until_ms.saturating_sub(now_ms))
 }
-
-// ---------------------------------------------------------------------------
-// check(): allow / disallow
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn unseen_host_is_allowed() {
@@ -171,10 +163,6 @@ async fn circuit_half_opens_after_backoff_window_elapses() {
     assert_eq!(p.check(&u).await.unwrap(), PoliteDecision::Allow);
 }
 
-// ---------------------------------------------------------------------------
-// record_fetch(): NextWake math
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn record_fetch_returns_next_wake_at_now_plus_host_delay() {
     let fx = fixture().await;
@@ -250,10 +238,6 @@ async fn record_fetch_resets_circuit_breaker_state() {
     p.record_fetch(&u).await.unwrap();
     assert_eq!(p.check(&u).await.unwrap(), PoliteDecision::Allow);
 }
-
-// ---------------------------------------------------------------------------
-// record_failure(): NextWake math
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn record_failure_returns_next_wake_with_backoff() {
@@ -342,10 +326,6 @@ async fn record_failure_honors_retry_after_as_floor() {
         "server Retry-After 10s should be honored as the floor; got {delay:?}",
     );
 }
-
-// ---------------------------------------------------------------------------
-// robots.txt
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn robots_txt_blocks_disallowed_path_and_caches_body() {

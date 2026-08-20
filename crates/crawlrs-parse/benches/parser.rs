@@ -52,7 +52,6 @@ fn synth_text_heavy() -> String {
                 Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. \
                 Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris \
                 nisi ut aliquip ex ea commodo consequat. ";
-    // Aim for ~256 KB.
     let target = 256 * 1024;
     let mut html = String::from("<!DOCTYPE html><html><body><h1>Text-heavy synthetic fixture</h1>");
     while html.len() < target {

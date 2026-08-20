@@ -39,7 +39,6 @@ async fn submit_then_tick_then_claim_yields_url() {
         ClaimOutcome::Claimed { .. } => panic!("should not have a ready host yet"),
     }
 
-    // Promote: tick drains wake -> ready.
     f.tick().await.unwrap();
 
     let claimed = f.claim(&ident()).await.unwrap();
@@ -77,7 +76,6 @@ async fn ack_removes_url_from_state() {
     f.ack(&attempt_id).await.unwrap();
     // Idempotent second ack.
     f.ack(&attempt_id).await.unwrap();
-    // URL HASH gone, inflight gone, host_queue empty.
     assert_eq!(f.len().await.unwrap(), 0);
 }
 
@@ -87,7 +85,6 @@ async fn advance_wake_blocks_re_claim_until_promoted() {
     let clock = Arc::new(ManualClock::new(1_000_000));
     let f = InMemoryFrontier::new(policy, vec![0]).with_clock(clock.clone());
 
-    // Submit two URLs for the same host; promote them.
     f.submit(entry("https://a.test/1")).await.unwrap();
     f.submit(entry("https://a.test/2")).await.unwrap();
     f.tick().await.unwrap();

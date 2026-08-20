@@ -200,10 +200,7 @@ fn extract_html(body: &[u8]) -> Result<Extracted> {
                 ],
                 ..Settings::new()
             },
-            |_rewritten: &[u8]| {
-                // We don't care about the rewritten output; only the data
-                // accumulated by the handlers above.
-            },
+            |_rewritten: &[u8]| {},
         );
 
         rewriter

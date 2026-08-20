@@ -11,7 +11,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use bb8_redis::RedisConnectionManager;
 use crawlrs_core::{
     BackoffTracker, Blocklist, CrawlOverride, CrawlScope, HostHashShardPolicy, RobotsChecker,
-    RunId, ShardKey, ShardingPolicy, WakePlanner, owned_shards_for_replica,
+    RunId, ShardKey, ShardingPolicy, WakePlanner,
 };
 use crawlrs_fetch::{NoProxyResolver, WreqFetcher, WreqFetcherConfig};
 use crawlrs_frontier::{RedisFrontier, RedisFrontierParams, validate_pool_size};
@@ -42,7 +42,15 @@ pub struct Built {
 pub async fn build(config: &CrawlrsConfig) -> Result<Built> {
     let sharding_policy: Arc<dyn ShardingPolicy> =
         Arc::new(HostHashShardPolicy::new(config.sharding.num_shards));
-    let owned_shards = derive_owned_shards(config)?;
+    let replicas = std::env::var("CRAWLRS_REPLICAS")
+        .ok()
+        .and_then(|value| value.parse().ok());
+    let owned_shards = derive_owned_shards(
+        config.sharding.num_shards,
+        config.sharding.owned_shards.as_deref(),
+        pod_ordinal(),
+        replicas,
+    )?;
 
     let redis_pool = build_redis_pool(config).await?;
     let pg_pool = build_postgres_pool(config).await?;
@@ -429,53 +437,42 @@ async fn build_store(config: &CrawlrsConfig) -> Result<Arc<dyn crawlrs_core::Sto
     Ok(Arc::new(multi))
 }
 
-/// Derive owned shards from the operator's choice. Order:
-///
-/// 1. Explicit `[sharding].owned_shards` list in the config wins.
-/// 2. Otherwise, `POD_NAME` env var of shape `<name>-<ordinal>`
-///    decides: ordinal 0 owns shard 0 (and N, 2N, ... if there are
-///    fewer pods than shards), ordinal 1 owns shard 1, etc.
-/// 3. If neither is set (single-process / dev path), all shards are
-///    owned by this process.
-fn derive_owned_shards(config: &CrawlrsConfig) -> Result<Vec<ShardKey>> {
-    if let Some(explicit) = &config.sharding.owned_shards {
+/// An explicit list wins; otherwise a `POD_NAME` ordinal claims the
+/// strided subset `ordinal, ordinal + replicas, ...`; otherwise this
+/// process owns every shard.
+fn derive_owned_shards(
+    num_shards: u32,
+    explicit: Option<&[ShardKey]>,
+    ordinal: Option<u32>,
+    replicas: Option<u32>,
+) -> Result<Vec<ShardKey>> {
+    if let Some(explicit) = explicit {
         for &shard in explicit {
-            if shard >= config.sharding.num_shards {
-                bail!(
-                    "owned_shards entry {shard} >= num_shards {}",
-                    config.sharding.num_shards
-                );
+            if shard >= num_shards {
+                bail!("owned_shards entry {shard} >= num_shards {num_shards}");
             }
         }
-        return Ok(explicit.clone());
+        return Ok(explicit.to_vec());
     }
 
-    if let Some(ordinal) = pod_ordinal() {
-        // Each pod owns a strided subset of shards keyed on its ordinal
-        // and the replica count R (from CRAWLRS_REPLICAS, set by the
-        // StatefulSet template). If R is unset, default it to num_shards
-        // so this pod owns exactly `[ordinal]` and never overlaps a
-        // sibling. (A default of 1 would make pod k claim every shard
-        // >= k, i.e. overlapping ownership across pods.) The strided
-        // ownership math itself lives in crawlrs-core.
-        let replicas: u32 = std::env::var("CRAWLRS_REPLICAS")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(config.sharding.num_shards);
-        let owned = owned_shards_for_replica(ordinal, replicas, config.sharding.num_shards);
-        if owned.is_empty() {
-            bail!(
-                "POD_NAME ordinal {ordinal} >= num_shards {} with replicas={replicas}; \
-                 nothing to own",
-                config.sharding.num_shards
-            );
-        }
-        return Ok(owned);
-    }
+    let Some(ordinal) = ordinal else {
+        return Ok((0..num_shards).collect());
+    };
 
-    // No POD_NAME and no explicit list; assume single-process and
-    // own every shard.
-    Ok((0..config.sharding.num_shards).collect())
+    // Unset replicas defaults to num_shards, so a pod owns exactly
+    // `[ordinal]`; a default of 1 would make pod k claim every shard >= k.
+    let replicas = replicas.unwrap_or(num_shards);
+    let owned: Vec<ShardKey> = if replicas == 0 {
+        Vec::new()
+    } else {
+        (ordinal..num_shards).step_by(replicas as usize).collect()
+    };
+    if owned.is_empty() {
+        bail!(
+            "POD_NAME ordinal {ordinal} >= num_shards {num_shards} with replicas={replicas}; nothing to own"
+        );
+    }
+    Ok(owned)
 }
 
 /// Parse `POD_NAME` (e.g., `crawlrs-3`) into the trailing ordinal.
@@ -488,4 +485,75 @@ fn pod_ordinal() -> Option<u32> {
 
 fn pod_ordinal_string() -> Option<String> {
     pod_ordinal().map(|o| o.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    // Inline because: `derive_owned_shards` is private and `tests/*.rs`
+    // compiles as a separate crate that cannot reach it.
+    use super::*;
+
+    #[test]
+    fn single_replica_owns_every_shard() {
+        assert_eq!(
+            derive_owned_shards(8, None, Some(0), Some(1)).unwrap(),
+            (0..8).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn replicas_partition_shards_disjointly() {
+        let r0 = derive_owned_shards(8, None, Some(0), Some(3)).unwrap();
+        let r1 = derive_owned_shards(8, None, Some(1), Some(3)).unwrap();
+        let r2 = derive_owned_shards(8, None, Some(2), Some(3)).unwrap();
+        assert_eq!(r0, vec![0, 3, 6]);
+        assert_eq!(r1, vec![1, 4, 7]);
+        assert_eq!(r2, vec![2, 5]);
+        let mut all: Vec<u32> = r0.into_iter().chain(r1).chain(r2).collect();
+        all.sort_unstable();
+        assert_eq!(all, (0..8).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn unset_replicas_owns_only_own_ordinal() {
+        assert_eq!(
+            derive_owned_shards(8, None, Some(3), None).unwrap(),
+            vec![3]
+        );
+        assert_eq!(
+            derive_owned_shards(8, None, Some(0), None).unwrap(),
+            vec![0]
+        );
+    }
+
+    #[test]
+    fn no_pod_ordinal_owns_every_shard() {
+        assert_eq!(
+            derive_owned_shards(8, None, None, None).unwrap(),
+            (0..8).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn explicit_list_wins_over_ordinal() {
+        assert_eq!(
+            derive_owned_shards(8, Some(&[2, 5]), Some(0), Some(1)).unwrap(),
+            vec![2, 5]
+        );
+    }
+
+    #[test]
+    fn explicit_entry_out_of_range_errors() {
+        assert!(derive_owned_shards(8, Some(&[8]), None, None).is_err());
+    }
+
+    #[test]
+    fn ordinal_past_shard_count_errors() {
+        assert!(derive_owned_shards(8, None, Some(9), None).is_err());
+    }
+
+    #[test]
+    fn zero_replicas_errors() {
+        assert!(derive_owned_shards(8, None, Some(0), Some(0)).is_err());
+    }
 }

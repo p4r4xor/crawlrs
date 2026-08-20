@@ -42,9 +42,7 @@ pub use traits::parser::Parser;
 pub use traits::politeness::{DisallowReason, FailureKind, PoliteDecision, Politeness};
 pub use traits::proxy::{ProxyOutcome, ProxyResolver, ProxySelection};
 pub use traits::robots_checker::RobotsChecker;
-pub use traits::sharding::{
-    HostHashShardPolicy, ShardKey, ShardingPolicy, SingleShardPolicy, owned_shards_for_replica,
-};
+pub use traits::sharding::{HostHashShardPolicy, ShardKey, ShardingPolicy, SingleShardPolicy};
 pub use traits::site_adapter::{SiteAdapter, SiteAdapterRegistry};
 pub use traits::store::Store;
 pub use traits::wake_planner::WakePlanner;

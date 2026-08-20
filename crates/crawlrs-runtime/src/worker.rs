@@ -232,10 +232,6 @@ async fn process_url(
         .record(started_at.elapsed().as_secs_f64());
 }
 
-// ---------------------------------------------------------------------------
-// Per-URL pipeline
-// ---------------------------------------------------------------------------
-
 /// One URL's worth of work, encapsulated as a struct.
 ///
 /// Owns the dependencies (cheap `Arc` clone) and the entry being

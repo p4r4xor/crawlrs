@@ -17,10 +17,6 @@ use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
 use testcontainers_modules::testcontainers::{ContainerAsync, ImageExt};
 
-// ---------------------------------------------------------------------------
-// Fixture
-// ---------------------------------------------------------------------------
-
 struct Fixture {
     _container: ContainerAsync<Postgres>,
     pool: PgPool,
@@ -59,10 +55,6 @@ fn unique_url(slug: &str) -> CanonicalUrl {
 fn run_id() -> String {
     format!("run-{}", cuid2::create_id())
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn unseen_url_returns_none_from_get() {
@@ -260,7 +252,6 @@ async fn get_returns_state_from_prior_run() {
     let store = PostgresMetadataStore::with_pool(fx.pool.clone());
     let url = unique_url("cross-run");
 
-    // Run 1 finishes.
     store
         .mark_attempting(&url, &RunId::new("run-1"), 0)
         .await
@@ -277,7 +268,6 @@ async fn get_returns_state_from_prior_run() {
         .await
         .unwrap();
 
-    // Run 2 starts later. Asks: "have we crawled this?"
     let m = store.get(&url).await.unwrap().expect("must see prior run");
     assert_eq!(m.status, UrlStatus::Succeeded);
     assert_eq!(m.last_run_id, "run-1");
@@ -320,10 +310,6 @@ async fn history_records_each_transition() {
     // attempted + failed + failed + succeeded = 4 events.
     assert_eq!(count, 4);
 }
-
-// ---------------------------------------------------------------------------
-// Outbox publish: lease semantics under concurrency
-// ---------------------------------------------------------------------------
 
 /// One `publish` call that records the row ids it received into a
 /// shared collector. Pulled out as a helper because the boxed-closure
@@ -444,7 +430,6 @@ async fn publish_distributes_disjoint_batches_across_concurrent_callers() {
     );
     assert_eq!(all.len(), total, "every seeded row was delivered");
 
-    // And every row is now marked published in the table.
     let still_unpublished: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM frontier_outbox
          WHERE parent_url_id = $1 AND published_at IS NULL",
@@ -467,7 +452,6 @@ async fn publish_rolls_back_when_ship_returns_error() {
     let total: usize = 64;
     let parent_url_id = seed_outbox_rows(&fx.pool, &store, total).await;
 
-    // First call: ship errors. publish must surface the error.
     let result = store
         .publish(
             total,

@@ -29,13 +29,10 @@ fn backoff_default_caps_at_ten_minutes() {
     assert!(p.multiplier > 1.0);
 }
 
-// ---------------------------------------------------------------------------
 // has_host_delay: the verdict the wake planner caches at
 // construction. When `false`, the planner short-circuits the
 // per-host lookup and the worker skips the
 // `Frontier::advance_wake` write per fetch.
-// ---------------------------------------------------------------------------
-
 fn config_with(global: Duration) -> PolitenessConfig {
     PolitenessConfig {
         host_delay: global,

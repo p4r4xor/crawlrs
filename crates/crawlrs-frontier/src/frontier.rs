@@ -228,8 +228,6 @@ impl RedisFrontier {
         Ok(())
     }
 
-    // --- internals -----------------------------------------------------
-
     fn ops(&self) -> HostQueueOps<'_> {
         HostQueueOps {
             pool: &self.pool,

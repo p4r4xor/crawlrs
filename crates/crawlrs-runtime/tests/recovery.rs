@@ -39,10 +39,6 @@ fn url(s: &str) -> CanonicalUrl {
 
 const IDENTITY: WorkerIdentity = WorkerIdentity::new(0, 0);
 
-// ---------------------------------------------------------------------------
-// Lease-based recovery (Invariant 1)
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn lease_expiry_re_pushes_unacked_url_and_next_claim_yields_same_attempt_id() {
     // Worker A claims, never acks (crash). Lease expires. Tick
@@ -91,10 +87,6 @@ async fn lease_expiry_re_pushes_unacked_url_and_next_claim_yields_same_attempt_i
     );
 }
 
-// ---------------------------------------------------------------------------
-// Metadata-side dedup (Invariant 2)
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn duplicate_mark_succeeded_for_same_attempt_appends_one_history_row() {
     // Even if the runtime re-runs the post-fetch pipeline because
@@ -126,10 +118,6 @@ async fn duplicate_mark_succeeded_for_same_attempt_appends_one_history_row() {
         "the (url, attempt_id) UNIQUE constraint dedupes redelivered attempts",
     );
 }
-
-// ---------------------------------------------------------------------------
-// Outbox-side dedup (Invariant 3)
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn outbox_dedupes_outbound_on_attempt_redelivery() {
@@ -168,10 +156,6 @@ async fn outbox_dedupes_outbound_on_attempt_redelivery() {
          outbox UNIQUE constraint; we must not see 6 rows",
     );
 }
-
-// ---------------------------------------------------------------------------
-// Publisher round-trip (Invariant 4)
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn outbox_publisher_drains_into_frontier_atleast_once() {
